@@ -1,0 +1,36 @@
+[package]
+name = "ghurni"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "GPL-3.0-only"
+description = "ghurni — Mechanical sound synthesis: engines, gears, motors, turbines, RPM-driven harmonics"
+homepage = "https://github.com/MacCracken/ghurni"
+repository = "https://github.com/MacCracken/ghurni"
+readme = "README.md"
+documentation = "https://docs.rs/ghurni"
+keywords = ["mechanical", "engine", "sound", "synthesis", "motor"]
+categories = ["multimedia::audio"]
+exclude = [".claude/", ".github/", "docs/", "scripts/"]
+
+[dependencies]
+hisab = { version = "1.2", default-features = false, features = ["num", "calc"] }
+libm = "0.2"
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+thiserror = { version = "2", default-features = false }
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+serde_json = "1"
+
+[features]
+default = ["std"]
+full = ["std", "logging"]
+std = ["serde/std", "thiserror/std", "tracing/std"]
+logging = ["dep:tracing-subscriber"]
+
+[[bench]]
+name = "benchmarks"
+harness = false
