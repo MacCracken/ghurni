@@ -76,8 +76,7 @@ fn bench_transmission_500ms(c: &mut Criterion) {
 
 fn bench_turbocharger_1s(c: &mut Criterion) {
     c.bench_function("turbocharger_1s", |b| {
-        let mut turbo =
-            ForcedInduction::new(InductionType::Turbo, 2.5, 1.0, 44100.0).unwrap();
+        let mut turbo = ForcedInduction::new(InductionType::Turbo, 2.5, 1.0, 44100.0).unwrap();
         b.iter(|| {
             let samples = turbo.synthesize(5000.0, 0.8, 1.0).unwrap();
             black_box(samples);

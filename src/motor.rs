@@ -117,12 +117,7 @@ impl Motor {
     /// - `rpm`: Motor speed.
     /// - `load`: Load factor (0.0-1.0).
     /// - `duration`: Duration in seconds.
-    pub fn synthesize(
-        &mut self,
-        rpm: f32,
-        load: f32,
-        duration: f32,
-    ) -> Result<Vec<f32>> {
+    pub fn synthesize(&mut self, rpm: f32, load: f32, duration: f32) -> Result<Vec<f32>> {
         validate_duration(duration)?;
         self.set_rpm(rpm);
         self.set_load(load);

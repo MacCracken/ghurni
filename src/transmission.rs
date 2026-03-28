@@ -151,8 +151,8 @@ impl Transmission {
 
             #[cfg(not(feature = "naad-backend"))]
             {
-                let mesh_omega = core::f32::consts::TAU * mesh_freq.clamp(1.0, nyquist)
-                    / self.sample_rate;
+                let mesh_omega =
+                    core::f32::consts::TAU * mesh_freq.clamp(1.0, nyquist) / self.sample_rate;
                 let abs_pos = self.sample_position as f32;
                 let mesh = crate::math::f32::sin(mesh_omega * abs_pos) * 0.15;
 

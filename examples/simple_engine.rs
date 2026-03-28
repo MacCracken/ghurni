@@ -22,10 +22,7 @@ fn main() -> ghurni::error::Result<()> {
     println!("  samples: {}", samples.len());
     println!("  peak:    {peak:.4}");
     println!("  rms:     {rms:.4}");
-    println!(
-        "  firing freq: {:.1} Hz",
-        engine.firing_frequency(3000.0)
-    );
+    println!("  firing freq: {:.1} Hz", engine.firing_frequency(3000.0));
 
     Ok(())
 }

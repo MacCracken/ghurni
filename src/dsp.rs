@@ -42,9 +42,9 @@ pub(crate) fn validate_sample_rate(sample_rate: f32) -> Result<()> {
     if sample_rate <= 0.0 || sample_rate.is_nan() || sample_rate.is_infinite() {
         #[cfg(feature = "logging")]
         tracing::warn!(%sample_rate, "invalid sample rate");
-        return Err(GhurniError::InvalidParameter(
-            alloc::format!("sample_rate must be positive and finite, got {sample_rate}"),
-        ));
+        return Err(GhurniError::InvalidParameter(alloc::format!(
+            "sample_rate must be positive and finite, got {sample_rate}"
+        )));
     }
     Ok(())
 }
@@ -55,9 +55,9 @@ pub(crate) fn validate_duration(duration: f32) -> Result<()> {
     if duration <= 0.0 || duration.is_nan() || duration.is_infinite() {
         #[cfg(feature = "logging")]
         tracing::warn!(%duration, "invalid duration");
-        return Err(GhurniError::InvalidParameter(
-            alloc::format!("duration must be positive and finite, got {duration}"),
-        ));
+        return Err(GhurniError::InvalidParameter(alloc::format!(
+            "duration must be positive and finite, got {duration}"
+        )));
     }
     Ok(())
 }

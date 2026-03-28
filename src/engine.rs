@@ -17,10 +17,10 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::dsp::{DcBlocker, validate_duration, validate_sample_rate};
-use crate::event::MechanicalEvent;
 #[cfg(feature = "naad-backend")]
 use crate::error::GhurniError;
 use crate::error::Result;
+use crate::event::MechanicalEvent;
 use crate::smooth::SmoothedParam;
 use crate::traits::Synthesizer;
 
@@ -218,12 +218,7 @@ impl Engine {
     }
 
     /// Synthesizes engine sound at the given RPM and load (one-shot).
-    pub fn synthesize(
-        &mut self,
-        rpm: f32,
-        load: f32,
-        duration: f32,
-    ) -> Result<Vec<f32>> {
+    pub fn synthesize(&mut self, rpm: f32, load: f32, duration: f32) -> Result<Vec<f32>> {
         validate_duration(duration)?;
         self.set_rpm(rpm);
         self.set_load(load);
@@ -249,7 +244,9 @@ impl Engine {
 
     #[cfg(feature = "naad-backend")]
     fn process_block_naad(&mut self, output: &mut [f32]) {
-        let _ = self.exhaust_filter.set_params(self.exhaust_resonance, 1.5, 0.0);
+        let _ = self
+            .exhaust_filter
+            .set_params(self.exhaust_resonance, 1.5, 0.0);
 
         let cycle_degrees: f32 = match self.engine_type {
             EngineType::TwoStroke => 360.0,
@@ -272,7 +269,8 @@ impl Engine {
             // Sum combustion impulses from each cylinder
             let mut combustion_sum = 0.0f32;
             for (cyl, &offset) in self.firing_offsets.iter().enumerate() {
-                let cyl_phase = ((crank_deg - offset) % cycle_degrees + cycle_degrees) % cycle_degrees;
+                let cyl_phase =
+                    ((crank_deg - offset) % cycle_degrees + cycle_degrees) % cycle_degrees;
                 let cyl_norm = cyl_phase / cycle_degrees;
 
                 // Check for misfire
@@ -364,7 +362,8 @@ impl Engine {
 
             let mut combustion_sum = 0.0f32;
             for (cyl, &offset) in self.firing_offsets.iter().enumerate() {
-                let cyl_phase = ((crank_deg - offset) % cycle_degrees + cycle_degrees) % cycle_degrees;
+                let cyl_phase =
+                    ((crank_deg - offset) % cycle_degrees + cycle_degrees) % cycle_degrees;
                 let cyl_norm = cyl_phase / cycle_degrees;
 
                 if self.misfire_flags.get(cyl).copied().unwrap_or(false) && cyl_norm < 0.01 {
@@ -377,8 +376,7 @@ impl Engine {
                 if cyl_norm < 0.08 {
                     let t = cyl_norm / 0.08;
                     let pulse = crate::math::f32::exp(-8.0 * t);
-                    combustion_sum +=
-                        pulse * base_amp * (1.0 + roughness * self.rng.next_f32());
+                    combustion_sum += pulse * base_amp * (1.0 + roughness * self.rng.next_f32());
                 }
             }
 

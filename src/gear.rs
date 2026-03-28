@@ -171,7 +171,8 @@ impl Gear {
                 )
             };
             let ring_excitation = self.noise_gen.next_sample() * ring_env;
-            let ring = self.resonance_filter.process_sample(ring_excitation) * amp * self.brightness;
+            let ring =
+                self.resonance_filter.process_sample(ring_excitation) * amp * self.brightness;
 
             let noise = self.noise_gen.next_sample() * amp * 0.05;
 
