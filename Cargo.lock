@@ -187,6 +187,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -202,6 +211,18 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+
+[[package]]
+name = "hisab"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6548cb83e812c5113aba95e8f3990b30e8d2680b76832807473d04adeac95831"
+dependencies = [
+ "glam",
+ "serde",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "is-terminal"
@@ -284,6 +305,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b54f174ae4e702922967a9a25d8cea5eef7461d5d070fa2da4dd40e851f90d9"
 dependencies = [
+ "hisab",
  "serde",
  "thiserror",
  "tracing",

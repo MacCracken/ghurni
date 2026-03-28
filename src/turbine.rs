@@ -15,6 +15,10 @@ pub struct Turbine {
     duct_resonance: f32,
     sample_rate: f32,
     #[cfg(feature = "naad-backend")]
+    blade_synth: naad::synth::additive::AdditiveSynth,
+    #[cfg(feature = "naad-backend")]
+    duct_osc: Option<naad::oscillator::Oscillator>,
+    #[cfg(feature = "naad-backend")]
     noise_gen: naad::noise::NoiseGenerator,
     #[cfg(feature = "naad-backend")]
     whoosh_lfo: naad::modulation::Lfo,
@@ -36,14 +40,45 @@ impl Turbine {
         }
         let blades = blades.clamp(2, 64);
         let duct_resonance = duct_resonance.max(0.0);
+        let nyquist = sample_rate * 0.49;
+
+        // Blade pass: additive synth with fundamental + 2nd harmonic at 0.4
+        #[cfg(feature = "naad-backend")]
+        let blade_synth = {
+            let mut synth = naad::synth::additive::AdditiveSynth::new(100.0, 2, sample_rate)
+                .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?;
+            synth.set_partial(0, 1.0, 1.0);
+            synth.set_partial(1, 2.0, 0.4);
+            synth
+        };
+
+        // Duct resonance oscillator (only if duct_resonance > 0)
+        #[cfg(feature = "naad-backend")]
+        let duct_osc = if duct_resonance > 0.0 {
+            Some(
+                naad::oscillator::Oscillator::new(
+                    naad::oscillator::Waveform::Sine,
+                    duct_resonance.min(nyquist),
+                    sample_rate,
+                )
+                .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?,
+            )
+        } else {
+            None
+        };
 
         // LFO rate placeholder — updated per synthesize() based on RPM
-        let _initial_lfo_rate = 10.0_f32.min(sample_rate * 0.49);
+        #[allow(unused_variables)]
+        let initial_lfo_rate = 10.0_f32.min(nyquist);
 
         Ok(Self {
             blades,
             duct_resonance,
             sample_rate,
+            #[cfg(feature = "naad-backend")]
+            blade_synth,
+            #[cfg(feature = "naad-backend")]
+            duct_osc,
             #[cfg(feature = "naad-backend")]
             noise_gen: naad::noise::NoiseGenerator::new(
                 naad::noise::NoiseType::Pink,
@@ -52,7 +87,7 @@ impl Turbine {
             #[cfg(feature = "naad-backend")]
             whoosh_lfo: naad::modulation::Lfo::new(
                 naad::modulation::LfoShape::Sine,
-                _initial_lfo_rate,
+                initial_lfo_rate,
                 sample_rate,
             )
             .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?,
@@ -90,33 +125,31 @@ impl Turbine {
     #[cfg(feature = "naad-backend")]
     fn synthesize_naad(&mut self, output: &mut [f32], rpm: f32) {
         let bpf = self.blade_pass_frequency(rpm);
-        let bpf_omega = core::f32::consts::TAU * bpf / self.sample_rate;
+        let nyquist = self.sample_rate * 0.49;
         let amp = 0.3;
 
-        // Update LFO to blade pass rate (clamped to valid range)
-        let lfo_freq = bpf.clamp(0.01, self.sample_rate * 0.49);
+        // Update blade synth fundamental to match current RPM
+        let _ = self.blade_synth.set_fundamental(bpf.min(nyquist / 2.0));
+
+        // Update LFO to blade pass rate
+        let lfo_freq = bpf.clamp(0.01, nyquist);
         let _ = self.whoosh_lfo.set_frequency(lfo_freq);
 
-        for (i, sample) in output.iter_mut().enumerate() {
-            let t = i as f32;
-
-            // Blade pass tone + harmonics
-            let tone = libm::sinf(bpf_omega * t);
-            let h2 = libm::sinf(bpf_omega * 2.0 * t) * 0.4;
+        for sample in output.iter_mut() {
+            // Blade pass tone + harmonics via additive synth
+            let tone = self.blade_synth.next_sample();
 
             // Whoosh: pink noise modulated by LFO at blade pass rate
             let whoosh_mod = 0.5 + 0.5 * self.whoosh_lfo.next_value();
             let whoosh = self.noise_gen.next_sample() * whoosh_mod * 0.2;
 
             // Duct resonance (if present)
-            let duct = if self.duct_resonance > 0.0 {
-                let duct_omega = core::f32::consts::TAU * self.duct_resonance / self.sample_rate;
-                libm::sinf(duct_omega * t) * 0.15
-            } else {
-                0.0
+            let duct = match &mut self.duct_osc {
+                Some(osc) => osc.next_sample() * 0.15,
+                None => 0.0,
             };
 
-            *sample = (tone + h2) * amp + whoosh + duct;
+            *sample = tone * amp + whoosh + duct;
         }
     }
 

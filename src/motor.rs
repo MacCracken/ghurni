@@ -29,6 +29,8 @@ pub struct Motor {
     poles: u32,
     sample_rate: f32,
     #[cfg(feature = "naad-backend")]
+    hum_synth: naad::synth::additive::AdditiveSynth,
+    #[cfg(feature = "naad-backend")]
     noise_gen: naad::noise::NoiseGenerator,
     #[cfg(feature = "naad-backend")]
     noise_filter: naad::filter::BiquadFilter,
@@ -50,17 +52,34 @@ impl Motor {
         }
         let poles = poles.clamp(2, 24);
 
-        let _noise_cutoff: f32 = match motor_type {
+        #[allow(unused_variables)]
+        let noise_cutoff: f32 = match motor_type {
             MotorType::DcBrushed => 4000.0,
             MotorType::AcInduction => 2000.0,
             MotorType::Brushless => 6000.0,
             MotorType::Servo => 3000.0,
         };
 
+        // Placeholder fundamental — updated per synthesize() based on RPM
+        #[cfg(feature = "naad-backend")]
+        let hum_synth = {
+            let mut synth = naad::synth::additive::AdditiveSynth::new(100.0, 3, sample_rate)
+                .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?;
+            // Fundamental at ratio 1.0, full amplitude
+            synth.set_partial(0, 1.0, 1.0);
+            // 2nd harmonic at 0.3 amplitude
+            synth.set_partial(1, 2.0, 0.3);
+            // 3rd harmonic at 0.1 amplitude
+            synth.set_partial(2, 3.0, 0.1);
+            synth
+        };
+
         Ok(Self {
             motor_type,
             poles,
             sample_rate,
+            #[cfg(feature = "naad-backend")]
+            hum_synth,
             #[cfg(feature = "naad-backend")]
             noise_gen: naad::noise::NoiseGenerator::new(
                 naad::noise::NoiseType::White,
@@ -70,7 +89,7 @@ impl Motor {
             noise_filter: naad::filter::BiquadFilter::new(
                 naad::filter::FilterType::BandPass,
                 sample_rate,
-                _noise_cutoff.min(sample_rate * 0.49),
+                noise_cutoff.min(sample_rate * 0.49),
                 1.0,
             )
             .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?,
@@ -108,7 +127,10 @@ impl Motor {
     #[cfg(feature = "naad-backend")]
     fn synthesize_naad(&mut self, output: &mut [f32], rpm: f32, load: f32) {
         let em_freq = (rpm / 60.0) * self.poles as f32;
-        let em_omega = core::f32::consts::TAU * em_freq / self.sample_rate;
+        let nyquist = self.sample_rate * 0.49;
+
+        // Update additive synth fundamental to match current RPM
+        let _ = self.hum_synth.set_fundamental(em_freq.min(nyquist / 3.0));
 
         let amp = 0.15 + load * 0.2;
         let noise_level = match self.motor_type {
@@ -118,17 +140,9 @@ impl Motor {
             MotorType::Servo => 0.08,
         };
 
-        for (i, sample) in output.iter_mut().enumerate() {
-            let t = i as f32;
-            // Electromagnetic hum: fundamental + harmonics via direct sin
-            // (AdditiveSynth would need frequency updates per RPM change;
-            //  direct computation is simpler for 3 harmonics)
-            let fundamental = naad::dsp_util::soft_clip_tanh(
-                libm::sinf(em_omega * t), 1.0,
-            );
-            let harmonic2 = libm::sinf(em_omega * 2.0 * t) * 0.3;
-            let harmonic3 = libm::sinf(em_omega * 3.0 * t) * 0.1;
-            let hum = (fundamental + harmonic2 + harmonic3) * amp;
+        for sample in output.iter_mut() {
+            // Electromagnetic hum via additive synthesis
+            let hum = self.hum_synth.next_sample() * amp;
 
             // Commutator/bearing noise — filtered
             let raw_noise = self.noise_gen.next_sample() * noise_level * amp;

@@ -15,7 +15,7 @@ exclude = [".claude/", ".github/", "docs/", "scripts/"]
 
 [dependencies]
 libm = "0.2"
-naad = { version = "1", default-features = false, optional = true }
+naad = { version = "1", optional = true }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", default-features = false }
