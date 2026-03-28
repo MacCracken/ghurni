@@ -6,8 +6,7 @@
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
-use crate::rng::Rng;
+use crate::error::{GhurniError, Result};
 
 /// Gear body material — affects resonance and decay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -39,31 +38,70 @@ impl GearMaterial {
 /// Gear mesh synthesizer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Gear {
-    /// Number of teeth on the gear.
     teeth: u32,
-    /// Material.
     material: GearMaterial,
-    /// Material properties (cached).
     resonance: f32,
     decay: f32,
     brightness: f32,
-    /// PRNG.
-    rng: Rng,
+    sample_rate: f32,
+    #[cfg(feature = "naad-backend")]
+    mesh_osc: naad::oscillator::Oscillator,
+    #[cfg(feature = "naad-backend")]
+    noise_gen: naad::noise::NoiseGenerator,
+    #[cfg(feature = "naad-backend")]
+    resonance_filter: naad::filter::BiquadFilter,
+    #[cfg(not(feature = "naad-backend"))]
+    rng: crate::rng::Rng,
 }
 
 impl Gear {
     /// Creates a new gear synthesizer.
-    #[must_use]
-    pub fn new(teeth: u32, material: GearMaterial) -> Self {
+    ///
+    /// - `teeth`: Number of teeth (4+).
+    /// - `material`: Gear body material.
+    /// - `sample_rate`: Audio sample rate in Hz.
+    pub fn new(teeth: u32, material: GearMaterial, sample_rate: f32) -> Result<Self> {
+        if sample_rate <= 0.0 {
+            return Err(GhurniError::InvalidParameter(
+                alloc::format!("sample_rate must be positive, got {sample_rate}"),
+            ));
+        }
+        let teeth = teeth.max(4);
         let (resonance, decay, brightness) = material.properties();
-        Self {
-            teeth: teeth.max(4),
+
+        // Use a placeholder frequency; updated per-synthesize based on RPM
+        let _initial_mesh_freq = 100.0_f32.min(sample_rate * 0.49);
+
+        Ok(Self {
+            teeth,
             material,
             resonance,
             decay,
             brightness,
-            rng: Rng::new(teeth as u64 * 7 + material as u64),
-        }
+            sample_rate,
+            #[cfg(feature = "naad-backend")]
+            mesh_osc: naad::oscillator::Oscillator::new(
+                naad::oscillator::Waveform::Sine,
+                _initial_mesh_freq,
+                sample_rate,
+            )
+            .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?,
+            #[cfg(feature = "naad-backend")]
+            noise_gen: naad::noise::NoiseGenerator::new(
+                naad::noise::NoiseType::White,
+                teeth * 7 + material as u32,
+            ),
+            #[cfg(feature = "naad-backend")]
+            resonance_filter: naad::filter::BiquadFilter::new(
+                naad::filter::FilterType::BandPass,
+                sample_rate,
+                resonance.min(sample_rate * 0.49),
+                4.0,
+            )
+            .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?,
+            #[cfg(not(feature = "naad-backend"))]
+            rng: crate::rng::Rng::new(teeth as u64 * 7 + material as u64),
+        })
     }
 
     /// Returns the tooth mesh frequency at the given RPM.
@@ -76,25 +114,65 @@ impl Gear {
     /// Synthesizes gear mesh sound.
     ///
     /// - `rpm`: Shaft speed.
-    /// - `sample_rate`: Audio sample rate.
     /// - `duration`: Duration in seconds.
     #[inline]
-    pub fn synthesize(&mut self, rpm: f32, sample_rate: f32, duration: f32) -> Result<Vec<f32>> {
+    pub fn synthesize(&mut self, rpm: f32, duration: f32) -> Result<Vec<f32>> {
         let rpm = rpm.clamp(1.0, 50000.0);
-        let num_samples = (sample_rate * duration) as usize;
-        let mesh_freq = self.mesh_frequency(rpm);
-        let mesh_omega = core::f32::consts::TAU * mesh_freq / sample_rate;
-        let res_omega = core::f32::consts::TAU * self.resonance / sample_rate;
+        let num_samples = (self.sample_rate * duration) as usize;
+        let mut output = alloc::vec![0.0f32; num_samples];
 
-        let mut output = Vec::with_capacity(num_samples);
+        #[cfg(feature = "naad-backend")]
+        self.synthesize_naad(&mut output, rpm);
+
+        #[cfg(not(feature = "naad-backend"))]
+        self.synthesize_fallback(&mut output, rpm);
+
+        Ok(output)
+    }
+
+    #[cfg(feature = "naad-backend")]
+    fn synthesize_naad(&mut self, output: &mut [f32], rpm: f32) {
+        let mesh_freq = self.mesh_frequency(rpm);
+        let nyquist = self.sample_rate * 0.49;
+        let clamped_mesh = mesh_freq.min(nyquist);
+        let _ = self.mesh_osc.set_frequency(clamped_mesh);
+
         let amp = 0.3;
 
-        for i in 0..num_samples {
+        for (i, sample) in output.iter_mut().enumerate() {
             // Tooth mesh tone
-            let mesh = crate::math::f32::sin(mesh_omega * i as f32) * amp * 0.5;
+            let mesh = self.mesh_osc.next_sample() * amp * 0.5;
 
             // Resonant ringing excited by mesh impacts
-            let mesh_phase = (i as f32 * mesh_freq / sample_rate) % 1.0;
+            let mesh_phase = (i as f32 * mesh_freq / self.sample_rate) % 1.0;
+            let ring_env = if mesh_phase < 0.05 {
+                1.0
+            } else {
+                naad::dsp_util::db_to_amplitude(
+                    -mesh_phase / self.decay * 20.0 / core::f32::consts::LOG10_E,
+                )
+            };
+            let ring_excitation = self.noise_gen.next_sample() * ring_env;
+            let ring = self.resonance_filter.process_sample(ring_excitation) * amp * self.brightness;
+
+            // Mechanical noise
+            let noise = self.noise_gen.next_sample() * amp * 0.05;
+
+            *sample = mesh + ring + noise;
+        }
+    }
+
+    #[cfg(not(feature = "naad-backend"))]
+    fn synthesize_fallback(&mut self, output: &mut [f32], rpm: f32) {
+        let mesh_freq = self.mesh_frequency(rpm);
+        let mesh_omega = core::f32::consts::TAU * mesh_freq / self.sample_rate;
+        let res_omega = core::f32::consts::TAU * self.resonance / self.sample_rate;
+        let amp = 0.3;
+
+        for (i, sample) in output.iter_mut().enumerate() {
+            let mesh = crate::math::f32::sin(mesh_omega * i as f32) * amp * 0.5;
+
+            let mesh_phase = (i as f32 * mesh_freq / self.sample_rate) % 1.0;
             let ring_env = if mesh_phase < 0.05 {
                 1.0
             } else {
@@ -103,12 +181,9 @@ impl Gear {
             let ring =
                 crate::math::f32::sin(res_omega * i as f32) * ring_env * amp * self.brightness;
 
-            // Mechanical noise
             let noise = self.rng.next_f32() * amp * 0.05;
 
-            output.push(mesh + ring + noise);
+            *sample = mesh + ring + noise;
         }
-
-        Ok(output)
     }
 }

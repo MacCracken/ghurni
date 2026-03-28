@@ -6,8 +6,7 @@
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
-use crate::rng::Rng;
+use crate::error::{GhurniError, Result};
 
 /// Clock mechanism type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -26,36 +25,127 @@ pub enum ClockType {
 /// Clock mechanism synthesizer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Clock {
-    /// Clock type.
     clock_type: ClockType,
-    /// Ticks per second (escapement rate).
     tick_rate: f32,
-    /// PRNG.
-    rng: Rng,
+    sample_rate: f32,
+    #[cfg(feature = "naad-backend")]
+    noise_gen: naad::noise::NoiseGenerator,
+    #[cfg(feature = "naad-backend")]
+    body_filter: naad::filter::BiquadFilter,
+    #[cfg(not(feature = "naad-backend"))]
+    rng: crate::rng::Rng,
 }
 
 impl Clock {
     /// Creates a new clock synthesizer.
-    #[must_use]
-    pub fn new(clock_type: ClockType) -> Self {
+    ///
+    /// - `clock_type`: Type of clock mechanism.
+    /// - `sample_rate`: Audio sample rate in Hz.
+    pub fn new(clock_type: ClockType, sample_rate: f32) -> Result<Self> {
+        if sample_rate <= 0.0 {
+            return Err(GhurniError::InvalidParameter(
+                alloc::format!("sample_rate must be positive, got {sample_rate}"),
+            ));
+        }
         let tick_rate = match clock_type {
-            ClockType::Wristwatch => 8.0,       // 4 Hz escapement, 8 beats/s
-            ClockType::WallClock => 2.0,        // 1 Hz pendulum, 2 beats/s
-            ClockType::GrandfatherClock => 1.0, // 0.5 Hz pendulum
-            ClockType::PocketWatch => 5.0,      // 2.5 Hz escapement
+            ClockType::Wristwatch => 8.0,
+            ClockType::WallClock => 2.0,
+            ClockType::GrandfatherClock => 1.0,
+            ClockType::PocketWatch => 5.0,
         };
-        Self {
+
+        let (_resonance, _decay, _amp): (f32, f32, f32) = match clock_type {
+            ClockType::Wristwatch => (6000.0, 0.003, 0.15),
+            ClockType::WallClock => (2000.0, 0.01, 0.4),
+            ClockType::GrandfatherClock => (800.0, 0.03, 0.6),
+            ClockType::PocketWatch => (4500.0, 0.005, 0.25),
+        };
+
+        Ok(Self {
             clock_type,
             tick_rate,
-            rng: Rng::new(clock_type as u64 * 997),
-        }
+            sample_rate,
+            #[cfg(feature = "naad-backend")]
+            noise_gen: naad::noise::NoiseGenerator::new(
+                naad::noise::NoiseType::White,
+                clock_type as u32 * 997,
+            ),
+            #[cfg(feature = "naad-backend")]
+            body_filter: naad::filter::BiquadFilter::new(
+                naad::filter::FilterType::BandPass,
+                sample_rate,
+                _resonance.min(sample_rate * 0.49),
+                8.0,
+            )
+            .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?,
+            #[cfg(not(feature = "naad-backend"))]
+            rng: crate::rng::Rng::new(clock_type as u64 * 997),
+        })
     }
 
     /// Synthesizes clock ticking sound.
+    ///
+    /// - `duration`: Duration in seconds.
     #[inline]
-    pub fn synthesize(&mut self, sample_rate: f32, duration: f32) -> Result<Vec<f32>> {
-        let num_samples = (sample_rate * duration) as usize;
-        let tick_period = sample_rate / self.tick_rate;
+    pub fn synthesize(&mut self, duration: f32) -> Result<Vec<f32>> {
+        let num_samples = (self.sample_rate * duration) as usize;
+        let mut output = alloc::vec![0.0f32; num_samples];
+
+        #[cfg(feature = "naad-backend")]
+        self.synthesize_naad(&mut output);
+
+        #[cfg(not(feature = "naad-backend"))]
+        self.synthesize_fallback(&mut output);
+
+        Ok(output)
+    }
+
+    #[cfg(feature = "naad-backend")]
+    fn synthesize_naad(&mut self, output: &mut [f32]) {
+        let tick_period = self.sample_rate / self.tick_rate;
+
+        let (_resonance, decay, amp) = match self.clock_type {
+            ClockType::Wristwatch => (6000.0, 0.003, 0.15),
+            ClockType::WallClock => (2000.0, 0.01, 0.4),
+            ClockType::GrandfatherClock => (800.0, 0.03, 0.6),
+            ClockType::PocketWatch => (4500.0, 0.005, 0.25),
+        };
+
+        for (i, sample) in output.iter_mut().enumerate() {
+            let phase = (i as f32 % tick_period) / tick_period;
+
+            // Tick impulse: sharp transient filtered through body resonance
+            let tick = if phase < 0.02 {
+                let t = phase / 0.02;
+                let impulse = (1.0 - t) * amp;
+                let ring_excitation = self.noise_gen.next_sample() * amp;
+                let ring = self.body_filter.process_sample(ring_excitation)
+                    * naad::dsp_util::db_to_amplitude(
+                        -phase / decay * 20.0 / core::f32::consts::LOG10_E,
+                    );
+                impulse * 0.5 + ring
+            } else if phase < 0.15 {
+                // Resonant tail
+                let ring_excitation = self.noise_gen.next_sample() * amp * 0.1;
+                self.body_filter.process_sample(ring_excitation)
+                    * naad::dsp_util::db_to_amplitude(
+                        -phase / decay * 20.0 / core::f32::consts::LOG10_E,
+                    )
+                    * 0.3
+            } else {
+                0.0
+            };
+
+            // Subtle mechanical noise between ticks
+            let mech = self.noise_gen.next_sample() * amp * 0.01;
+
+            *sample = tick + mech;
+        }
+    }
+
+    #[cfg(not(feature = "naad-backend"))]
+    fn synthesize_fallback(&mut self, output: &mut [f32]) {
+        let tick_period = self.sample_rate / self.tick_rate;
 
         let (resonance, decay, amp) = match self.clock_type {
             ClockType::Wristwatch => (6000.0, 0.003, 0.15),
@@ -64,15 +154,12 @@ impl Clock {
             ClockType::PocketWatch => (4500.0, 0.005, 0.25),
         };
 
-        let res_omega = core::f32::consts::TAU * resonance / sample_rate;
-        let mut output = Vec::with_capacity(num_samples);
+        let res_omega = core::f32::consts::TAU * resonance / self.sample_rate;
 
-        for i in 0..num_samples {
+        for (i, sample) in output.iter_mut().enumerate() {
             let phase = (i as f32 % tick_period) / tick_period;
 
-            // Tick impulse: sharp transient + resonant decay
             let tick = if phase < 0.02 {
-                // Sharp transient
                 let t = phase / 0.02;
                 let impulse = (1.0 - t) * amp;
                 let ring = crate::math::f32::sin(res_omega * i as f32)
@@ -80,7 +167,6 @@ impl Clock {
                     * amp;
                 impulse * 0.5 + ring
             } else if phase < 0.15 {
-                // Resonant tail
                 crate::math::f32::sin(res_omega * i as f32)
                     * crate::math::f32::exp(-phase / decay)
                     * amp
@@ -89,12 +175,9 @@ impl Clock {
                 0.0
             };
 
-            // Subtle mechanical noise between ticks
             let mech = self.rng.next_f32() * amp * 0.01;
 
-            output.push(tick + mech);
+            *sample = tick + mech;
         }
-
-        Ok(output)
     }
 }

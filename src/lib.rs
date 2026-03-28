@@ -32,12 +32,12 @@
 //! use ghurni::prelude::*;
 //!
 //! // Synthesize a diesel engine at 2000 RPM
-//! let mut engine = Engine::new(EngineType::Diesel, 6);
-//! let samples = engine.synthesize(2000.0, 0.7, 44100.0, 1.0).unwrap();
+//! let mut engine = Engine::new(EngineType::Diesel, 6, 44100.0).unwrap();
+//! let samples = engine.synthesize(2000.0, 0.7, 1.0).unwrap();
 //!
 //! // Generate gear mesh sound
-//! let mut gear = Gear::new(32, GearMaterial::Steel);
-//! let samples = gear.synthesize(1500.0, 44100.0, 0.5).unwrap();
+//! let mut gear = Gear::new(32, GearMaterial::Steel, 44100.0).unwrap();
+//! let samples = gear.synthesize(1500.0, 0.5).unwrap();
 //! ```
 //!
 //! ## Feature Flags
@@ -45,6 +45,7 @@
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
 //! | `std` | Yes | Standard library support. Disable for `no_std` + `alloc` |
+//! | `naad-backend` | Yes | Use naad for DSP primitives (oscillators, filters, noise) |
 //! | `logging` | No | Structured logging via tracing-subscriber |
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -55,9 +56,11 @@ pub mod clock;
 pub mod engine;
 pub mod error;
 pub mod gear;
+#[cfg(not(feature = "naad-backend"))]
 #[allow(dead_code)]
 mod math;
 pub mod motor;
+#[cfg(not(feature = "naad-backend"))]
 #[allow(dead_code)]
 pub(crate) mod rng;
 pub mod turbine;

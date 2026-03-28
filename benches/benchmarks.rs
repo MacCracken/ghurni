@@ -5,9 +5,9 @@ use ghurni::prelude::*;
 
 fn bench_gasoline_v8_1s(c: &mut Criterion) {
     c.bench_function("gasoline_v8_1s", |b| {
-        let mut engine = Engine::new(EngineType::Gasoline, 8);
+        let mut engine = Engine::new(EngineType::Gasoline, 8, 44100.0).unwrap();
         b.iter(|| {
-            let samples = engine.synthesize(4000.0, 0.6, 44100.0, 1.0).unwrap();
+            let samples = engine.synthesize(4000.0, 0.6, 1.0).unwrap();
             black_box(samples);
         });
     });
@@ -15,9 +15,9 @@ fn bench_gasoline_v8_1s(c: &mut Criterion) {
 
 fn bench_diesel_6cyl_1s(c: &mut Criterion) {
     c.bench_function("diesel_6cyl_1s", |b| {
-        let mut engine = Engine::new(EngineType::Diesel, 6);
+        let mut engine = Engine::new(EngineType::Diesel, 6, 44100.0).unwrap();
         b.iter(|| {
-            let samples = engine.synthesize(2000.0, 0.7, 44100.0, 1.0).unwrap();
+            let samples = engine.synthesize(2000.0, 0.7, 1.0).unwrap();
             black_box(samples);
         });
     });
@@ -25,9 +25,9 @@ fn bench_diesel_6cyl_1s(c: &mut Criterion) {
 
 fn bench_gear_steel_500ms(c: &mut Criterion) {
     c.bench_function("gear_steel_500ms", |b| {
-        let mut gear = Gear::new(32, GearMaterial::Steel);
+        let mut gear = Gear::new(32, GearMaterial::Steel, 44100.0).unwrap();
         b.iter(|| {
-            let samples = gear.synthesize(3000.0, 44100.0, 0.5).unwrap();
+            let samples = gear.synthesize(3000.0, 0.5).unwrap();
             black_box(samples);
         });
     });
@@ -35,9 +35,9 @@ fn bench_gear_steel_500ms(c: &mut Criterion) {
 
 fn bench_motor_brushless_1s(c: &mut Criterion) {
     c.bench_function("motor_brushless_1s", |b| {
-        let mut motor = Motor::new(MotorType::Brushless, 8);
+        let mut motor = Motor::new(MotorType::Brushless, 8, 44100.0).unwrap();
         b.iter(|| {
-            let samples = motor.synthesize(10000.0, 0.5, 44100.0, 1.0).unwrap();
+            let samples = motor.synthesize(10000.0, 0.5, 1.0).unwrap();
             black_box(samples);
         });
     });
@@ -45,9 +45,9 @@ fn bench_motor_brushless_1s(c: &mut Criterion) {
 
 fn bench_turbine_1s(c: &mut Criterion) {
     c.bench_function("turbine_16blade_1s", |b| {
-        let mut turbine = Turbine::new(16, 500.0);
+        let mut turbine = Turbine::new(16, 500.0, 44100.0).unwrap();
         b.iter(|| {
-            let samples = turbine.synthesize(20000.0, 44100.0, 1.0).unwrap();
+            let samples = turbine.synthesize(20000.0, 1.0).unwrap();
             black_box(samples);
         });
     });
@@ -55,9 +55,9 @@ fn bench_turbine_1s(c: &mut Criterion) {
 
 fn bench_wristwatch_1s(c: &mut Criterion) {
     c.bench_function("wristwatch_1s", |b| {
-        let mut clock = Clock::new(ClockType::Wristwatch);
+        let mut clock = Clock::new(ClockType::Wristwatch, 44100.0).unwrap();
         b.iter(|| {
-            let samples = clock.synthesize(44100.0, 1.0).unwrap();
+            let samples = clock.synthesize(1.0).unwrap();
             black_box(samples);
         });
     });

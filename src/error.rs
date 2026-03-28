@@ -14,6 +14,10 @@ pub enum GhurniError {
     /// A synthesis operation failed.
     #[error("synthesis failed: {0}")]
     SynthesisFailed(String),
+
+    /// A computation produced an invalid result.
+    #[error("computation error: {0}")]
+    ComputationError(String),
 }
 
 /// Convenience type alias for ghurni results.

@@ -2,7 +2,7 @@
 
 **ghurni** (Sanskrit: घूर्णि — rotation / spinning) — Mechanical sound synthesis for Rust.
 
-Procedural synthesis of engines, gears, motors, turbines, and clocks. All sounds driven by rotational physics — RPM determines firing frequency, tooth mesh rate, blade pass frequency, and escapement timing. Built on [hisab](https://crates.io/crates/hisab) for math.
+Procedural synthesis of engines, gears, motors, turbines, and clocks. All sounds driven by rotational physics — RPM determines firing frequency, tooth mesh rate, blade pass frequency, and escapement timing. Built on [naad](https://crates.io/crates/naad) for audio synthesis primitives.
 
 ## Features
 
@@ -18,11 +18,11 @@ Procedural synthesis of engines, gears, motors, turbines, and clocks. All sounds
 ```rust
 use ghurni::prelude::*;
 
-let mut engine = Engine::new(EngineType::Diesel, 6);
-let samples = engine.synthesize(2000.0, 0.7, 44100.0, 1.0).unwrap();
+let mut engine = Engine::new(EngineType::Diesel, 6, 44100.0).unwrap();
+let samples = engine.synthesize(2000.0, 0.7, 1.0).unwrap();
 
-let mut clock = Clock::new(ClockType::GrandfatherClock);
-let samples = clock.synthesize(44100.0, 5.0).unwrap();
+let mut clock = Clock::new(ClockType::GrandfatherClock, 44100.0).unwrap();
+let samples = clock.synthesize(5.0).unwrap();
 ```
 
 ## Feature Flags
@@ -30,6 +30,7 @@ let samples = clock.synthesize(44100.0, 5.0).unwrap();
 | Flag | Default | Description |
 |------|---------|-------------|
 | `std` | Yes | Standard library. Disable for `no_std` + `alloc` |
+| `naad-backend` | Yes | Use naad for DSP primitives (oscillators, filters, noise) |
 | `logging` | No | Structured logging via tracing-subscriber |
 
 ## Consumers

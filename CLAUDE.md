@@ -15,7 +15,7 @@ kiran (game engine), joshua (game manager), dhvani (audio engine), and any AGNOS
 
 ## Dependencies
 
-- **hisab**: Math library (FFT, easing, RNG, compensated summation)
+- **naad**: Audio synthesis primitives (oscillators, filters, envelopes, noise generators, effects)
 
 ## Key Principles
 
