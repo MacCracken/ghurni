@@ -12,11 +12,16 @@
 //!       |
 //!       v
 //! Rotational Core ──────────────── Output
-//!   Engine:   combustion cycle, exhaust resonance
-//!   Gear:     tooth mesh frequency, metallic ring
-//!   Motor:    electromagnetic hum, commutator noise
-//!   Turbine:  blade pass frequency, whoosh
-//!   Clock:    escapement tick, spring resonance
+//!   Engine:      combustion cycle, exhaust/intake resonance, firing order
+//!   Gear:        tooth mesh frequency, metallic ring
+//!   Motor:       electromagnetic hum, commutator noise
+//!   Turbine:     blade pass frequency, whoosh
+//!   Clock:       escapement tick, spring resonance
+//!   Transmission: gear mesh, shift transients, synchro whine
+//!   Differential: hypoid gear whine, housing resonance
+//!   ForcedInduction: turbo spool, supercharger whine, blow-off valve
+//!   ChainDrive:  link engagement rattle
+//!   BeltDrive:   squeal, flap
 //! ```
 //!
 //! ## Key Concepts
@@ -25,6 +30,7 @@
 //! - **Machine**: A mechanical device with specific acoustic character
 //! - **Load**: Operating load (0.0-1.0) affects strain, noise, and harmonic content
 //! - **Material**: Body material affects resonance (steel, aluminum, cast iron)
+//! - **Synthesizer trait**: Common interface enabling mixers, effects chains, and generic composition
 //!
 //! ## Quick Start
 //!
@@ -52,26 +58,45 @@
 
 extern crate alloc;
 
+pub mod belt_drive;
+pub mod chain_drive;
 pub mod clock;
+pub mod differential;
+pub(crate) mod dsp;
 pub mod engine;
 pub mod error;
+pub mod event;
+pub mod forced_induction;
 pub mod gear;
 #[cfg(not(feature = "naad-backend"))]
 #[allow(dead_code)]
 mod math;
+pub mod mixer;
 pub mod motor;
+pub mod presets;
 #[cfg(not(feature = "naad-backend"))]
 #[allow(dead_code)]
 pub(crate) mod rng;
+pub mod smooth;
+pub mod traits;
+pub mod transmission;
 pub mod turbine;
 
 /// Convenience re-exports for common usage.
 pub mod prelude {
+    pub use crate::belt_drive::BeltDrive;
+    pub use crate::chain_drive::ChainDrive;
     pub use crate::clock::{Clock, ClockType};
+    pub use crate::differential::Differential;
     pub use crate::engine::{Engine, EngineType};
     pub use crate::error::{GhurniError, Result};
+    pub use crate::event::MechanicalEvent;
+    pub use crate::forced_induction::{ForcedInduction, InductionType};
     pub use crate::gear::{Gear, GearMaterial};
+    pub use crate::mixer::MechanicalMixer;
     pub use crate::motor::{Motor, MotorType};
+    pub use crate::traits::Synthesizer;
+    pub use crate::transmission::Transmission;
     pub use crate::turbine::Turbine;
 }
 
@@ -92,5 +117,13 @@ mod assert_traits {
         _assert_send_sync::<crate::turbine::Turbine>();
         _assert_send_sync::<crate::clock::Clock>();
         _assert_send_sync::<crate::clock::ClockType>();
+        _assert_send_sync::<crate::forced_induction::ForcedInduction>();
+        _assert_send_sync::<crate::forced_induction::InductionType>();
+        _assert_send_sync::<crate::transmission::Transmission>();
+        _assert_send_sync::<crate::differential::Differential>();
+        _assert_send_sync::<crate::chain_drive::ChainDrive>();
+        _assert_send_sync::<crate::belt_drive::BeltDrive>();
+        _assert_send_sync::<crate::event::MechanicalEvent>();
+        _assert_send_sync::<crate::smooth::SmoothedParam>();
     }
 }

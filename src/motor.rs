@@ -6,7 +6,11 @@
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{GhurniError, Result};
+use crate::dsp::{DcBlocker, validate_duration, validate_sample_rate};
+#[cfg(feature = "naad-backend")]
+use crate::error::GhurniError;
+use crate::error::Result;
+use crate::traits::Synthesizer;
 
 /// Electric motor type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -28,6 +32,10 @@ pub struct Motor {
     motor_type: MotorType,
     poles: u32,
     sample_rate: f32,
+    rpm: f32,
+    load: f32,
+    sample_position: usize,
+    dc_blocker: DcBlocker,
     #[cfg(feature = "naad-backend")]
     hum_synth: naad::synth::additive::AdditiveSynth,
     #[cfg(feature = "naad-backend")]
@@ -45,11 +53,7 @@ impl Motor {
     /// - `poles`: Number of magnetic poles (2-24).
     /// - `sample_rate`: Audio sample rate in Hz.
     pub fn new(motor_type: MotorType, poles: u32, sample_rate: f32) -> Result<Self> {
-        if sample_rate <= 0.0 {
-            return Err(GhurniError::InvalidParameter(
-                alloc::format!("sample_rate must be positive, got {sample_rate}"),
-            ));
-        }
+        validate_sample_rate(sample_rate)?;
         let poles = poles.clamp(2, 24);
 
         #[allow(unused_variables)]
@@ -60,16 +64,12 @@ impl Motor {
             MotorType::Servo => 3000.0,
         };
 
-        // Placeholder fundamental — updated per synthesize() based on RPM
         #[cfg(feature = "naad-backend")]
         let hum_synth = {
             let mut synth = naad::synth::additive::AdditiveSynth::new(100.0, 3, sample_rate)
                 .map_err(|e| GhurniError::SynthesisFailed(alloc::format!("{e}")))?;
-            // Fundamental at ratio 1.0, full amplitude
             synth.set_partial(0, 1.0, 1.0);
-            // 2nd harmonic at 0.3 amplitude
             synth.set_partial(1, 2.0, 0.3);
-            // 3rd harmonic at 0.1 amplitude
             synth.set_partial(2, 3.0, 0.1);
             synth
         };
@@ -78,6 +78,10 @@ impl Motor {
             motor_type,
             poles,
             sample_rate,
+            rpm: 0.0,
+            load: 0.0,
+            sample_position: 0,
+            dc_blocker: DcBlocker::new(sample_rate),
             #[cfg(feature = "naad-backend")]
             hum_synth,
             #[cfg(feature = "naad-backend")]
@@ -98,41 +102,58 @@ impl Motor {
         })
     }
 
-    /// Synthesizes motor sound at the given RPM.
+    /// Sets the motor RPM (clamped to 0-100000).
+    pub fn set_rpm(&mut self, rpm: f32) {
+        self.rpm = rpm.clamp(0.0, 100000.0);
+    }
+
+    /// Sets the motor load (clamped to 0.0-1.0).
+    pub fn set_load(&mut self, load: f32) {
+        self.load = load.clamp(0.0, 1.0);
+    }
+
+    /// Synthesizes motor sound (one-shot).
     ///
     /// - `rpm`: Motor speed.
-    /// - `load`: Load factor (0.0-1.0), affects strain noise.
+    /// - `load`: Load factor (0.0-1.0).
     /// - `duration`: Duration in seconds.
-    #[inline]
     pub fn synthesize(
         &mut self,
         rpm: f32,
         load: f32,
         duration: f32,
     ) -> Result<Vec<f32>> {
-        let rpm = rpm.clamp(0.0, 100000.0);
-        let load = load.clamp(0.0, 1.0);
+        validate_duration(duration)?;
+        self.set_rpm(rpm);
+        self.set_load(load);
         let num_samples = (self.sample_rate * duration) as usize;
         let mut output = alloc::vec![0.0f32; num_samples];
-
-        #[cfg(feature = "naad-backend")]
-        self.synthesize_naad(&mut output, rpm, load);
-
-        #[cfg(not(feature = "naad-backend"))]
-        self.synthesize_fallback(&mut output, rpm, load);
-
+        self.process_block(&mut output);
         Ok(output)
     }
 
-    #[cfg(feature = "naad-backend")]
-    fn synthesize_naad(&mut self, output: &mut [f32], rpm: f32, load: f32) {
-        let em_freq = (rpm / 60.0) * self.poles as f32;
-        let nyquist = self.sample_rate * 0.49;
+    /// Fills `output` with motor sound using current RPM and load.
+    #[inline]
+    pub fn process_block(&mut self, output: &mut [f32]) {
+        #[cfg(feature = "naad-backend")]
+        self.process_block_naad(output);
 
-        // Update additive synth fundamental to match current RPM
+        #[cfg(not(feature = "naad-backend"))]
+        self.process_block_fallback(output);
+
+        for sample in output.iter_mut() {
+            *sample = self.dc_blocker.process(*sample);
+        }
+        self.sample_position += output.len();
+    }
+
+    #[cfg(feature = "naad-backend")]
+    fn process_block_naad(&mut self, output: &mut [f32]) {
+        let em_freq = (self.rpm / 60.0) * self.poles as f32;
+        let nyquist = self.sample_rate * 0.49;
         let _ = self.hum_synth.set_fundamental(em_freq.min(nyquist / 3.0));
 
-        let amp = 0.15 + load * 0.2;
+        let amp = 0.15 + self.load * 0.2;
         let noise_level = match self.motor_type {
             MotorType::DcBrushed => 0.15,
             MotorType::AcInduction => 0.05,
@@ -141,23 +162,19 @@ impl Motor {
         };
 
         for sample in output.iter_mut() {
-            // Electromagnetic hum via additive synthesis
             let hum = self.hum_synth.next_sample() * amp;
-
-            // Commutator/bearing noise — filtered
             let raw_noise = self.noise_gen.next_sample() * noise_level * amp;
             let noise = self.noise_filter.process_sample(raw_noise);
-
             *sample = hum + noise;
         }
     }
 
     #[cfg(not(feature = "naad-backend"))]
-    fn synthesize_fallback(&mut self, output: &mut [f32], rpm: f32, load: f32) {
-        let em_freq = (rpm / 60.0) * self.poles as f32;
+    fn process_block_fallback(&mut self, output: &mut [f32]) {
+        let em_freq = (self.rpm / 60.0) * self.poles as f32;
         let em_omega = core::f32::consts::TAU * em_freq / self.sample_rate;
 
-        let amp = 0.15 + load * 0.2;
+        let amp = 0.15 + self.load * 0.2;
         let noise_level = match self.motor_type {
             MotorType::DcBrushed => 0.15,
             MotorType::AcInduction => 0.05,
@@ -166,14 +183,31 @@ impl Motor {
         };
 
         for (i, sample) in output.iter_mut().enumerate() {
-            let fundamental = crate::math::f32::sin(em_omega * i as f32);
-            let harmonic2 = crate::math::f32::sin(em_omega * 2.0 * i as f32) * 0.3;
-            let harmonic3 = crate::math::f32::sin(em_omega * 3.0 * i as f32) * 0.1;
+            let abs_pos = (self.sample_position + i) as f32;
+            let fundamental = crate::math::f32::sin(em_omega * abs_pos);
+            let harmonic2 = crate::math::f32::sin(em_omega * 2.0 * abs_pos) * 0.3;
+            let harmonic3 = crate::math::f32::sin(em_omega * 3.0 * abs_pos) * 0.1;
             let hum = (fundamental + harmonic2 + harmonic3) * amp;
-
             let noise = self.rng.next_f32() * noise_level * amp;
-
             *sample = hum + noise;
         }
+    }
+}
+
+impl Synthesizer for Motor {
+    fn process_block(&mut self, output: &mut [f32]) {
+        Motor::process_block(self, output);
+    }
+
+    fn set_rpm(&mut self, rpm: f32) {
+        Motor::set_rpm(self, rpm);
+    }
+
+    fn rpm(&self) -> f32 {
+        self.rpm
+    }
+
+    fn sample_rate(&self) -> f32 {
+        self.sample_rate
     }
 }
