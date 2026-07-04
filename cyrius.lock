@@ -1,3 +1,7 @@
+commit	6a7a33f193227b5a75755b7ae2873ab8b28b290d	naad	https://github.com/MacCracken/naad.git	2.1.0
+commit	0185805ee68c5961f39a2a7c3d6f316cb41f622e	hisab	https://github.com/MacCracken/hisab.git	2.6.7
+commit	95c3bd37c4b1dab5b35842ed8d39b552fed15e4c	goonj	https://github.com/MacCracken/goonj.git	2.0.0
+commit	9b28746811cf7fff3dffd44f0b6d21391b1528b9	sakshi	https://github.com/MacCracken/sakshi.git	2.4.3
 35bfc749a0c691763c8d04615eaa53cbf296562b97ad52dfa865aeb15699da79  lib/naad.cyr
 d9f3b17ddbbe1bba48917c3a679807b01c39c4a1ce776efdbdfbb7a1680e86e4  lib/tagged.cyr
 d7a14f337a9e8c67ac95023cddf58614a21d8aacd2eb1736da798843ccf0deba  lib/syscalls_macos.cyr
@@ -8,7 +12,7 @@ e7632c3e3b7584a976d595c15f9117df93069d65b40c90609222b0929da65172  lib/alloc_agno
 96d4903fd7c972a958986a54ca91c2228f781e6b80f7af06823d06952e31c1ff  lib/ganita.cyr
 eaeb24b8bfb35a1a7a002100c4894809ae05731a5f32bc96a141da4ae7aaa1e7  lib/alloc_macos.cyr
 27c9752b70e797b43d30204e5077749526144495ba7021b1272067f3236d81f9  lib/args_agnos.cyr
-85dabc86963894da5009090f3a6b3a8c74947cdcde09244508775fdcaf0067a3  lib/sakshi.cyr
+8d9395d808648f3112e268086ea2f31e6b2248977b5c3d5fe9ac411c3f3edfb0  lib/sakshi.cyr
 7b045871f231519e65f28a4b7abfbae6dd8e586ce03053fd367b3a119e8303c9  lib/atomic.cyr
 ff14f0d7999956754937f612c0aa60719c138f0967a81019cf99e08aae088087  lib/string.cyr
 31626715999cbbbf4cb785e033c4acbd2f69fc74c5590bbfd5fc15236510df85  lib/alloc.cyr
