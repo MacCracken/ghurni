@@ -1,0 +1,201 @@
+# transmission.cyr -- transmission / gearbox sound synthesis.
+# Ports rust-old/src/transmission.rs (Transmission synth; no enum). Models gear
+# mesh whine at the current ratio, synchronizer whine during shifts, and a light
+# broadband mechanical hiss. Follows engine.cyr (the reference synth) in shape.
+#
+# Requires (from the build/test unit): error.cyr (GH_ERR_*, ghurni_is_err),
+# logging.cyr, dsp.cyr (GhDcBlocker + validation + naad error map), smooth.cyr
+# (GhSmoothedParam) + the naad bundle (osc_*/noise_*/filter_biquad_*) + stdlib
+# alloc/vec/math. No `include` lines.
+#
+# PORT NOTES
+# - f32 -> f64 throughout. The Rust `naad-backend` (default) path is the ONE
+#   ported path; the `#[cfg(not(naad-backend))]` fallback (rng/math) is dropped
+#   (naad owns the randomness), matching engine.cyr.
+# - Audio buffers are stdlib vecs of f64. process_block fills a caller vec in
+#   place; synthesize allocates + returns one.
+# - naad constructors return a heap pointer on success or a negative ERR_* code
+#   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
+#   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`).
+#   noise_new never errors.
+# - The Rust process_block interleaved the naad synthesis directly in the sample
+#   loop (no separate _naad helper), so this port keeps it inline too.
+# - serde: Transmission held opaque naad backend pointers; deep #[derive(
+#   Serialize)] is dropped (only enums/plain-data types roundtrip in the tests).
+
+# ================================================================
+# GhTransmission. Accessor fields carry a mix of ints, f64 bit patterns, and
+# heap pointers (vecs / smoother / dc blocker / naad objects), all i64-wide.
+# NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
+# field roles are documented here instead:
+#   ratios(vec<f64> gear ratios, index 0 = 1st gear)
+#   output_teeth(int 8..64, teeth on the output gear -> mesh frequency)
+#   current_gear(int, 0-indexed) sample_rate(f64) rpm(f64)
+#   shift_remaining(int, samples of shift transient left)
+#   shift_duration_samples(int, = sr*0.2 -> 200ms) sample_position(int)
+#   mesh_rpm(ptr GhSmoothedParam) dc_blocker(ptr GhDcBlocker)
+#   mesh_osc(ptr naad Oscillator sine) noise_gen(ptr naad NoiseGenerator white)
+#   synchro_filter(ptr naad BiquadFilter band-pass 4000 Hz, q=3)
+# ================================================================
+#derive(accessors)
+struct GhTransmission {
+    ratios;
+    output_teeth;
+    current_gear;
+    sample_rate;
+    rpm;
+    shift_remaining;
+    shift_duration_samples;
+    sample_position;
+    mesh_rpm;
+    dc_blocker;
+    mesh_osc;
+    noise_gen;
+    synchro_filter;
+}
+
+# new(ratios, output_teeth, sample_rate) -> ptr or GH_ERR_*.
+# - ratios: vec<f64> of gear ratios (e.g. [3.5, 2.1, 1.4, 1.0, 0.8]).
+# - output_teeth: clamped to 8..64.
+# - sample_rate: audio sample rate in Hz.
+#must_use
+fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
+    var vsr = ghurni_validate_sample_rate(sample_rate);
+    if (ghurni_is_err(vsr) == 1) { return vsr; }
+
+    var teeth = output_teeth;
+    if (teeth < 8) { teeth = 8; }
+    if (teeth > 64) { teeth = 64; }
+
+    var shift_duration_samples = f64_to(f64_mul(sample_rate, 0.2));   # 200ms shift
+
+    # naad backend: sine mesh oscillator + white noise + synchro band-pass.
+    var mesh_osc = osc_new(WAVEFORM_SINE, f64_from(100), sample_rate);
+    if (ghurni_is_err(mesh_osc) == 1) { return ghurni_map_naad_error(mesh_osc); }
+    var noise = noise_new(NOISE_WHITE, teeth * 31);
+    var synchro_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_from(4000), f64_from(3));
+    if (ghurni_is_err(synchro_filter) == 1) { return ghurni_map_naad_error(synchro_filter); }
+
+    var self = alloc(sizeof(GhTransmission));
+    GhTransmission_set_ratios(self, ratios);
+    GhTransmission_set_output_teeth(self, teeth);
+    GhTransmission_set_current_gear(self, 0);
+    GhTransmission_set_sample_rate(self, sample_rate);
+    GhTransmission_set_rpm(self, 0);
+    GhTransmission_set_shift_remaining(self, 0);
+    GhTransmission_set_shift_duration_samples(self, shift_duration_samples);
+    GhTransmission_set_sample_position(self, 0);
+    GhTransmission_set_mesh_rpm(self, ghurni_smooth_new(0, 0.05, sample_rate));
+    GhTransmission_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
+    GhTransmission_set_mesh_osc(self, mesh_osc);
+    GhTransmission_set_noise_gen(self, noise);
+    GhTransmission_set_synchro_filter(self, synchro_filter);
+    return self;
+}
+
+# set_rpm(rpm) -- clamp to 0..15000 (ports the Synthesizer::set_rpm impl).
+fn ghurni_transmission_set_rpm(self, rpm) {
+    GhTransmission_set_rpm(self, f64_clamp(rpm, 0, f64_from(15000)));
+    return 0;
+}
+
+# shift_to(gear) -- shift to gear (0-indexed); triggers the shift transient if
+# the gear index is in range.
+fn ghurni_transmission_shift_to(self, gear) {
+    if (gear < vec_len(GhTransmission_ratios(self))) {
+        GhTransmission_set_current_gear(self, gear);
+        GhTransmission_set_shift_remaining(self, GhTransmission_shift_duration_samples(self));
+    }
+    return 0;
+}
+
+# current_ratio() -- the ratio for the current gear, or 1.0 if out of range.
+#must_use
+fn ghurni_transmission_current_ratio(self) {
+    var ratios = GhTransmission_ratios(self);
+    var gear = GhTransmission_current_gear(self);
+    if ((gear >= 0) && (gear < vec_len(ratios))) {
+        return vec_get(ratios, gear);
+    }
+    return F64_ONE;
+}
+
+# output_rpm() -- output shaft RPM = rpm / current_ratio.
+#must_use
+#inline
+fn ghurni_transmission_output_rpm(self) {
+    return f64_div(GhTransmission_rpm(self), ghurni_transmission_current_ratio(self));
+}
+
+# synthesize(rpm, duration) -> vec<f64> or GH_ERR_*.
+#must_use
+fn ghurni_transmission_synthesize(self, rpm, duration) {
+    var vd = ghurni_validate_duration(duration);
+    if (ghurni_is_err(vd) == 1) { return vd; }
+    ghurni_transmission_set_rpm(self, rpm);
+    var n = f64_to(f64_mul(GhTransmission_sample_rate(self), duration));
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    ghurni_transmission_process_block(self, out);
+    return out;
+}
+
+# process_block(out) -- fill `out` (vec<f64>) with transmission sound, then
+# DC-block the whole buffer. Ports the Rust process_block, which interleaves the
+# naad synthesis inline (no separate _naad helper). Advances sample_position per
+# sample inside the loop (matching the Rust naad-backend arm).
+fn ghurni_transmission_process_block(self, out) {
+    var out_rpm = ghurni_transmission_output_rpm(self);
+    var mesh_rpm = GhTransmission_mesh_rpm(self);
+    ghurni_smooth_set_target(mesh_rpm, out_rpm);
+    var nyquist = f64_mul(GhTransmission_sample_rate(self), 0.49);
+
+    var mesh_osc = GhTransmission_mesh_osc(self);
+    var noise = GhTransmission_noise_gen(self);
+    var synchro_filter = GhTransmission_synchro_filter(self);
+    var teeth = f64_from(GhTransmission_output_teeth(self));
+    var shift_dur = f64_from(GhTransmission_shift_duration_samples(self));
+
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        var smooth_rpm = ghurni_smooth_next_value(mesh_rpm);
+        var mesh_freq = f64_mul(f64_div(smooth_rpm, f64_from(60)), teeth);
+
+        osc_set_frequency(mesh_osc, f64_clamp(mesh_freq, F64_ONE, nyquist));
+        var mesh = f64_mul(osc_next_sample(mesh_osc), 0.15);
+
+        # synchro whine during a shift: decaying band-passed noise envelope
+        var synchro = 0;
+        var shift_remaining = GhTransmission_shift_remaining(self);
+        if (shift_remaining > 0) {
+            shift_remaining = shift_remaining - 1;
+            GhTransmission_set_shift_remaining(self, shift_remaining);
+            var env = f64_div(f64_from(shift_remaining), shift_dur);
+            var raw = f64_mul(f64_mul(noise_next_sample(noise), env), 0.3);
+            synchro = filter_biquad_process_sample(synchro_filter, raw);
+        }
+
+        var hiss = f64_mul(noise_next_sample(noise), 0.02);
+        vec_set(out, i, f64_add(mesh, f64_add(synchro, hiss)));
+
+        GhTransmission_set_sample_position(self, GhTransmission_sample_position(self) + 1);
+        i = i + 1;
+    }
+
+    # DC-block the whole buffer.
+    var db = GhTransmission_dc_blocker(self);
+    var j = 0;
+    while (j < n) {
+        vec_set(out, j, ghurni_dcblocker_process(db, vec_get(out, j)));
+        j = j + 1;
+    }
+    return 0;
+}
+
+# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+fn ghurni_transmission_rpm(self) { return GhTransmission_rpm(self); }
+#must_use
+fn ghurni_transmission_sample_rate(self) { return GhTransmission_sample_rate(self); }

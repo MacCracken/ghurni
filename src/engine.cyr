@@ -1,0 +1,378 @@
+# engine.cyr -- internal combustion engine synthesis.
+# Ports rust-old/src/engine.rs (EngineType enum + Engine synth). Models engines
+# as periodic combustion impulses at RPM-dependent rates, shaped by exhaust /
+# intake resonance and firing order, with misfire / knock / decel-pop / backfire
+# events. This module is the REFERENCE synth -- the other nine follow its shape.
+#
+# Requires (from the build/test unit): error.cyr (GH_ERR_*, GHURNI_DB_SCALE,
+# ghurni_is_err, ghurni_fmod), logging.cyr, dsp.cyr (GhDcBlocker + validation +
+# naad error map), smooth.cyr (GhSmoothedParam), event.cyr (GhEvent + GH_EVENT_*)
+# + the naad bundle (noise_*/filter_biquad_*/db_to_amplitude) + stdlib
+# alloc/vec/math. No `include` lines.
+#
+# PORT NOTES
+# - f32 -> f64 throughout. The Rust `naad-backend` (default) path is the ONE
+#   ported path; the `#[cfg(not(naad-backend))]` fallback (rng/math) is dropped
+#   (naad owns the randomness), matching how prani/naad were ported.
+# - Audio buffers are stdlib vecs of f64. process_block fills a caller vec in
+#   place; synthesize allocates + returns one.
+# - naad constructors return a heap pointer on success or a negative ERR_* code
+#   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
+#   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`).
+# - serde: Engine held opaque naad backend pointers; deep #[derive(Serialize)]
+#   is dropped (the integration tests only roundtrip EngineType + GhurniError,
+#   which ARE supported -- see ghurni_enginetype_name/_from_name below).
+
+# ================================================================
+# EngineType (was `enum EngineType`). One per Rust variant, in order.
+# ================================================================
+var GH_ENGINE_GASOLINE   = 0;   # 4-stroke gasoline
+var GH_ENGINE_DIESEL     = 1;   # 4-stroke diesel
+var GH_ENGINE_TWO_STROKE = 2;   # 2-stroke (fires every revolution)
+var GH_ENGINE_HYBRID     = 3;   # electric-with-whine
+
+# Externally-tagged serde variant name (parity with serde_json).
+#must_use
+fn ghurni_enginetype_name(t) {
+    if (t == GH_ENGINE_GASOLINE)   { return "Gasoline"; }
+    if (t == GH_ENGINE_DIESEL)     { return "Diesel"; }
+    if (t == GH_ENGINE_TWO_STROKE) { return "TwoStroke"; }
+    if (t == GH_ENGINE_HYBRID)     { return "Hybrid"; }
+    return "Unknown";
+}
+#must_use
+fn ghurni_enginetype_from_name(s) {
+    if (streq(s, "Gasoline") == 1)  { return GH_ENGINE_GASOLINE; }
+    if (streq(s, "Diesel") == 1)    { return GH_ENGINE_DIESEL; }
+    if (streq(s, "TwoStroke") == 1) { return GH_ENGINE_TWO_STROKE; }
+    if (streq(s, "Hybrid") == 1)    { return GH_ENGINE_HYBRID; }
+    return (0 - 1);
+}
+
+# ================================================================
+# GhEngine. Accessor fields carry a mix of ints, f64 bit patterns, and heap
+# pointers (vecs / smoothers / dc blocker / naad objects), all i64-wide.
+# NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
+# field roles are documented here instead:
+#   engine_type(int) cylinders(int 1..16) exhaust_resonance(f64 Hz)
+#   intake_resonance(f64 Hz) sample_rate(f64) rpm(f64) load(f64) prev_load(f64)
+#   sample_position(int) firing_offsets(vec<f64> deg) misfire_flags(vec<int 0/1>)
+#   knock_remaining(vec<int samples>) decel_pop_remaining(int)
+#   backfire_remaining(int) smooth_rpm/smooth_load(ptr GhSmoothedParam)
+#   dc_blocker(ptr GhDcBlocker) noise_gen(ptr naad NoiseGenerator)
+#   exhaust_filter/intake_filter(ptr naad BiquadFilter)
+# ================================================================
+#derive(accessors)
+struct GhEngine {
+    engine_type;
+    cylinders;
+    exhaust_resonance;
+    intake_resonance;
+    sample_rate;
+    rpm;
+    load;
+    prev_load;
+    sample_position;
+    firing_offsets;
+    misfire_flags;
+    knock_remaining;
+    decel_pop_remaining;
+    backfire_remaining;
+    smooth_rpm;
+    smooth_load;
+    dc_blocker;
+    noise_gen;
+    exhaust_filter;
+    intake_filter;
+}
+
+# Even firing offsets (deg) for `cyl` cylinders. 4-stroke = 720deg cycle,
+# 2-stroke = 360deg. offsets[i] = i * (cycle/cyl).
+#must_use
+fn ghurni_engine_compute_even_firing(engine_type, cyl) {
+    var cycle = f64_from(720);
+    if (engine_type == GH_ENGINE_TWO_STROKE) { cycle = f64_from(360); }
+    var spacing = f64_div(cycle, f64_from(cyl));
+    var v = vec_new();
+    var i = 0;
+    while (i < cyl) {
+        vec_push(v, f64_mul(f64_from(i), spacing));
+        i = i + 1;
+    }
+    return v;
+}
+
+# new(engine_type, cylinders, sample_rate) -> ptr or GH_ERR_*.
+#must_use
+fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
+    var vsr = ghurni_validate_sample_rate(sample_rate);
+    if (ghurni_is_err(vsr) == 1) { return vsr; }
+
+    var cyl = cylinders;
+    if (cyl < 1) { cyl = 1; }
+    if (cyl > 16) { cyl = 16; }
+    var cylf = f64_from(cyl);
+
+    var exhaust = f64_from(300);   # Hybrid default
+    if (engine_type == GH_ENGINE_GASOLINE)   { exhaust = f64_add(f64_from(150), f64_mul(cylf, f64_from(20))); }
+    elif (engine_type == GH_ENGINE_DIESEL)   { exhaust = f64_add(f64_from(80),  f64_mul(cylf, f64_from(15))); }
+    elif (engine_type == GH_ENGINE_TWO_STROKE) { exhaust = f64_add(f64_from(200), f64_mul(cylf, f64_from(30))); }
+
+    var intake = f64_from(600);    # Hybrid default
+    if (engine_type == GH_ENGINE_GASOLINE)   { intake = f64_add(f64_from(400), f64_mul(cylf, f64_from(30))); }
+    elif (engine_type == GH_ENGINE_DIESEL)   { intake = f64_add(f64_from(250), f64_mul(cylf, f64_from(20))); }
+    elif (engine_type == GH_ENGINE_TWO_STROKE) { intake = f64_add(f64_from(500), f64_mul(cylf, f64_from(40))); }
+
+    var nyq = f64_mul(sample_rate, 0.49);
+
+    # naad backend: white noise + exhaust/intake band-pass filters.
+    var noise = noise_new(NOISE_WHITE, engine_type * 1000 + cyl);
+    var exhaust_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, exhaust, 1.5);
+    if (ghurni_is_err(exhaust_filter) == 1) { return ghurni_map_naad_error(exhaust_filter); }
+    var intake_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_min(intake, nyq), 2.0);
+    if (ghurni_is_err(intake_filter) == 1) { return ghurni_map_naad_error(intake_filter); }
+
+    var self = alloc(sizeof(GhEngine));
+    GhEngine_set_engine_type(self, engine_type);
+    GhEngine_set_cylinders(self, cyl);
+    GhEngine_set_exhaust_resonance(self, exhaust);
+    GhEngine_set_intake_resonance(self, intake);
+    GhEngine_set_sample_rate(self, sample_rate);
+    GhEngine_set_rpm(self, f64_from(800));
+    GhEngine_set_load(self, 0);
+    GhEngine_set_prev_load(self, 0);
+    GhEngine_set_sample_position(self, 0);
+    GhEngine_set_firing_offsets(self, ghurni_engine_compute_even_firing(engine_type, cyl));
+
+    var misfire = vec_new();
+    var knock = vec_new();
+    var i = 0;
+    while (i < cyl) { vec_push(misfire, 0); vec_push(knock, 0); i = i + 1; }
+    GhEngine_set_misfire_flags(self, misfire);
+    GhEngine_set_knock_remaining(self, knock);
+
+    GhEngine_set_decel_pop_remaining(self, 0);
+    GhEngine_set_backfire_remaining(self, 0);
+    GhEngine_set_smooth_rpm(self, ghurni_smooth_new(f64_from(800), 0.05, sample_rate));
+    GhEngine_set_smooth_load(self, ghurni_smooth_new(0, 0.02, sample_rate));
+    GhEngine_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
+    GhEngine_set_noise_gen(self, noise);
+    GhEngine_set_exhaust_filter(self, exhaust_filter);
+    GhEngine_set_intake_filter(self, intake_filter);
+    return self;
+}
+
+# set_rpm(rpm) -- clamp to 100..15000, retarget the smoother.
+fn ghurni_engine_set_rpm(self, rpm) {
+    var r = f64_clamp(rpm, f64_from(100), f64_from(15000));
+    GhEngine_set_rpm(self, r);
+    ghurni_smooth_set_target(GhEngine_smooth_rpm(self), r);
+    return 0;
+}
+
+# set_load(load) -- clamp to 0..1, retarget the smoother, detect decel pop.
+fn ghurni_engine_set_load(self, load) {
+    GhEngine_set_prev_load(self, GhEngine_load(self));
+    var l = f64_clamp(load, 0, F64_ONE);
+    GhEngine_set_load(self, l);
+    ghurni_smooth_set_target(GhEngine_smooth_load(self), l);
+    if ((f64_gt(GhEngine_prev_load(self), 0.5) == 1) && (f64_lt(l, 0.15) == 1) && (f64_gt(GhEngine_rpm(self), f64_from(3000)) == 1)) {
+        GhEngine_set_decel_pop_remaining(self, f64_to(f64_mul(GhEngine_sample_rate(self), 0.3)));
+    }
+    return 0;
+}
+
+# set_firing_order(offsets) -- replace the firing order if the length matches.
+fn ghurni_engine_set_firing_order(self, offsets) {
+    if (vec_len(offsets) == GhEngine_cylinders(self)) {
+        GhEngine_set_firing_offsets(self, offsets);
+    }
+    return 0;
+}
+
+# trigger_event(event) -- schedule a mechanical event (GhEvent from event.cyr).
+fn ghurni_engine_trigger_event(self, event) {
+    var kind = GhEvent_kind(event);
+    if (kind == GH_EVENT_BACKFIRE) {
+        GhEngine_set_backfire_remaining(self, f64_to(f64_mul(GhEngine_sample_rate(self), 0.1)));
+    } elif (kind == GH_EVENT_MISFIRE) {
+        var cyl = GhEvent_arg0(event);
+        var flags = GhEngine_misfire_flags(self);
+        if ((cyl >= 0) && (cyl < vec_len(flags))) { vec_set(flags, cyl, 1); }
+    } elif (kind == GH_EVENT_KNOCK) {
+        var cyl2 = GhEvent_arg0(event);
+        var kr = GhEngine_knock_remaining(self);
+        if ((cyl2 >= 0) && (cyl2 < vec_len(kr))) {
+            vec_set(kr, cyl2, f64_to(f64_mul(GhEngine_sample_rate(self), 0.02)));
+        }
+    }
+    return 0;
+}
+
+# firing_frequency(rpm). 4-stroke: revs/sec * cyl / 2. 2-stroke: revs/sec * cyl.
+#must_use
+fn ghurni_engine_firing_frequency(self, rpm) {
+    var revs = f64_div(rpm, f64_from(60));
+    var cylf = f64_from(GhEngine_cylinders(self));
+    if (GhEngine_engine_type(self) == GH_ENGINE_TWO_STROKE) {
+        return f64_mul(revs, cylf);
+    }
+    return f64_div(f64_mul(revs, cylf), f64_from(2));
+}
+
+# roughness_for_load(load). base by type, scaled 0.7 + 0.3*load.
+#inline
+fn ghurni_engine_roughness_for_load(self, load) {
+    var et = GhEngine_engine_type(self);
+    var base = 0.05;   # Hybrid
+    if (et == GH_ENGINE_DIESEL)        { base = 0.4; }
+    elif (et == GH_ENGINE_TWO_STROKE)  { base = 0.3; }
+    elif (et == GH_ENGINE_GASOLINE)    { base = 0.15; }
+    return f64_mul(base, f64_add(0.7, f64_mul(0.3, load)));
+}
+
+# synthesize(rpm, load, duration) -> vec<f64> or GH_ERR_*.
+#must_use
+fn ghurni_engine_synthesize(self, rpm, load, duration) {
+    var vd = ghurni_validate_duration(duration);
+    if (ghurni_is_err(vd) == 1) { return vd; }
+    ghurni_engine_set_rpm(self, rpm);
+    ghurni_engine_set_load(self, load);
+    var n = f64_to(f64_mul(GhEngine_sample_rate(self), duration));
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    ghurni_engine_process_block(self, out);
+    return out;
+}
+
+# process_block(out) -- fill `out` (vec<f64>) with engine sound, DC-block, and
+# advance the sample counter.
+fn ghurni_engine_process_block(self, out) {
+    ghurni_engine_process_block_naad(self, out);
+    var db = GhEngine_dc_blocker(self);
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
+        i = i + 1;
+    }
+    GhEngine_set_sample_position(self, GhEngine_sample_position(self) + n);
+    return 0;
+}
+
+# The naad synthesis core (ports process_block_naad).
+fn ghurni_engine_process_block_naad(self, out) {
+    var exhaust_filter = GhEngine_exhaust_filter(self);
+    filter_biquad_set_params(exhaust_filter, GhEngine_exhaust_resonance(self), 1.5, 0);
+
+    var cycle = f64_from(720);
+    if (GhEngine_engine_type(self) == GH_ENGINE_TWO_STROKE) { cycle = f64_from(360); }
+
+    var sr = GhEngine_sample_rate(self);
+    var noise = GhEngine_noise_gen(self);
+    var intake_filter = GhEngine_intake_filter(self);
+    var smooth_rpm = GhEngine_smooth_rpm(self);
+    var smooth_load = GhEngine_smooth_load(self);
+    var firing = GhEngine_firing_offsets(self);
+    var misfire = GhEngine_misfire_flags(self);
+    var knock = GhEngine_knock_remaining(self);
+    var base_pos = GhEngine_sample_position(self);
+    var num_cyl = vec_len(firing);
+
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        var rpm = ghurni_smooth_next_value(smooth_rpm);
+        var load = ghurni_smooth_next_value(smooth_load);
+        var abs_pos = f64_from(base_pos + i);
+
+        var roughness = ghurni_engine_roughness_for_load(self, load);
+        var base_amp = f64_add(0.2, f64_mul(load, 0.5));
+
+        var revs_per_sample = f64_div(rpm, f64_mul(f64_from(60), sr));
+        var crank_deg = ghurni_fmod(f64_mul(f64_mul(abs_pos, revs_per_sample), f64_from(360)), cycle);
+
+        # sum combustion impulses from each cylinder
+        var combustion_sum = 0;
+        var c = 0;
+        while (c < num_cyl) {
+            var offset = vec_get(firing, c);
+            var cyl_phase = ghurni_fmod(f64_sub(crank_deg, offset), cycle);
+            var cyl_norm = f64_div(cyl_phase, cycle);
+
+            var skip = 0;
+            if ((vec_get(misfire, c) == 1) && (f64_lt(cyl_norm, 0.01) == 1)) {
+                vec_set(misfire, c, 0);
+                skip = 1;
+            }
+            if (skip == 0) {
+                if (f64_lt(cyl_norm, 0.08) == 1) {
+                    var t = f64_div(cyl_norm, 0.08);
+                    var pulse = db_to_amplitude(f64_mul(f64_neg(f64_mul(f64_from(8), t)), GHURNI_DB_SCALE));
+                    var ns = noise_next_sample(noise);
+                    combustion_sum = f64_add(combustion_sum, f64_mul(f64_mul(pulse, base_amp), f64_add(F64_ONE, f64_mul(roughness, ns))));
+                }
+            }
+            c = c + 1;
+        }
+
+        # knock: high-frequency metallic ping, per cylinder
+        var knock_sum = 0;
+        var k = 0;
+        while (k < num_cyl) {
+            var rem = vec_get(knock, k);
+            if (rem > 0) {
+                rem = rem - 1;
+                vec_set(knock, k, rem);
+                var env = f64_div(f64_from(rem), f64_mul(sr, 0.02));
+                knock_sum = f64_add(knock_sum, f64_mul(f64_mul(noise_next_sample(noise), env), 0.2));
+            }
+            k = k + 1;
+        }
+
+        # exhaust resonance
+        var exhaust_noise = f64_mul(f64_mul(noise_next_sample(noise), base_amp), 0.3);
+        var exhaust = f64_mul(filter_biquad_process_sample(exhaust_filter, exhaust_noise), f64_add(0.5, f64_mul(load, 0.5)));
+
+        # intake resonance (louder at higher load)
+        var intake_noise = f64_mul(f64_mul(f64_mul(noise_next_sample(noise), base_amp), 0.2), load);
+        var intake = filter_biquad_process_sample(intake_filter, intake_noise);
+
+        # decel crackle/pop -- sparse impulses
+        var decel = 0;
+        var dpr = GhEngine_decel_pop_remaining(self);
+        if (dpr > 0) {
+            dpr = dpr - 1;
+            GhEngine_set_decel_pop_remaining(self, dpr);
+            var denv = f64_div(f64_from(dpr), f64_mul(sr, 0.3));
+            if (f64_gt(noise_next_sample(noise), 0.95) == 1) {
+                decel = f64_mul(f64_mul(noise_next_sample(noise), denv), 0.4);
+            }
+        }
+
+        # backfire
+        var backfire = 0;
+        var bpr = GhEngine_backfire_remaining(self);
+        if (bpr > 0) {
+            bpr = bpr - 1;
+            GhEngine_set_backfire_remaining(self, bpr);
+            var benv = f64_div(f64_from(bpr), f64_mul(sr, 0.1));
+            backfire = f64_mul(f64_mul(noise_next_sample(noise), benv), 0.8);
+        }
+
+        # mechanical noise
+        var mech = f64_mul(f64_mul(f64_mul(noise_next_sample(noise), roughness), base_amp), 0.1);
+
+        var s = f64_add(combustion_sum, f64_add(exhaust, f64_add(intake, f64_add(mech, f64_add(knock_sum, f64_add(decel, backfire))))));
+        vec_set(out, i, s);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+fn ghurni_engine_rpm(self) { return GhEngine_rpm(self); }
+#must_use
+fn ghurni_engine_sample_rate(self) { return GhEngine_sample_rate(self); }

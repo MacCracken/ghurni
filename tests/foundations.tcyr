@@ -1,0 +1,89 @@
+# foundations.tcyr -- tests for the L0 layer (error, logging, dsp, smooth,
+# event, traits). Behavioural parity with rust-old (which had no #[test] blocks
+# in these modules): DC blocker passes the first sample then rings down; the
+# smoother converges and snaps; validation rejects non-positive/non-finite;
+# events + their serde roundtrip.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+
+alloc_init();
+
+# ================================================================
+test_group("error codes + base helpers");
+assert_eq(ghurni_is_err(GH_ERR_NONE), 0, "NONE is not an error");
+assert_eq(ghurni_is_err(GH_ERR_INVALID_PARAMETER), 1, "INVALID_PARAMETER is an error");
+assert_eq(ghurni_is_err(GH_ERR_SYNTHESIS_FAILED), 1, "SYNTHESIS_FAILED is an error");
+assert_eq(ghurni_is_finite(F64_ONE), 1, "1.0 is finite");
+assert_eq(ghurni_is_finite(GHURNI_POS_INF), 0, "+inf is not finite");
+assert_eq(ghurni_is_finite(GHURNI_NEG_INF), 0, "-inf is not finite");
+assert_eq(ghurni_fmod(f64_from(370), f64_from(360)), f64_from(10), "370 mod 360 = 10");
+assert_eq(streq(ghurni_err_name(GH_ERR_SYNTHESIS_FAILED), "synthesis failed"), 1, "err name");
+
+# ================================================================
+test_group("validation (ports validate_sample_rate / validate_duration)");
+assert_eq(ghurni_validate_sample_rate(f64_from(44100)), GH_ERR_NONE, "44100 Hz ok");
+assert_eq(ghurni_validate_sample_rate(0), GH_ERR_INVALID_PARAMETER, "0 Hz rejected");
+assert_eq(ghurni_validate_sample_rate(GHURNI_POS_INF), GH_ERR_INVALID_PARAMETER, "inf Hz rejected");
+assert_eq(ghurni_validate_duration(F64_ONE), GH_ERR_NONE, "1 s ok");
+assert_eq(ghurni_validate_duration(f64_neg(F64_ONE)), GH_ERR_INVALID_PARAMETER, "-1 s rejected");
+
+# ================================================================
+test_group("GhDcBlocker (first-sample pass + DC decay)");
+var b = ghurni_dcblocker_new(f64_from(44100));
+assert_eq(ghurni_dcblocker_process(b, F64_ONE), F64_ONE, "y0 == 1.0 (first sample passes)");
+# r ~ 0.9986 here (= clamp(1 - TAU*10/44100, ...)), so DC decays slower than a
+# fixed-0.995 pole; 20000 samples drives it well below 1e-3.
+var i = 0;
+var last = F64_ONE;
+while (i < 20000) {
+    last = ghurni_dcblocker_process(b, F64_ONE);
+    i = i + 1;
+}
+assert_eq(f64_lt(f64_abs(last), 0.001), 1, "sustained DC driven below 1e-3");
+ghurni_dcblocker_reset(b);
+assert_eq(ghurni_dcblocker_process(b, F64_ONE), F64_ONE, "post-reset y0 == 1.0");
+
+# serde roundtrip (ports #[derive(Serialize, Deserialize)] on DcBlocker)
+var sb0 = str_builder_new();
+GhDcBlocker_to_json(b, sb0);
+var js0 = str_data(str_builder_build(sb0));
+var b2 = GhDcBlocker_from_json_str(js0);
+assert_eq(GhDcBlocker_r(b2), GhDcBlocker_r(b), "DcBlocker.r roundtrips");
+
+# ================================================================
+test_group("GhSmoothedParam (convergence + snap)");
+var p = ghurni_smooth_new(0, 0.01, f64_from(44100));
+ghurni_smooth_set_target(p, F64_ONE);
+var j = 0;
+while (j < 44100) {
+    ghurni_smooth_next_value(p);
+    j = j + 1;
+}
+assert_eq(f64_lt(f64_abs(f64_sub(ghurni_smooth_current(p), F64_ONE)), 0.001), 1, "approaches target 1.0");
+var q = ghurni_smooth_new(0, F64_ONE, f64_from(44100));
+ghurni_smooth_set_target(q, f64_from(5));
+ghurni_smooth_snap(q);
+assert_eq(ghurni_smooth_current(q), f64_from(5), "snap jumps to 5.0");
+
+# ================================================================
+test_group("MechanicalEvent + serde (GearShift{from:2,to:3})");
+var e = ghurni_event_gear_shift(2, 3);
+assert_eq(GhEvent_kind(e), GH_EVENT_GEAR_SHIFT, "kind == GearShift");
+assert_eq(GhEvent_arg0(e), 2, "from == 2");
+assert_eq(GhEvent_arg1(e), 3, "to == 3");
+assert_eq(streq(ghurni_event_name(GH_EVENT_GEAR_SHIFT), "GearShift"), 1, "variant name");
+var sb = str_builder_new();
+GhEvent_to_json(e, sb);
+var jstr = str_data(str_builder_build(sb));
+var e2 = GhEvent_from_json_str(jstr);
+assert_eq(GhEvent_kind(e2), GhEvent_kind(e), "event kind roundtrips");
+assert_eq(GhEvent_arg0(e2), GhEvent_arg0(e), "event arg0 roundtrips");
+assert_eq(GhEvent_arg1(e2), GhEvent_arg1(e), "event arg1 roundtrips");
+
+var rc = assert_summary();
+syscall(60, rc);

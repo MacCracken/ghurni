@@ -1,0 +1,100 @@
+# presets.cyr -- shipped presets for common mechanical configurations.
+# Ports rust-old/src/presets.rs. Each preset builds a fully configured synth
+# with realistic parameters; all take a sample_rate. Returns a synth pointer or
+# a negative GH_ERR_* code (propagated from the underlying constructor).
+#
+# Requires (from the build/test unit): the engine / motor / turbine /
+# transmission / gear / forced_induction synth modules + their enum constants,
+# stdlib alloc/vec. No `include` lines.
+
+# V8 muscle car -- cross-plane firing order, deep exhaust.
+#must_use
+fn ghurni_preset_v8_muscle_car(sample_rate) {
+    var engine = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, sample_rate);
+    if (ghurni_is_err(engine) == 1) { return engine; }
+    var order = vec_new();
+    vec_push(order, f64_from(0));   vec_push(order, f64_from(90));
+    vec_push(order, f64_from(270)); vec_push(order, f64_from(180));
+    vec_push(order, f64_from(540)); vec_push(order, f64_from(630));
+    vec_push(order, f64_from(450)); vec_push(order, f64_from(360));
+    ghurni_engine_set_firing_order(engine, order);
+    ghurni_engine_set_rpm(engine, f64_from(800));
+    ghurni_engine_set_load(engine, 0.1);
+    return engine;
+}
+
+# Inline-4 economy car -- even firing, smooth tone.
+#must_use
+fn ghurni_preset_inline4_economy(sample_rate) {
+    return ghurni_engine_new(GH_ENGINE_GASOLINE, 4, sample_rate);
+}
+
+# Diesel truck engine -- 6 cylinder, rough, low RPM.
+#must_use
+fn ghurni_preset_diesel_truck(sample_rate) {
+    var engine = ghurni_engine_new(GH_ENGINE_DIESEL, 6, sample_rate);
+    if (ghurni_is_err(engine) == 1) { return engine; }
+    ghurni_engine_set_rpm(engine, f64_from(700));
+    ghurni_engine_set_load(engine, 0.2);
+    return engine;
+}
+
+# Single-cylinder motorcycle (2-stroke).
+#must_use
+fn ghurni_preset_motorcycle_single(sample_rate) {
+    return ghurni_engine_new(GH_ENGINE_TWO_STROKE, 1, sample_rate);
+}
+
+# Electric vehicle motor -- brushless, smooth, high-RPM capable.
+#must_use
+fn ghurni_preset_electric_vehicle(sample_rate) {
+    return ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, sample_rate);
+}
+
+# Turbocharger with moderate spool lag.
+#must_use
+fn ghurni_preset_turbocharger(sample_rate) {
+    return ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.5, F64_ONE, sample_rate);
+}
+
+# Supercharger -- belt-driven, instant response.
+#must_use
+fn ghurni_preset_supercharger(sample_rate) {
+    return ghurni_forced_induction_new(GH_INDUCTION_SUPERCHARGER, 1.5, 0.01, sample_rate);
+}
+
+# 5-speed manual transmission.
+#must_use
+fn ghurni_preset_manual_5speed(sample_rate) {
+    var ratios = vec_new();
+    vec_push(ratios, 3.5); vec_push(ratios, 2.1); vec_push(ratios, 1.4);
+    vec_push(ratios, F64_ONE); vec_push(ratios, 0.8);
+    return ghurni_transmission_new(ratios, 24, sample_rate);
+}
+
+# 6-speed manual transmission (close-ratio).
+#must_use
+fn ghurni_preset_manual_6speed(sample_rate) {
+    var ratios = vec_new();
+    vec_push(ratios, 3.8); vec_push(ratios, 2.3); vec_push(ratios, 1.6);
+    vec_push(ratios, 1.2); vec_push(ratios, 0.95); vec_push(ratios, 0.78);
+    return ghurni_transmission_new(ratios, 28, sample_rate);
+}
+
+# Steel spur gear -- bright metallic mesh.
+#must_use
+fn ghurni_preset_steel_spur_gear(teeth, sample_rate) {
+    return ghurni_gear_new(teeth, GH_GEAR_STEEL, sample_rate);
+}
+
+# Industrial turbine -- 24-blade ducted.
+#must_use
+fn ghurni_preset_industrial_turbine(sample_rate) {
+    return ghurni_turbine_new(24, f64_from(600), sample_rate);
+}
+
+# Propeller -- 3-blade open (no duct).
+#must_use
+fn ghurni_preset_propeller(sample_rate) {
+    return ghurni_turbine_new(3, 0, sample_rate);
+}

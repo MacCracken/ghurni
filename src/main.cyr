@@ -1,0 +1,63 @@
+# ghurni — Cyrius port smoke entry.
+#
+# Builds the whole library (the dist bundle + its naad/transitive deps) into one
+# binary and runs a tiny cross-layer smoke, proving `dist/ghurni.cyr` compiles
+# and links as an executable. Consumers include `dist/ghurni.cyr` the same way.
+# Library modules live in src/*.cyr (validated per-module via tests/*.tcyr);
+# this entry is not what those suites include.
+
+include "lib/sakshi.cyr"
+include "lib/hisab.cyr"
+include "lib/goonj.cyr"
+include "lib/naad.cyr"
+include "dist/ghurni.cyr"
+
+fn main() {
+    alloc_init();
+
+    # A gasoline 4-cylinder engine → a short clip (0.05 s @ 44.1 kHz); every
+    # sample must be finite.
+    var eng = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, f64_from(44100));
+    if (ghurni_is_err(eng) == 1) {
+        println("ghurni: engine init failed");
+        return 1;
+    }
+    var samples = ghurni_engine_synthesize(eng, f64_from(3000), 0.5, 0.05);
+    if (ghurni_is_err(samples) == 1) {
+        println("ghurni: synthesize failed");
+        return 1;
+    }
+    var n = vec_len(samples);
+    var i = 0;
+    var ok = 0;
+    while (i < n) {
+        if (ghurni_is_finite(vec_get(samples, i)) == 1) { ok = ok + 1; }
+        i = i + 1;
+    }
+
+    # A two-synth mixer must also produce finite audio.
+    var mix = ghurni_mixer_new();
+    ghurni_mixer_add_channel(mix, "engine", GH_KIND_ENGINE, ghurni_engine_new(GH_ENGINE_DIESEL, 6, f64_from(44100)));
+    ghurni_mixer_add_channel(mix, "gear", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, f64_from(44100)));
+    ghurni_mixer_set_rpm(mix, f64_from(2500));
+    var mono = vec_new();
+    var mi = 0;
+    while (mi < 2205) { vec_push(mono, 0); mi = mi + 1; }
+    ghurni_mixer_process_block(mix, mono);
+    var mok = 0;
+    var mj = 0;
+    while (mj < vec_len(mono)) {
+        if (ghurni_is_finite(vec_get(mono, mj)) == 1) { mok = mok + 1; }
+        mj = mj + 1;
+    }
+
+    if ((n > 0) && (ok == n) && (mok == vec_len(mono))) {
+        println("ghurni (Cyrius port) — smoke OK");
+        return 0;
+    }
+    println("ghurni: smoke FAILED");
+    return 1;
+}
+
+var r = main();
+syscall(60, r);

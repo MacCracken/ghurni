@@ -1,0 +1,163 @@
+# mixer.tcyr -- ports the mixer, trait-dispatch, preset, and process-block
+# continuity integration tests (test_mixer_mono, test_mixer_stereo,
+# test_mixer_mute, test_synthesizer_trait_dispatch, test_process_block_continuity,
+# test_preset_*).
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+fn audio_all_finite(v) {
+    var n = vec_len(v);
+    if (n == 0) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (ghurni_is_finite(vec_get(v, i)) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+fn audio_has_energy(v) {
+    if (audio_all_finite(v) == 0) { return 0; }
+    var n = vec_len(v);
+    var i = 0;
+    while (i < n) {
+        if (f64_gt(f64_abs(vec_get(v, i)), 0.001) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+fn audio_all_zero(v) {
+    var n = vec_len(v);
+    var i = 0;
+    while (i < n) {
+        if (vec_get(v, i) != 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+fn audio_energy(v) {
+    var n = vec_len(v);
+    var sum = 0;
+    var i = 0;
+    while (i < n) {
+        var s = vec_get(v, i);
+        sum = f64_add(sum, f64_mul(s, s));
+        i = i + 1;
+    }
+    return sum;
+}
+fn zeros(len) {
+    var v = vec_new();
+    var i = 0;
+    while (i < len) { vec_push(v, 0); i = i + 1; }
+    return v;
+}
+
+alloc_init();
+var SR = f64_from(44100);
+
+# ================================================================
+test_group("mixer mono (engine + gear) has energy");
+var mix = ghurni_mixer_new();
+ghurni_mixer_add_channel(mix, "engine", GH_KIND_ENGINE, ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR));
+ghurni_mixer_add_channel(mix, "gear", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+assert_eq(ghurni_mixer_channel_count(mix), 2, "2 channels");
+ghurni_mixer_set_rpm(mix, f64_from(3000));
+var mono = zeros(44100);
+ghurni_mixer_process_block(mix, mono);
+assert_eq(audio_has_energy(mono), 1, "mixer mono energy");
+
+# ================================================================
+test_group("mixer stereo (pan left)");
+var mix2 = ghurni_mixer_new();
+var idx = ghurni_mixer_add_channel(mix2, "engine", GH_KIND_ENGINE, ghurni_engine_new(GH_ENGINE_DIESEL, 6, SR));
+ghurni_mixer_set_channel_pan(mix2, idx, f64_neg(0.5));
+ghurni_mixer_set_rpm(mix2, f64_from(2000));
+var left = zeros(4410);
+var right = zeros(4410);
+ghurni_mixer_process_block_stereo(mix2, left, right);
+assert_eq(audio_all_finite(left), 1, "left valid");
+assert_eq(audio_all_finite(right), 1, "right valid");
+
+# ================================================================
+test_group("mixer mute -> silence");
+var mix3 = ghurni_mixer_new();
+var idx3 = ghurni_mixer_add_channel(mix3, "engine", GH_KIND_ENGINE, ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR));
+ghurni_mixer_set_channel_muted(mix3, idx3, 1);
+ghurni_mixer_set_rpm(mix3, f64_from(3000));
+var muted = zeros(4410);
+ghurni_mixer_process_block(mix3, muted);
+assert_eq(audio_all_zero(muted), 1, "muted channel -> all zeros");
+
+# ================================================================
+test_group("Synthesizer trait dispatch (heterogeneous)");
+var kinds = vec_new();
+var synths = vec_new();
+vec_push(kinds, GH_KIND_ENGINE);  vec_push(synths, ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR));
+vec_push(kinds, GH_KIND_GEAR);    vec_push(synths, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+vec_push(kinds, GH_KIND_MOTOR);   vec_push(synths, ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR));
+vec_push(kinds, GH_KIND_TURBINE); vec_push(synths, ghurni_turbine_new(16, f64_from(500), SR));
+var di = 0;
+var disp_ok = 1;
+while (di < vec_len(kinds)) {
+    ghurni_synth_set_rpm(vec_get(kinds, di), vec_get(synths, di), f64_from(2000));
+    var out = zeros(4410);
+    ghurni_synth_process_block(vec_get(kinds, di), vec_get(synths, di), out);
+    if (audio_all_finite(out) == 0) { disp_ok = 0; }
+    di = di + 1;
+}
+assert_eq(disp_ok, 1, "all dispatched synths valid audio");
+
+# ================================================================
+test_group("process_block continuity (one block vs 1102-chunks)");
+var ea = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_set_rpm(ea, f64_from(3000));
+ghurni_engine_set_load(ea, 0.5);
+var one_block = zeros(4410);
+ghurni_engine_process_block(ea, one_block);
+
+var eb = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_set_rpm(eb, f64_from(3000));
+ghurni_engine_set_load(eb, 0.5);
+var multi = zeros(4410);
+var offset = 0;
+while (offset < 4410) {
+    var end = offset + 1102;
+    if (end > 4410) { end = 4410; }
+    var clen = end - offset;
+    var cbuf = zeros(clen);
+    ghurni_engine_process_block(eb, cbuf);
+    var j = 0;
+    while (j < clen) { vec_set(multi, offset + j, vec_get(cbuf, j)); j = j + 1; }
+    offset = end;
+}
+assert_eq(audio_all_finite(one_block), 1, "one-block finite");
+assert_eq(audio_all_finite(multi), 1, "multi-block finite");
+var ratio = f64_div(audio_energy(one_block), f64_max(audio_energy(multi), GHURNI_EPSILON));
+assert_eq((f64_ge(ratio, 0.5) == 1) && (f64_le(ratio, f64_from(2)) == 1), 1, "energy ratio in [0.5, 2.0]");
+
+# ================================================================
+test_group("presets produce audio");
+assert_eq(audio_has_energy(ghurni_engine_synthesize(ghurni_preset_v8_muscle_car(SR), f64_from(3000), 0.6, 0.5)), 1, "v8 energy");
+assert_eq(audio_has_energy(ghurni_engine_synthesize(ghurni_preset_diesel_truck(SR), f64_from(1500), 0.5, 0.5)), 1, "diesel truck energy");
+assert_eq(audio_all_finite(ghurni_motor_synthesize(ghurni_preset_electric_vehicle(SR), f64_from(8000), 0.5, 0.5)), 1, "EV valid");
+assert_eq(audio_all_finite(ghurni_transmission_synthesize(ghurni_preset_manual_5speed(SR), f64_from(3000), 0.3)), 1, "5-speed valid");
+
+var rc = assert_summary();
+syscall(60, rc);

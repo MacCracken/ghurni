@@ -1,0 +1,160 @@
+# synths.tcyr -- ports the per-synth integration tests from
+# rust-old/tests/integration.rs for the nine non-engine synths: gear, motor,
+# turbine, clock, transmission, differential, forced_induction, belt, chain.
+# Behavioural parity: valid audio (finite), has energy, frequency helpers,
+# parameter sweeps, shift + BOV + slack behaviour.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+
+fn audio_all_finite(v) {
+    var n = vec_len(v);
+    if (n == 0) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (ghurni_is_finite(vec_get(v, i)) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+fn audio_has_energy(v) {
+    if (audio_all_finite(v) == 0) { return 0; }
+    var n = vec_len(v);
+    var i = 0;
+    while (i < n) {
+        if (f64_gt(f64_abs(vec_get(v, i)), 0.001) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+fn zeros(len) {
+    var v = vec_new();
+    var i = 0;
+    while (i < len) { vec_push(v, 0); i = i + 1; }
+    return v;
+}
+
+alloc_init();
+var SR = f64_from(44100);
+
+# ================================================================
+test_group("gear: all materials + mesh frequency + sweep");
+var gm = 0;
+while (gm < 4) {
+    var g = ghurni_gear_new(32, gm, SR);
+    assert_eq(ghurni_is_err(g), 0, "gear material constructs");
+    assert_eq(audio_all_finite(ghurni_gear_synthesize(g, f64_from(1500), 0.3)), 1, "gear material valid");
+    gm = gm + 1;
+}
+var gmf = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+var mf = ghurni_gear_mesh_frequency(gmf, f64_from(1500));
+assert_eq(f64_lt(f64_abs(f64_sub(mf, f64_from(800))), 0.01), 1, "mesh freq ~ 800 (32 teeth @1500)");
+var teeth = vec_new();
+vec_push(teeth, 4); vec_push(teeth, 8); vec_push(teeth, 16); vec_push(teeth, 32); vec_push(teeth, 64);
+var grpms = vec_new();
+vec_push(grpms, f64_from(1)); vec_push(grpms, f64_from(100)); vec_push(grpms, f64_from(1000)); vec_push(grpms, f64_from(10000));
+var gsweep_ok = 1;
+var ti = 0;
+while (ti < vec_len(teeth)) {
+    var ri = 0;
+    while (ri < vec_len(grpms)) {
+        var gs = ghurni_gear_new(vec_get(teeth, ti), GH_GEAR_STEEL, SR);
+        if (audio_all_finite(ghurni_gear_synthesize(gs, vec_get(grpms, ri), 0.1)) == 0) { gsweep_ok = 0; }
+        ri = ri + 1;
+    }
+    ti = ti + 1;
+}
+assert_eq(gsweep_ok, 1, "gear sweep 5x4 all finite");
+
+# ================================================================
+test_group("motor: all types");
+var mt = 0;
+while (mt < 4) {
+    var mo = ghurni_motor_new(mt, 4, SR);
+    assert_eq(ghurni_is_err(mo), 0, "motor type constructs");
+    assert_eq(audio_all_finite(ghurni_motor_synthesize(mo, f64_from(3000), 0.5, 0.3)), 1, "motor type valid");
+    mt = mt + 1;
+}
+
+# ================================================================
+test_group("turbine: ducted + open");
+var tu = ghurni_turbine_new(16, f64_from(500), SR);
+assert_eq(audio_has_energy(ghurni_turbine_synthesize(tu, f64_from(10000), 0.5)), 1, "ducted turbine energy");
+var tuo = ghurni_turbine_new(3, 0, SR);
+assert_eq(audio_has_energy(ghurni_turbine_synthesize(tuo, f64_from(2000), 0.5)), 1, "open turbine energy");
+
+# ================================================================
+test_group("clock: all types");
+var ct = 0;
+while (ct < 4) {
+    var cl = ghurni_clock_new(ct, SR);
+    assert_eq(ghurni_is_err(cl), 0, "clock type constructs");
+    assert_eq(audio_all_finite(ghurni_clock_synthesize(cl, F64_ONE)), 1, "clock type valid");
+    ct = ct + 1;
+}
+
+# ================================================================
+test_group("transmission: shift + mid-stream shift");
+var ratios = vec_new();
+vec_push(ratios, 3.5); vec_push(ratios, 2.1); vec_push(ratios, 1.4); vec_push(ratios, F64_ONE); vec_push(ratios, 0.8);
+var tr = ghurni_transmission_new(ratios, 24, SR);
+ghurni_transmission_shift_to(tr, 2);
+assert_eq(audio_all_finite(ghurni_transmission_synthesize(tr, f64_from(3000), 0.5)), 1, "transmission valid");
+var ratios2 = vec_new();
+vec_push(ratios2, 3.5); vec_push(ratios2, 2.1); vec_push(ratios2, 1.4);
+var tr2 = ghurni_transmission_new(ratios2, 24, SR);
+ghurni_transmission_set_rpm(tr2, f64_from(4000));
+var to = zeros(4410);
+ghurni_transmission_process_block(tr2, to);
+ghurni_transmission_shift_to(tr2, 1);
+ghurni_transmission_process_block(tr2, to);
+assert_eq(audio_all_finite(to), 1, "transmission shift valid");
+
+# ================================================================
+test_group("differential");
+var di = ghurni_differential_new(41, 11, SR);
+assert_eq(audio_all_finite(ghurni_differential_synthesize(di, f64_from(2000), 0.5)), 1, "differential valid");
+
+# ================================================================
+test_group("forced induction: turbo + supercharger + BOV");
+var turbo = ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.5, F64_ONE, SR);
+assert_eq(audio_all_finite(ghurni_forced_induction_synthesize(turbo, f64_from(5000), 0.8, F64_ONE)), 1, "turbo valid");
+var sc = ghurni_forced_induction_new(GH_INDUCTION_SUPERCHARGER, 1.5, 0.01, SR);
+assert_eq(audio_all_finite(ghurni_forced_induction_synthesize(sc, f64_from(4000), 0.7, 0.5)), 1, "supercharger valid");
+var bt = ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.5, 0.5, SR);
+ghurni_forced_induction_set_rpm(bt, f64_from(6000));
+ghurni_forced_induction_set_load(bt, 0.9);
+var warm = zeros(22050);
+ghurni_forced_induction_process_block(bt, warm);
+ghurni_forced_induction_trigger_bov(bt);
+var bov = zeros(8820);
+ghurni_forced_induction_process_block(bt, bov);
+assert_eq(audio_all_finite(bov), 1, "BOV burst valid");
+
+# ================================================================
+test_group("belt drive: normal + slack (squealy)");
+var be = ghurni_belt_drive_new(f64_from(100), 0.7, SR);
+assert_eq(audio_all_finite(ghurni_belt_drive_synthesize(be, f64_from(2000), 0.5)), 1, "belt valid");
+var bsl = ghurni_belt_drive_new(f64_from(100), 0.1, SR);
+assert_eq(audio_has_energy(ghurni_belt_drive_synthesize(bsl, f64_from(3000), 0.5)), 1, "slack belt energy");
+
+# ================================================================
+test_group("chain drive");
+var chn = ghurni_chain_drive_new(110, 15, SR);
+assert_eq(audio_all_finite(ghurni_chain_drive_synthesize(chn, f64_from(3000), 0.5)), 1, "chain valid");
+
+var rc = assert_summary();
+syscall(60, rc);

@@ -1,0 +1,226 @@
+# mixer.cyr -- multi-component mechanical sound mixer.
+# Ports rust-old/src/mixer.rs (MixerChannel + MechanicalMixer). Combines several
+# synths into one output with independent gain / pan / mute per channel.
+#
+# The Rust mixer stored `Box<dyn Synthesizer>` per channel. Cyrius has no trait
+# objects (ADR-004), so each channel carries a (GH_KIND_* tag, synth pointer)
+# pair and the tag-dispatch helpers below (ghurni_synth_process_block /
+# ghurni_synth_set_rpm) switch on the tag to call the concrete synth method.
+# This is the hand-written equivalent of the trait's vtable.
+#
+# Requires (from the build/test unit): traits.cyr (GH_KIND_*), every synth
+# module (their process_block / set_rpm), math (f64_*, F64_PI_2) + stdlib
+# alloc/vec. No `include` lines.
+#
+# serde: MixerChannel/MechanicalMixer were Serialize with #[serde(skip)] on the
+# synth + scratch (the live synth objects can't serialize). Deep serde is
+# dropped in the port (nothing meaningful survives the skip); the structs use
+# #derive(accessors) only.
+
+# ================================================================
+# Tag dispatch -- the Synthesizer "vtable". Switches a (kind, synth) pair to the
+# concrete synth's method. Forward-references every synth's fns (resolved across
+# the whole compilation unit).
+# ================================================================
+fn ghurni_synth_process_block(kind, synth, out) {
+    if (kind == GH_KIND_ENGINE)             { ghurni_engine_process_block(synth, out); }
+    elif (kind == GH_KIND_GEAR)             { ghurni_gear_process_block(synth, out); }
+    elif (kind == GH_KIND_MOTOR)            { ghurni_motor_process_block(synth, out); }
+    elif (kind == GH_KIND_TURBINE)          { ghurni_turbine_process_block(synth, out); }
+    elif (kind == GH_KIND_CLOCK)            { ghurni_clock_process_block(synth, out); }
+    elif (kind == GH_KIND_TRANSMISSION)     { ghurni_transmission_process_block(synth, out); }
+    elif (kind == GH_KIND_DIFFERENTIAL)     { ghurni_differential_process_block(synth, out); }
+    elif (kind == GH_KIND_FORCED_INDUCTION) { ghurni_forced_induction_process_block(synth, out); }
+    elif (kind == GH_KIND_BELT_DRIVE)       { ghurni_belt_drive_process_block(synth, out); }
+    elif (kind == GH_KIND_CHAIN_DRIVE)      { ghurni_chain_drive_process_block(synth, out); }
+    return 0;
+}
+
+fn ghurni_synth_set_rpm(kind, synth, rpm) {
+    if (kind == GH_KIND_ENGINE)             { ghurni_engine_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_GEAR)             { ghurni_gear_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_MOTOR)            { ghurni_motor_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_TURBINE)          { ghurni_turbine_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_CLOCK)            { ghurni_clock_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_TRANSMISSION)     { ghurni_transmission_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_DIFFERENTIAL)     { ghurni_differential_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_FORCED_INDUCTION) { ghurni_forced_induction_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_BELT_DRIVE)       { ghurni_belt_drive_set_rpm(synth, rpm); }
+    elif (kind == GH_KIND_CHAIN_DRIVE)      { ghurni_chain_drive_set_rpm(synth, rpm); }
+    return 0;
+}
+
+# ================================================================
+# GhMixerChannel: name(cstring ptr) gain(f64) pan(f64) muted(int 0/1)
+# kind(GH_KIND_*) synth(ptr) scratch(vec<f64> or 0). GhMixer: channels(vec of
+# GhMixerChannel ptrs) master_gain(f64).
+# ================================================================
+#derive(accessors)
+struct GhMixerChannel {
+    name;
+    gain;
+    pan;
+    muted;
+    kind;
+    synth;
+    scratch;
+}
+
+#derive(accessors)
+struct GhMixer {
+    channels;
+    master_gain;
+}
+
+# new() -- empty mixer, unity master gain.
+#must_use
+fn ghurni_mixer_new() {
+    var m = alloc(sizeof(GhMixer));
+    GhMixer_set_channels(m, vec_new());
+    GhMixer_set_master_gain(m, F64_ONE);
+    return m;
+}
+
+# add_channel(name, kind, synth) -- append a channel (gain 1, pan 0, unmuted),
+# return its index. (Rust took a Box<dyn Synthesizer>; the port takes the
+# (kind, synth) pair.)
+fn ghurni_mixer_add_channel(m, name, kind, synth) {
+    var ch = alloc(sizeof(GhMixerChannel));
+    GhMixerChannel_set_name(ch, name);
+    GhMixerChannel_set_gain(ch, F64_ONE);
+    GhMixerChannel_set_pan(ch, 0);
+    GhMixerChannel_set_muted(ch, 0);
+    GhMixerChannel_set_kind(ch, kind);
+    GhMixerChannel_set_synth(ch, synth);
+    GhMixerChannel_set_scratch(ch, 0);
+    var channels = GhMixer_channels(m);
+    var idx = vec_len(channels);
+    vec_push(channels, ch);
+    return idx;
+}
+
+# set_channel_gain(idx, gain) -- gain >= 0.
+fn ghurni_mixer_set_channel_gain(m, index, gain) {
+    var channels = GhMixer_channels(m);
+    if ((index >= 0) && (index < vec_len(channels))) {
+        GhMixerChannel_set_gain(vec_get(channels, index), f64_max(gain, 0));
+    }
+    return 0;
+}
+
+# set_channel_pan(idx, pan) -- pan in [-1, 1].
+fn ghurni_mixer_set_channel_pan(m, index, pan) {
+    var channels = GhMixer_channels(m);
+    if ((index >= 0) && (index < vec_len(channels))) {
+        GhMixerChannel_set_pan(vec_get(channels, index), f64_clamp(pan, f64_neg(F64_ONE), F64_ONE));
+    }
+    return 0;
+}
+
+# set_channel_muted(idx, muted) -- 1 = muted, 0 = active.
+fn ghurni_mixer_set_channel_muted(m, index, muted) {
+    var channels = GhMixer_channels(m);
+    if ((index >= 0) && (index < vec_len(channels))) {
+        GhMixerChannel_set_muted(vec_get(channels, index), muted);
+    }
+    return 0;
+}
+
+# set_master_gain(gain) -- master >= 0.
+fn ghurni_mixer_set_master_gain(m, gain) {
+    GhMixer_set_master_gain(m, f64_max(gain, 0));
+    return 0;
+}
+
+# set_rpm(rpm) -- broadcast to every channel's synth.
+fn ghurni_mixer_set_rpm(m, rpm) {
+    var channels = GhMixer_channels(m);
+    var n = vec_len(channels);
+    var i = 0;
+    while (i < n) {
+        var ch = vec_get(channels, i);
+        ghurni_synth_set_rpm(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), rpm);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# channel_count().
+#must_use
+fn ghurni_mixer_channel_count(m) {
+    return vec_len(GhMixer_channels(m));
+}
+
+# Build a fresh scratch vec of exactly `len` zeros for one channel (Cyrius vecs
+# have no sub-slice, so process_block must see a vec of exactly `len`).
+#must_use
+fn ghurni_mixer_scratch(len) {
+    var v = vec_new();
+    var i = 0;
+    while (i < len) { vec_push(v, 0); i = i + 1; }
+    return v;
+}
+
+# process_block(out) -- render + sum all unmuted channels into mono `out`.
+fn ghurni_mixer_process_block(m, out) {
+    var len = vec_len(out);
+    var z = 0;
+    while (z < len) { vec_set(out, z, 0); z = z + 1; }
+
+    var master = GhMixer_master_gain(m);
+    var channels = GhMixer_channels(m);
+    var nc = vec_len(channels);
+    var ci = 0;
+    while (ci < nc) {
+        var ch = vec_get(channels, ci);
+        if (GhMixerChannel_muted(ch) == 0) {
+            var scratch = ghurni_mixer_scratch(len);
+            GhMixerChannel_set_scratch(ch, scratch);
+            ghurni_synth_process_block(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), scratch);
+            var gain = f64_mul(GhMixerChannel_gain(ch), master);
+            var i = 0;
+            while (i < len) {
+                vec_set(out, i, f64_add(vec_get(out, i), f64_mul(vec_get(scratch, i), gain)));
+                i = i + 1;
+            }
+        }
+        ci = ci + 1;
+    }
+    return 0;
+}
+
+# process_block_stereo(left, right) -- equal-power pan into stereo.
+fn ghurni_mixer_process_block_stereo(m, left, right) {
+    var len = vec_len(left);
+    if (vec_len(right) < len) { len = vec_len(right); }
+    var z = 0;
+    while (z < len) { vec_set(left, z, 0); vec_set(right, z, 0); z = z + 1; }
+
+    var master = GhMixer_master_gain(m);
+    var channels = GhMixer_channels(m);
+    var nc = vec_len(channels);
+    var ci = 0;
+    while (ci < nc) {
+        var ch = vec_get(channels, ci);
+        if (GhMixerChannel_muted(ch) == 0) {
+            var scratch = ghurni_mixer_scratch(len);
+            GhMixerChannel_set_scratch(ch, scratch);
+            ghurni_synth_process_block(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), scratch);
+            # equal-power pan law
+            var pan_norm = f64_mul(f64_add(GhMixerChannel_pan(ch), F64_ONE), 0.5);
+            var angle = f64_mul(pan_norm, F64_PI_2);
+            var gain = f64_mul(GhMixerChannel_gain(ch), master);
+            var gain_l = f64_mul(f64_cos(angle), gain);
+            var gain_r = f64_mul(f64_sin(angle), gain);
+            var i = 0;
+            while (i < len) {
+                var s = vec_get(scratch, i);
+                vec_set(left, i, f64_add(vec_get(left, i), f64_mul(s, gain_l)));
+                vec_set(right, i, f64_add(vec_get(right, i), f64_mul(s, gain_r)));
+                i = i + 1;
+            }
+        }
+        ci = ci + 1;
+    }
+    return 0;
+}

@@ -1,0 +1,171 @@
+# differential.cyr -- differential (final drive) sound synthesis.
+# Ports rust-old/src/differential.rs (Differential synth). Models the
+# characteristic whine of hypoid gear mesh in the differential, distinct from
+# transmission gears. This module has NO enum -- ring/pinion tooth counts +
+# RPM parameterize it.
+#
+# Requires (from the build/test unit): error.cyr (GH_ERR_*, ghurni_is_err),
+# dsp.cyr (GhDcBlocker + validation + naad error map), smooth.cyr
+# (GhSmoothedParam) + the naad bundle (osc_*/noise_*/filter_biquad_*) + stdlib
+# alloc/vec/math. No `include` lines.
+#
+# PORT NOTES
+# - f32 -> f64 throughout. The Rust `naad-backend` (default) path is the ONE
+#   ported path; the `#[cfg(not(naad-backend))]` fallback (rng/math) is dropped
+#   (naad's NoiseGenerator owns the randomness), matching engine.cyr.
+# - Audio buffers are stdlib vecs of f64. process_block fills a caller vec in
+#   place; synthesize allocates + returns one.
+# - naad constructors return a heap pointer on success or a negative ERR_* code
+#   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
+#   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`).
+#   noise_new never errors.
+# - The Rust process_block inlines its naad synthesis core (no separate
+#   process_block_naad fn); the port keeps that inline shape.
+
+# ================================================================
+# GhDifferential. Accessor fields carry a mix of ints, f64 bit patterns, and
+# heap pointers (smoother / dc blocker / naad objects), all i64-wide.
+# NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
+# field roles are documented here instead:
+#   ring_teeth(int, clamp 20..80) pinion_teeth(int, clamp 4..30)
+#   sample_rate(f64) rpm(f64) sample_position(int)
+#   smooth_rpm(ptr GhSmoothedParam) dc_blocker(ptr GhDcBlocker)
+#   whine_osc(ptr naad Oscillator) noise_gen(ptr naad NoiseGenerator)
+#   resonance_filter(ptr naad BiquadFilter)
+# ================================================================
+#derive(accessors)
+struct GhDifferential {
+    ring_teeth;
+    pinion_teeth;
+    sample_rate;
+    rpm;
+    sample_position;
+    smooth_rpm;
+    dc_blocker;
+    whine_osc;
+    noise_gen;
+    resonance_filter;
+}
+
+# new(ring_teeth, pinion_teeth, sample_rate) -> ptr or GH_ERR_*.
+# - ring_teeth: teeth on the ring gear (typically 35-45).
+# - pinion_teeth: teeth on the pinion gear (typically 8-14).
+# - sample_rate: audio sample rate in Hz.
+#must_use
+fn ghurni_differential_new(ring_teeth, pinion_teeth, sample_rate) {
+    var vsr = ghurni_validate_sample_rate(sample_rate);
+    if (ghurni_is_err(vsr) == 1) { return vsr; }
+
+    var ring = ring_teeth;
+    if (ring < 20) { ring = 20; }
+    if (ring > 80) { ring = 80; }
+
+    var pinion = pinion_teeth;
+    if (pinion < 4) { pinion = 4; }
+    if (pinion > 30) { pinion = 30; }
+
+    var nyquist = f64_mul(sample_rate, 0.49);
+
+    # Resonant frequency of the differential housing.
+    var housing_resonance = f64_min(f64_from(2500), nyquist);
+
+    # naad backend: sine whine oscillator + white noise + high-Q band-pass.
+    var whine_osc = osc_new(WAVEFORM_SINE, f64_from(100), sample_rate);
+    if (ghurni_is_err(whine_osc) == 1) { return ghurni_map_naad_error(whine_osc); }
+    var noise = noise_new(NOISE_WHITE, ring * 41 + pinion);
+    var resonance_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, housing_resonance, f64_from(6));
+    if (ghurni_is_err(resonance_filter) == 1) { return ghurni_map_naad_error(resonance_filter); }
+
+    var self = alloc(sizeof(GhDifferential));
+    GhDifferential_set_ring_teeth(self, ring);
+    GhDifferential_set_pinion_teeth(self, pinion);
+    GhDifferential_set_sample_rate(self, sample_rate);
+    GhDifferential_set_rpm(self, 0);
+    GhDifferential_set_sample_position(self, 0);
+    GhDifferential_set_smooth_rpm(self, ghurni_smooth_new(0, 0.05, sample_rate));
+    GhDifferential_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
+    GhDifferential_set_whine_osc(self, whine_osc);
+    GhDifferential_set_noise_gen(self, noise);
+    GhDifferential_set_resonance_filter(self, resonance_filter);
+    return self;
+}
+
+# set_rpm(rpm) -- clamp to 0..50000.
+fn ghurni_differential_set_rpm(self, rpm) {
+    GhDifferential_set_rpm(self, f64_clamp(rpm, 0, f64_from(50000)));
+    return 0;
+}
+
+# ratio() -- gear ratio (ring/pinion).
+#must_use
+#inline
+fn ghurni_differential_ratio(self) {
+    return f64_div(f64_from(GhDifferential_ring_teeth(self)), f64_from(GhDifferential_pinion_teeth(self)));
+}
+
+# mesh_frequency(driveshaft_rpm) -- mesh frequency = (rpm/60) * pinion_teeth.
+#must_use
+#inline
+fn ghurni_differential_mesh_frequency(self, driveshaft_rpm) {
+    return f64_mul(f64_div(driveshaft_rpm, f64_from(60)), f64_from(GhDifferential_pinion_teeth(self)));
+}
+
+# synthesize(rpm, duration) -> vec<f64> or GH_ERR_* (one-shot).
+#must_use
+fn ghurni_differential_synthesize(self, rpm, duration) {
+    var vd = ghurni_validate_duration(duration);
+    if (ghurni_is_err(vd) == 1) { return vd; }
+    ghurni_differential_set_rpm(self, rpm);
+    var n = f64_to(f64_mul(GhDifferential_sample_rate(self), duration));
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    ghurni_differential_process_block(self, out);
+    return out;
+}
+
+# process_block(out) -- fill `out` (vec<f64>) with differential whine, DC-block,
+# and advance the sample counter. The naad synthesis core is inlined here (as in
+# the Rust oracle).
+fn ghurni_differential_process_block(self, out) {
+    var smooth_rpm = GhDifferential_smooth_rpm(self);
+    ghurni_smooth_set_target(smooth_rpm, GhDifferential_rpm(self));
+    var nyquist = f64_mul(GhDifferential_sample_rate(self), 0.49);
+
+    var whine_osc = GhDifferential_whine_osc(self);
+    var noise = GhDifferential_noise_gen(self);
+    var resonance_filter = GhDifferential_resonance_filter(self);
+
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        var smooth = ghurni_smooth_next_value(smooth_rpm);
+        var mesh_freq = ghurni_differential_mesh_frequency(self, smooth);
+
+        osc_set_frequency(whine_osc, f64_clamp(mesh_freq, F64_ONE, nyquist));
+        var whine = f64_mul(osc_next_sample(whine_osc), 0.2);
+
+        # High-Q housing resonance excited by mesh.
+        var excitation = f64_mul(noise_next_sample(noise), 0.1);
+        var ring = f64_mul(filter_biquad_process_sample(resonance_filter, excitation), 0.15);
+
+        var noise_sample = f64_mul(noise_next_sample(noise), 0.02);
+        vec_set(out, i, f64_add(whine, f64_add(ring, noise_sample)));
+        i = i + 1;
+    }
+
+    var db = GhDifferential_dc_blocker(self);
+    var j = 0;
+    while (j < n) {
+        vec_set(out, j, ghurni_dcblocker_process(db, vec_get(out, j)));
+        j = j + 1;
+    }
+    GhDifferential_set_sample_position(self, GhDifferential_sample_position(self) + n);
+    return 0;
+}
+
+# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+fn ghurni_differential_rpm(self) { return GhDifferential_rpm(self); }
+#must_use
+fn ghurni_differential_sample_rate(self) { return GhDifferential_sample_rate(self); }

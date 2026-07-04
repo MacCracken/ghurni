@@ -1,0 +1,112 @@
+# dsp.cyr -- shared DSP primitives for mechanical synthesis.
+# Ports rust-old/src/dsp.rs: a one-pole high-pass DC blocker (applied to every
+# synth's output), sample-rate / duration validation, and naad error mapping.
+# All three were `pub(crate)`.
+#
+# Requires (from the build/test unit): error.cyr (GH_ERR_*, ghurni_is_finite),
+# logging.cyr (ghurni_log_warn/_error) + stdlib alloc/vec + math (F64_ONE/
+# F64_TAU, f64_* builtins). The module file itself has no `include` lines.
+#
+# serde: DcBlocker was Serialize/Deserialize in Rust; RESTORED via
+# #derive(Serialize) (f64 fields typed i64 so their exact bit patterns
+# serialize losslessly). Roundtrip tested in tests/dsp.tcyr.
+
+# ================================================================
+# GhDcBlocker -- one-pole DC blocker. Transfer fn y[n] = x[n] - x[n-1] +
+# R*y[n-1]; removes DC offset with a ~10 Hz corner.
+#   x_prev : previous input sample
+#   y_prev : previous output sample
+#   r      : pole radius, clamp(1 - TAU*10/sr, 0.9, 0.9999)
+# ================================================================
+# Fields TYPED as i64 for #derive(Serialize): each holds an f64 BIT PATTERN, and
+# serializing it as an int emits the exact 64-bit value (lossless). Typing as
+# f64 would use the derive's decimal float writer (lossy ~1 ULP). Auto-generates
+# GhDcBlocker_to_json / _from_json_str -- ports the Rust `#[derive(Serialize,
+# Deserialize)]` on DcBlocker.
+#derive(accessors)
+#derive(Serialize)
+struct GhDcBlocker {
+    x_prev: i64;
+    y_prev: i64;
+    r: i64;
+}
+
+# new(sample_rate) -- zeroed state; pole radius from the sample rate.
+#must_use
+fn ghurni_dcblocker_new(sample_rate) {
+    var b = alloc(sizeof(GhDcBlocker));
+    GhDcBlocker_set_x_prev(b, 0);
+    GhDcBlocker_set_y_prev(b, 0);
+    # r = clamp(1.0 - (TAU * 10 / sample_rate), 0.9, 0.9999)
+    var r = f64_sub(F64_ONE, f64_div(f64_mul(F64_TAU, f64_from(10)), sample_rate));
+    GhDcBlocker_set_r(b, f64_clamp(r, 0.9, 0.9999));
+    return b;
+}
+
+# process(x) -- one sample. y = x - x_prev + r*y_prev; then shift state.
+#inline
+fn ghurni_dcblocker_process(b, x) {
+    var y = f64_add(f64_sub(x, GhDcBlocker_x_prev(b)), f64_mul(GhDcBlocker_r(b), GhDcBlocker_y_prev(b)));
+    GhDcBlocker_set_x_prev(b, x);
+    GhDcBlocker_set_y_prev(b, y);
+    return y;
+}
+
+# process_buffer(samples) -- DC-block a vec of f64 samples in place.
+fn ghurni_dcblocker_process_buffer(b, samples) {
+    var n = vec_len(samples);
+    var i = 0;
+    while (i < n) {
+        vec_set(samples, i, ghurni_dcblocker_process(b, vec_get(samples, i)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# reset() -- clear the filter memory (pole radius preserved).
+fn ghurni_dcblocker_reset(b) {
+    GhDcBlocker_set_x_prev(b, 0);
+    GhDcBlocker_set_y_prev(b, 0);
+    return 0;
+}
+
+# ================================================================
+# Validation. Rust returned Result<()>; the port returns GH_ERR_NONE (0) on
+# success or GH_ERR_INVALID_PARAMETER, logging a warning first (ports the
+# `#[cfg(feature = "logging")] tracing::warn!` arms).
+# ================================================================
+#must_use
+fn ghurni_validate_sample_rate(sample_rate) {
+    if (f64_le(sample_rate, 0) == 1) {
+        ghurni_log_warn("ghurni: invalid sample rate (must be positive and finite)");
+        return GH_ERR_INVALID_PARAMETER;
+    }
+    if (ghurni_is_finite(sample_rate) == 0) {
+        ghurni_log_warn("ghurni: invalid sample rate (must be positive and finite)");
+        return GH_ERR_INVALID_PARAMETER;
+    }
+    return GH_ERR_NONE;
+}
+
+#must_use
+fn ghurni_validate_duration(duration) {
+    if (f64_le(duration, 0) == 1) {
+        ghurni_log_warn("ghurni: invalid duration (must be positive and finite)");
+        return GH_ERR_INVALID_PARAMETER;
+    }
+    if (ghurni_is_finite(duration) == 0) {
+        ghurni_log_warn("ghurni: invalid duration (must be positive and finite)");
+        return GH_ERR_INVALID_PARAMETER;
+    }
+    return GH_ERR_NONE;
+}
+
+# map_naad_error -- ports naad_init_error (naad-backend gated). Rust emitted a
+# `tracing::error!(... "naad backend error")` and returned
+# GhurniError::SynthesisFailed; the port wires the diagnostic to sakshi and
+# returns GH_ERR_SYNTHESIS_FAILED. Any nonzero (negative) naad code maps here.
+#must_use
+fn ghurni_map_naad_error(naad_code) {
+    ghurni_log_error("ghurni: naad backend synthesis init failed");
+    return GH_ERR_SYNTHESIS_FAILED;
+}

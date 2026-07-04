@@ -1,0 +1,57 @@
+# serde.tcyr -- ports the enum/error serde-roundtrip integration tests
+# (test_serde_roundtrip_{engine_type,gear_material,motor_type,clock_type,
+# induction_type,error}). Rust used serde_json externally-tagged variant names;
+# the Cyrius port maps each enum discriminant to/from its variant name string,
+# so a name->code->name roundtrip is the faithful analog. (MechanicalEvent's
+# roundtrip lives in foundations.tcyr.)
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/forced_induction.cyr"
+
+alloc_init();
+
+# ================================================================
+test_group("EngineType roundtrip (Diesel)");
+assert_eq(streq(ghurni_enginetype_name(GH_ENGINE_DIESEL), "Diesel"), 1, "name == Diesel");
+assert_eq(ghurni_enginetype_from_name("Diesel"), GH_ENGINE_DIESEL, "Diesel roundtrips");
+assert_eq(ghurni_enginetype_from_name(ghurni_enginetype_name(GH_ENGINE_HYBRID)), GH_ENGINE_HYBRID, "Hybrid roundtrips");
+
+# ================================================================
+test_group("GearMaterial roundtrip (Brass)");
+assert_eq(streq(ghurni_gearmaterial_name(GH_GEAR_BRASS), "Brass"), 1, "name == Brass");
+assert_eq(ghurni_gearmaterial_from_name("Brass"), GH_GEAR_BRASS, "Brass roundtrips");
+assert_eq(ghurni_gearmaterial_from_name("CastIron"), GH_GEAR_CAST_IRON, "CastIron roundtrips");
+
+# ================================================================
+test_group("MotorType roundtrip (Brushless)");
+assert_eq(streq(ghurni_motortype_name(GH_MOTOR_BRUSHLESS), "Brushless"), 1, "name == Brushless");
+assert_eq(ghurni_motortype_from_name("Brushless"), GH_MOTOR_BRUSHLESS, "Brushless roundtrips");
+
+# ================================================================
+test_group("ClockType roundtrip (GrandfatherClock)");
+assert_eq(streq(ghurni_clocktype_name(GH_CLOCK_GRANDFATHER_CLOCK), "GrandfatherClock"), 1, "name ok");
+assert_eq(ghurni_clocktype_from_name("GrandfatherClock"), GH_CLOCK_GRANDFATHER_CLOCK, "roundtrips");
+
+# ================================================================
+test_group("InductionType roundtrip (Turbo)");
+assert_eq(streq(ghurni_inductiontype_name(GH_INDUCTION_TURBO), "Turbo"), 1, "name == Turbo");
+assert_eq(ghurni_inductiontype_from_name("Turbo"), GH_INDUCTION_TURBO, "Turbo roundtrips");
+
+# ================================================================
+test_group("GhurniError name mapping (ports GhurniError serde)");
+assert_eq(streq(ghurni_err_name(GH_ERR_SYNTHESIS_FAILED), "synthesis failed"), 1, "SynthesisFailed name");
+assert_eq(streq(ghurni_err_name(GH_ERR_INVALID_PARAMETER), "invalid parameter"), 1, "InvalidParameter name");
+assert_eq(streq(ghurni_err_name(GH_ERR_COMPUTATION), "computation error"), 1, "ComputationError name");
+
+var rc = assert_summary();
+syscall(60, rc);

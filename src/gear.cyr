@@ -1,0 +1,213 @@
+# gear.cyr -- gear mesh sound synthesis.
+# Ports rust-old/src/gear.rs (GearMaterial enum + Gear synth). Models the sound
+# of meshing gear teeth: a tooth-mesh tone (teeth x RPM), a material-dependent
+# metallic resonance ring, and load-dependent broadband noise. Follows the shape
+# of the reference synth engine.cyr.
+#
+# Requires (from the build/test unit): error.cyr (GH_ERR_*, GHURNI_DB_SCALE,
+# ghurni_is_err, ghurni_fmod), logging.cyr, dsp.cyr (GhDcBlocker + validation +
+# naad error map) + the naad bundle (osc_*/noise_*/filter_biquad_*/
+# db_to_amplitude) + stdlib alloc/vec/math. No `include` lines.
+#
+# PORT NOTES
+# - f32 -> f64 throughout. The Rust `naad-backend` (default) path is the ONE
+#   ported path; the `#[cfg(not(naad-backend))]` fallback (rng/math) is dropped
+#   (naad owns the randomness), matching engine.cyr.
+# - Audio buffers are stdlib vecs of f64. process_block fills a caller vec in
+#   place; synthesize allocates + returns one.
+# - naad constructors return a heap pointer on success or a negative ERR_* code
+#   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
+#   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`).
+#   noise_new never errors, so its result is used unchecked (parity with Rust).
+# - serde: Gear held opaque naad backend pointers; deep #[derive(Serialize)] is
+#   dropped. Serde parity is only for GearMaterial via the name<->code helpers
+#   below (the roundtrip test uses Brass).
+# - GearMaterial::properties() (resonance_hz, decay_s, brightness) is inlined
+#   into new() as three per-variant assignments.
+
+# ================================================================
+# GearMaterial (was `enum GearMaterial`). One per Rust variant, in order.
+# ================================================================
+var GH_GEAR_STEEL     = 0;   # hardened steel -- bright, long ring
+var GH_GEAR_CAST_IRON = 1;   # cast iron -- duller, shorter decay
+var GH_GEAR_BRASS     = 2;   # brass -- warm, medium ring
+var GH_GEAR_NYLON     = 3;   # nylon/plastic -- very dull, short decay
+
+# Externally-tagged serde variant name (parity with serde_json).
+#must_use
+fn ghurni_gearmaterial_name(t) {
+    if (t == GH_GEAR_STEEL)     { return "Steel"; }
+    if (t == GH_GEAR_CAST_IRON) { return "CastIron"; }
+    if (t == GH_GEAR_BRASS)     { return "Brass"; }
+    if (t == GH_GEAR_NYLON)     { return "Nylon"; }
+    return "Unknown";
+}
+#must_use
+fn ghurni_gearmaterial_from_name(s) {
+    if (streq(s, "Steel") == 1)    { return GH_GEAR_STEEL; }
+    if (streq(s, "CastIron") == 1) { return GH_GEAR_CAST_IRON; }
+    if (streq(s, "Brass") == 1)    { return GH_GEAR_BRASS; }
+    if (streq(s, "Nylon") == 1)    { return GH_GEAR_NYLON; }
+    return (0 - 1);
+}
+
+# ================================================================
+# GhGear. Accessor fields carry a mix of ints, f64 bit patterns, and heap
+# pointers (dc blocker / naad objects), all i64-wide.
+# NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
+# field roles are documented here instead:
+#   teeth(int 4+) material(int GH_GEAR_*) resonance(f64 Hz) decay(f64 s)
+#   brightness(f64) sample_rate(f64) rpm(f64) sample_position(int)
+#   dc_blocker(ptr GhDcBlocker) mesh_osc(ptr naad Oscillator)
+#   noise_gen(ptr naad NoiseGenerator) resonance_filter(ptr naad BiquadFilter)
+# ================================================================
+#derive(accessors)
+struct GhGear {
+    teeth;
+    material;
+    resonance;
+    decay;
+    brightness;
+    sample_rate;
+    rpm;
+    sample_position;
+    dc_blocker;
+    mesh_osc;
+    noise_gen;
+    resonance_filter;
+}
+
+# new(teeth, material, sample_rate) -> ptr or GH_ERR_*.
+#must_use
+fn ghurni_gear_new(teeth, material, sample_rate) {
+    var vsr = ghurni_validate_sample_rate(sample_rate);
+    if (ghurni_is_err(vsr) == 1) { return vsr; }
+
+    var t = teeth;
+    if (t < 4) { t = 4; }
+
+    # material.properties() -> (resonance_hz, decay_s, brightness). Nylon default.
+    var resonance = f64_from(1000);
+    var decay = 0.01;
+    var brightness = 0.2;
+    if (material == GH_GEAR_STEEL) {
+        resonance = f64_from(3500); decay = 0.08; brightness = 0.9;
+    } elif (material == GH_GEAR_CAST_IRON) {
+        resonance = f64_from(2000); decay = 0.04; brightness = 0.5;
+    } elif (material == GH_GEAR_BRASS) {
+        resonance = f64_from(2800); decay = 0.06; brightness = 0.7;
+    }
+
+    var nyq = f64_mul(sample_rate, 0.49);
+    var initial_mesh_freq = f64_min(f64_from(100), nyq);
+
+    # naad backend: sine mesh oscillator + white noise + band-pass resonance.
+    var mesh_osc = osc_new(WAVEFORM_SINE, initial_mesh_freq, sample_rate);
+    if (ghurni_is_err(mesh_osc) == 1) { return ghurni_map_naad_error(mesh_osc); }
+    var noise = noise_new(NOISE_WHITE, t * 7 + material);
+    var resonance_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_min(resonance, nyq), 4.0);
+    if (ghurni_is_err(resonance_filter) == 1) { return ghurni_map_naad_error(resonance_filter); }
+
+    var self = alloc(sizeof(GhGear));
+    GhGear_set_teeth(self, t);
+    GhGear_set_material(self, material);
+    GhGear_set_resonance(self, resonance);
+    GhGear_set_decay(self, decay);
+    GhGear_set_brightness(self, brightness);
+    GhGear_set_sample_rate(self, sample_rate);
+    GhGear_set_rpm(self, f64_from(1000));
+    GhGear_set_sample_position(self, 0);
+    GhGear_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
+    GhGear_set_mesh_osc(self, mesh_osc);
+    GhGear_set_noise_gen(self, noise);
+    GhGear_set_resonance_filter(self, resonance_filter);
+    return self;
+}
+
+# set_rpm(rpm) -- clamp to 1..50000.
+fn ghurni_gear_set_rpm(self, rpm) {
+    var r = f64_clamp(rpm, F64_ONE, f64_from(50000));
+    GhGear_set_rpm(self, r);
+    return 0;
+}
+
+# mesh_frequency(rpm) -- tooth mesh frequency = (rpm/60) * teeth.
+#must_use
+#inline
+fn ghurni_gear_mesh_frequency(self, rpm) {
+    return f64_mul(f64_div(rpm, f64_from(60)), f64_from(GhGear_teeth(self)));
+}
+
+# synthesize(rpm, duration) -> vec<f64> or GH_ERR_*.
+#must_use
+fn ghurni_gear_synthesize(self, rpm, duration) {
+    var vd = ghurni_validate_duration(duration);
+    if (ghurni_is_err(vd) == 1) { return vd; }
+    ghurni_gear_set_rpm(self, rpm);
+    var n = f64_to(f64_mul(GhGear_sample_rate(self), duration));
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    ghurni_gear_process_block(self, out);
+    return out;
+}
+
+# process_block(out) -- fill `out` (vec<f64>) with gear mesh sound, DC-block,
+# and advance the sample counter.
+fn ghurni_gear_process_block(self, out) {
+    ghurni_gear_process_block_naad(self, out);
+    var db = GhGear_dc_blocker(self);
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
+        i = i + 1;
+    }
+    GhGear_set_sample_position(self, GhGear_sample_position(self) + n);
+    return 0;
+}
+
+# The naad synthesis core (ports process_block_naad). mesh tone + resonant ring
+# excited by a per-mesh-cycle decaying envelope + broadband noise.
+fn ghurni_gear_process_block_naad(self, out) {
+    var mesh_freq = ghurni_gear_mesh_frequency(self, GhGear_rpm(self));
+    var sr = GhGear_sample_rate(self);
+    var nyq = f64_mul(sr, 0.49);
+
+    var mesh_osc = GhGear_mesh_osc(self);
+    osc_set_frequency(mesh_osc, f64_min(mesh_freq, nyq));
+
+    var noise = GhGear_noise_gen(self);
+    var resonance_filter = GhGear_resonance_filter(self);
+    var decay = GhGear_decay(self);
+    var brightness = GhGear_brightness(self);
+    var base_pos = GhGear_sample_position(self);
+    var amp = 0.3;
+
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        var mesh = f64_mul(f64_mul(osc_next_sample(mesh_osc), amp), 0.5);
+
+        var abs_pos = f64_from(base_pos + i);
+        var mesh_phase = ghurni_fmod(f64_div(f64_mul(abs_pos, mesh_freq), sr), F64_ONE);
+        var ring_env = F64_ONE;
+        if (f64_lt(mesh_phase, 0.05) == 0) {
+            ring_env = db_to_amplitude(f64_mul(f64_div(f64_neg(mesh_phase), decay), GHURNI_DB_SCALE));
+        }
+        var ring_excitation = f64_mul(noise_next_sample(noise), ring_env);
+        var ring = f64_mul(f64_mul(filter_biquad_process_sample(resonance_filter, ring_excitation), amp), brightness);
+
+        var noise_s = f64_mul(f64_mul(noise_next_sample(noise), amp), 0.05);
+
+        vec_set(out, i, f64_add(mesh, f64_add(ring, noise_s)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+fn ghurni_gear_rpm(self) { return GhGear_rpm(self); }
+#must_use
+fn ghurni_gear_sample_rate(self) { return GhGear_sample_rate(self); }

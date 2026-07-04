@@ -1,0 +1,106 @@
+[package]
+name = "ghurni"
+version = "${file:VERSION}"
+description = "ghurni — mechanical sound synthesis (engines, gears, motors, turbines, clocks, transmissions, differentials, forced induction, chain/belt drives; RPM-driven harmonics). Cyrius port of a 3,054-line Rust library."
+license = "GPL-3.0-only"
+repository = "https://github.com/MacCracken/ghurni"
+language = "cyrius"
+cyrius = "6.4.2"
+
+[build]
+entry = "src/main.cyr"
+output = "build/ghurni"
+
+# `[lib]` declares the distlib bundle `cyrius distlib` writes into
+# `dist/ghurni.cyr` — every module concatenated in dependency order (deps
+# before dependents). Every module is self-contained (no `include` lines);
+# the entry / test harness orders them. naad symbols (osc_*/noise_*/
+# filter_biquad_*/additive_*/modulation_lfo_*/db_to_amplitude) resolve from
+# THIS manifest's [deps]. All ghurni top-level symbols are ghurni_/GHURNI_/Gh-
+# prefixed so the bundle coexists with naad + its transitive bundles in one
+# flat namespace.
+[lib]
+# Dependency order (deps before dependents). Cyrius resolves forward function
+# references across the whole unit, but structs must be defined before
+# sizeof/accessor use. L0 foundations first; then the ten RPM synths (each
+# self-contained on naad + the L0 layer); then mixer (dispatches over the
+# synths by GH_KIND_* tag) and presets (constructs the synths).
+modules = [
+    # L0 foundations (no internal deps beyond each other, in this order)
+    "src/error.cyr",     # GH_ERR_* codes + finite/tolerance helpers + shared f64 math constants
+    "src/logging.cyr",   # sakshi-backed structured logging (tracing replacement)
+    "src/dsp.cyr",       # GhDcBlocker + sample-rate/duration validation + naad error map
+    "src/smooth.cyr",    # GhSmoothedParam one-pole parameter smoother
+    "src/event.cyr",     # MechanicalEvent (kinds + payloads) + serde name mapping
+    "src/traits.cyr",    # GH_KIND_* synth-dispatch tags (Synthesizer trait replacement)
+    # L1 — the ten RPM-driven synthesizers (each sits directly on naad + L0)
+    "src/engine.cyr",
+    "src/gear.cyr",
+    "src/motor.cyr",
+    "src/turbine.cyr",
+    "src/clock.cyr",
+    "src/transmission.cyr",
+    "src/differential.cyr",
+    "src/forced_induction.cyr",
+    "src/belt_drive.cyr",
+    "src/chain_drive.cyr",
+    # L2 — composites
+    "src/mixer.cyr",     # GhMixer: tag-dispatched multi-synth mixer (mono + stereo pan + mute)
+    "src/presets.cyr",   # shipped preset constructors
+]
+
+# stdlib: mirrors naad's set (ghurni sits directly on naad). math gives
+# clamp/min/max + F64_* constants (F64_TAU/F64_PI/F64_PI_2/F64_HALF/…);
+# ganita gives the transcendentals the synth DSP leans on; f64_sin/f64_cos/
+# f64_exp/f64_floor/f64_pow are compiler builtins. tagged for Option-shaped
+# returns; fnptr/callback for any closure→fn-ptr port; bench for .bcyr;
+# assert for .tcyr; bayan for the serde/json string building; string/str/fmt
+# for error-name diagnostics.
+[deps]
+stdlib = [
+    "syscalls",
+    "string",
+    "alloc",
+    "str",
+    "fmt",
+    "vec",
+    "io",
+    "args",
+    "assert",
+    "math",
+    "ganita",
+    "hashmap",
+    "bayan",
+    "tagged",
+    "fnptr",
+    "callback",
+    "bench",
+]
+
+# naad — audio synthesis primitives. ghurni consumes naad's Oscillator /
+# NoiseGenerator / BiquadFilter / AdditiveSynth / Lfo + db_to_amplitude from
+# the single monolithic dist bundle. The bundle references hisab + goonj +
+# sakshi symbols, resolved from THIS manifest below. Local path dep (this
+# repo is co-developed with naad); pin to a git tag for released builds.
+[deps.naad]
+path = "../naad"
+modules = ["dist/naad.cyr"]
+
+# hisab — math/geometry (HVec3/HComplex/FFT/ganita least-squares). Referenced
+# by naad's bundle (envelope/additive/physical/wavetable/dsp_spectral).
+[deps.hisab]
+path = "../hisab"
+modules = ["dist/hisab.cyr"]
+
+# goonj — acoustics engine. Referenced by naad's acoustics/* modules present
+# in the monolithic bundle. Pulls sakshi + hisab transitively.
+[deps.goonj]
+path = "../goonj"
+modules = ["dist/goonj.cyr"]
+
+# sakshi — structured logging. Arrives transitively via hisab/goonj/naad;
+# declared explicitly so the bundle's sakshi_* references resolve and so
+# ghurni's own logging.cyr wrappers link.
+[deps.sakshi]
+path = "../sakshi"
+modules = ["dist/sakshi.cyr"]

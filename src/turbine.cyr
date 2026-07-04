@@ -1,0 +1,180 @@
+# turbine.cyr -- turbine and fan sound synthesis.
+# Ports rust-old/src/turbine.rs (Turbine synth). Models blade pass frequency,
+# whoosh, and tonal whine for turbines, fans, propellers, and jet engines.
+# Kind tag: GH_KIND_TURBINE (dispatch lives in mixer.cyr; see traits.cyr).
+#
+# Requires (from the build/test unit): error.cyr (GH_ERR_*, ghurni_is_err),
+# logging.cyr, dsp.cyr (GhDcBlocker + validation + naad error map) + the naad
+# bundle (additive_*/osc_*/noise_*/modulation_lfo_*) + stdlib alloc/vec/math.
+# No `include` lines.
+#
+# PORT NOTES
+# - f32 -> f64 throughout. The Rust `naad-backend` (default) path is the ONE
+#   ported path; the `#[cfg(not(naad-backend))]` fallback (rng/math) is dropped
+#   (naad owns the randomness), matching engine.cyr.
+# - There is NO enum for this module (Turbine has no serde-roundtrip enum).
+# - Audio buffers are stdlib vecs of f64. process_block fills a caller vec in
+#   place; synthesize allocates + returns one.
+# - naad constructors return a heap pointer on success or a negative ERR_* code
+#   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
+#   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`).
+# - duct_osc is Option<Oscillator> in Rust: built ONLY when duct_resonance > 0,
+#   else None. The port stores 0 in the duct_osc field for the None case and
+#   guards every use with `if (duct_osc != 0)`.
+
+# ================================================================
+# GhTurbine. Accessor fields carry ints, f64 bit patterns, and heap pointers
+# (dc blocker / naad objects), all i64-wide.
+# NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
+# field roles are documented here instead:
+#   blades(int 2..64) duct_resonance(f64 Hz) sample_rate(f64) rpm(f64)
+#   sample_position(int) dc_blocker(ptr GhDcBlocker)
+#   blade_synth(ptr naad AdditiveSynth) duct_osc(ptr naad Oscillator, 0 if none)
+#   noise_gen(ptr naad NoiseGenerator) whoosh_lfo(ptr naad Lfo)
+# ================================================================
+#derive(accessors)
+struct GhTurbine {
+    blades;
+    duct_resonance;
+    sample_rate;
+    rpm;
+    sample_position;
+    dc_blocker;
+    blade_synth;
+    duct_osc;
+    noise_gen;
+    whoosh_lfo;
+}
+
+# new(blades, duct_resonance, sample_rate) -> ptr or GH_ERR_*.
+# - blades: number of blades/vanes (clamped 2..64).
+# - duct_resonance: duct resonant frequency in Hz (max 0.0; 0 = open propeller).
+# - sample_rate: audio sample rate in Hz.
+#must_use
+fn ghurni_turbine_new(blades, duct_resonance, sample_rate) {
+    var vsr = ghurni_validate_sample_rate(sample_rate);
+    if (ghurni_is_err(vsr) == 1) { return vsr; }
+
+    var b = blades;
+    if (b < 2) { b = 2; }
+    if (b > 64) { b = 64; }
+
+    var duct = f64_max(duct_resonance, 0);
+    var nyquist = f64_mul(sample_rate, 0.49);
+
+    # blade_synth: 2-partial additive synth (fundamental 100 Hz, 2 partials).
+    var blade_synth = additive_new(f64_from(100), 2, sample_rate);
+    if (ghurni_is_err(blade_synth) == 1) { return ghurni_map_naad_error(blade_synth); }
+    additive_set_partial(blade_synth, 0, F64_ONE, F64_ONE);
+    additive_set_partial(blade_synth, 1, F64_TWO, 0.4);
+
+    # duct_osc: only when duct_resonance > 0, else store 0 (Rust None).
+    var duct_osc = 0;
+    if (f64_gt(duct, 0) == 1) {
+        duct_osc = osc_new(WAVEFORM_SINE, f64_min(duct, nyquist), sample_rate);
+        if (ghurni_is_err(duct_osc) == 1) { return ghurni_map_naad_error(duct_osc); }
+    }
+
+    var initial_lfo_rate = f64_min(f64_from(10), nyquist);
+
+    # whoosh_lfo: sine LFO seeded with the initial whoosh rate.
+    var whoosh_lfo = modulation_lfo_new(MODULATION_LFO_SINE, initial_lfo_rate, sample_rate);
+    if (ghurni_is_err(whoosh_lfo) == 1) { return ghurni_map_naad_error(whoosh_lfo); }
+
+    # noise_gen: pink noise (never errors). Seed derives from blades + duct.
+    var noise = noise_new(NOISE_PINK, b * 13 + f64_to(duct));
+
+    var self = alloc(sizeof(GhTurbine));
+    GhTurbine_set_blades(self, b);
+    GhTurbine_set_duct_resonance(self, duct);
+    GhTurbine_set_sample_rate(self, sample_rate);
+    GhTurbine_set_rpm(self, f64_from(1000));
+    GhTurbine_set_sample_position(self, 0);
+    GhTurbine_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
+    GhTurbine_set_blade_synth(self, blade_synth);
+    GhTurbine_set_duct_osc(self, duct_osc);
+    GhTurbine_set_noise_gen(self, noise);
+    GhTurbine_set_whoosh_lfo(self, whoosh_lfo);
+    return self;
+}
+
+# set_rpm(rpm) -- clamp to 1..200000.
+fn ghurni_turbine_set_rpm(self, rpm) {
+    var r = f64_clamp(rpm, F64_ONE, f64_from(200000));
+    GhTurbine_set_rpm(self, r);
+    return 0;
+}
+
+# blade_pass_frequency(rpm) = (rpm / 60) * blades.
+#must_use
+#inline
+fn ghurni_turbine_blade_pass_frequency(self, rpm) {
+    return f64_mul(f64_div(rpm, f64_from(60)), f64_from(GhTurbine_blades(self)));
+}
+
+# synthesize(rpm, duration) -> vec<f64> or GH_ERR_*.
+#must_use
+fn ghurni_turbine_synthesize(self, rpm, duration) {
+    var vd = ghurni_validate_duration(duration);
+    if (ghurni_is_err(vd) == 1) { return vd; }
+    ghurni_turbine_set_rpm(self, rpm);
+    var n = f64_to(f64_mul(GhTurbine_sample_rate(self), duration));
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    ghurni_turbine_process_block(self, out);
+    return out;
+}
+
+# process_block(out) -- fill `out` (vec<f64>) with turbine sound, DC-block, and
+# advance the sample counter.
+fn ghurni_turbine_process_block(self, out) {
+    ghurni_turbine_process_block_naad(self, out);
+    var db = GhTurbine_dc_blocker(self);
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
+        i = i + 1;
+    }
+    GhTurbine_set_sample_position(self, GhTurbine_sample_position(self) + n);
+    return 0;
+}
+
+# The naad synthesis core (ports process_block_naad).
+fn ghurni_turbine_process_block_naad(self, out) {
+    var bpf = ghurni_turbine_blade_pass_frequency(self, GhTurbine_rpm(self));
+    var nyquist = f64_mul(GhTurbine_sample_rate(self), 0.49);
+    var amp = 0.3;
+
+    var blade_synth = GhTurbine_blade_synth(self);
+    var whoosh_lfo = GhTurbine_whoosh_lfo(self);
+    var noise = GhTurbine_noise_gen(self);
+    var duct_osc = GhTurbine_duct_osc(self);
+
+    additive_set_fundamental(blade_synth, f64_min(bpf, f64_div(nyquist, f64_from(2))));
+    var lfo_freq = f64_clamp(bpf, 0.01, nyquist);
+    modulation_lfo_set_frequency(whoosh_lfo, lfo_freq);
+
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        var tone = additive_next_sample(blade_synth);
+        var whoosh_mod = f64_add(0.5, f64_mul(0.5, modulation_lfo_next_value(whoosh_lfo)));
+        var whoosh = f64_mul(f64_mul(noise_next_sample(noise), whoosh_mod), 0.2);
+        var duct = 0;
+        if (duct_osc != 0) {
+            duct = f64_mul(osc_next_sample(duct_osc), 0.15);
+        }
+        var s = f64_add(f64_add(f64_mul(tone, amp), whoosh), duct);
+        vec_set(out, i, s);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+fn ghurni_turbine_rpm(self) { return GhTurbine_rpm(self); }
+#must_use
+fn ghurni_turbine_sample_rate(self) { return GhTurbine_sample_rate(self); }

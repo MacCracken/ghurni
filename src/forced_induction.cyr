@@ -1,0 +1,224 @@
+# forced_induction.cyr -- turbocharger and supercharger sound synthesis.
+# Ports rust-old/src/forced_induction.rs (InductionType enum + ForcedInduction
+# synth). Models the whine of forced induction systems: turbo spool with
+# lag/inertia, supercharger direct-drive whine, and blow-off valve bursts.
+#
+# Requires (from the build/test unit): error.cyr (GH_ERR_*, ghurni_is_err),
+# logging.cyr, dsp.cyr (GhDcBlocker + validation + naad error map), smooth.cyr
+# (GhSmoothedParam), traits.cyr (GH_KIND_FORCED_INDUCTION) + the naad bundle
+# (osc_*/noise_*/filter_biquad_*) + stdlib alloc/vec/math. No `include` lines.
+#
+# PORT NOTES
+# - f32 -> f64 throughout. The Rust `naad-backend` (default) path is the ONE
+#   ported path; the `#[cfg(not(naad-backend))]` fallback (rng/math) is dropped
+#   (naad owns the randomness), matching engine.cyr.
+# - Audio buffers are stdlib vecs of f64. process_block fills a caller vec in
+#   place; synthesize allocates + returns one.
+# - naad constructors return a heap pointer on success or a negative ERR_* code
+#   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
+#   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`). The
+#   noise generator never errors.
+# - serde: ForcedInduction held opaque naad backend pointers; deep
+#   #[derive(Serialize)] is dropped. Serde is provided only for InductionType
+#   (roundtrip tested on Turbo) via ghurni_inductiontype_name/_from_name below.
+
+# ================================================================
+# InductionType (was `enum InductionType`). One per Rust variant, in order.
+# ================================================================
+var GH_INDUCTION_TURBO        = 0;   # exhaust-driven, has spool lag
+var GH_INDUCTION_SUPERCHARGER = 1;   # belt-driven, direct RPM coupling
+
+# Externally-tagged serde variant name (parity with serde_json).
+#must_use
+fn ghurni_inductiontype_name(t) {
+    if (t == GH_INDUCTION_TURBO)        { return "Turbo"; }
+    if (t == GH_INDUCTION_SUPERCHARGER) { return "Supercharger"; }
+    return "Unknown";
+}
+#must_use
+fn ghurni_inductiontype_from_name(s) {
+    if (streq(s, "Turbo") == 1)        { return GH_INDUCTION_TURBO; }
+    if (streq(s, "Supercharger") == 1) { return GH_INDUCTION_SUPERCHARGER; }
+    return (0 - 1);
+}
+
+# ================================================================
+# GhForcedInduction. Accessor fields carry a mix of ints, f64 bit patterns, and
+# heap pointers (smoother / dc blocker / naad objects), all i64-wide.
+# NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
+# field roles are documented here instead:
+#   induction_type(int) drive_ratio(f64, 0.5..10) spool_inertia(f64 sec)
+#   sample_rate(f64) rpm(f64) load(f64) bov_active(int 0/1)
+#   bov_remaining(int samples) sample_position(int)
+#   spool_rpm(ptr GhSmoothedParam) dc_blocker(ptr GhDcBlocker)
+#   whine_osc(ptr naad Oscillator) noise_gen(ptr naad NoiseGenerator)
+#   bov_filter(ptr naad BiquadFilter)
+# ================================================================
+#derive(accessors)
+struct GhForcedInduction {
+    induction_type;
+    drive_ratio;
+    spool_inertia;
+    sample_rate;
+    rpm;
+    load;
+    bov_active;
+    bov_remaining;
+    sample_position;
+    spool_rpm;
+    dc_blocker;
+    whine_osc;
+    noise_gen;
+    bov_filter;
+}
+
+# new(induction_type, drive_ratio, spool_inertia, sample_rate) -> ptr or GH_ERR_*.
+# drive_ratio clamps to 0.5..10; spool_inertia clamps to 0.1..5 for a turbo but
+# is forced to 0.01 (near-instant response) for a supercharger.
+#must_use
+fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sample_rate) {
+    var vsr = ghurni_validate_sample_rate(sample_rate);
+    if (ghurni_is_err(vsr) == 1) { return vsr; }
+
+    var ratio = f64_clamp(drive_ratio, 0.5, f64_from(10));
+
+    var inertia = 0.01;
+    if (induction_type == GH_INDUCTION_TURBO) {
+        inertia = f64_clamp(spool_inertia, 0.1, f64_from(5));
+    }
+
+    # naad backend: saw whine oscillator + white noise + band-pass BOV filter.
+    var whine_osc = osc_new(WAVEFORM_SAW, f64_from(100), sample_rate);
+    if (ghurni_is_err(whine_osc) == 1) { return ghurni_map_naad_error(whine_osc); }
+    var noise = noise_new(NOISE_WHITE, induction_type * 777);
+    var bov_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_from(2000), f64_from(2));
+    if (ghurni_is_err(bov_filter) == 1) { return ghurni_map_naad_error(bov_filter); }
+
+    var self = alloc(sizeof(GhForcedInduction));
+    GhForcedInduction_set_induction_type(self, induction_type);
+    GhForcedInduction_set_drive_ratio(self, ratio);
+    GhForcedInduction_set_spool_inertia(self, inertia);
+    GhForcedInduction_set_sample_rate(self, sample_rate);
+    GhForcedInduction_set_rpm(self, 0);
+    GhForcedInduction_set_load(self, 0);
+    GhForcedInduction_set_bov_active(self, 0);
+    GhForcedInduction_set_bov_remaining(self, 0);
+    GhForcedInduction_set_sample_position(self, 0);
+    GhForcedInduction_set_spool_rpm(self, ghurni_smooth_new(0, inertia, sample_rate));
+    GhForcedInduction_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
+    GhForcedInduction_set_whine_osc(self, whine_osc);
+    GhForcedInduction_set_noise_gen(self, noise);
+    GhForcedInduction_set_bov_filter(self, bov_filter);
+    return self;
+}
+
+# set_rpm(rpm) -- clamp to 0..15000, retarget the spool smoother.
+# target_spool = rpm * drive_ratio * load.
+fn ghurni_forced_induction_set_rpm(self, rpm) {
+    var r = f64_clamp(rpm, 0, f64_from(15000));
+    GhForcedInduction_set_rpm(self, r);
+    var target = f64_mul(f64_mul(r, GhForcedInduction_drive_ratio(self)), GhForcedInduction_load(self));
+    ghurni_smooth_set_target(GhForcedInduction_spool_rpm(self), target);
+    return 0;
+}
+
+# set_load(load) -- clamp to 0..1, retarget the spool smoother, and trigger the
+# blow-off valve when load drops sharply (prev>0.5, new<0.2) while the spool is
+# spinning fast (current > 5000).
+fn ghurni_forced_induction_set_load(self, load) {
+    var prev = GhForcedInduction_load(self);
+    var l = f64_clamp(load, 0, F64_ONE);
+    GhForcedInduction_set_load(self, l);
+    if ((f64_gt(prev, 0.5) == 1) && (f64_lt(l, 0.2) == 1) && (f64_gt(ghurni_smooth_current(GhForcedInduction_spool_rpm(self)), f64_from(5000)) == 1)) {
+        ghurni_forced_induction_trigger_bov(self);
+    }
+    var target = f64_mul(f64_mul(GhForcedInduction_rpm(self), GhForcedInduction_drive_ratio(self)), l);
+    ghurni_smooth_set_target(GhForcedInduction_spool_rpm(self), target);
+    return 0;
+}
+
+# trigger_bov() -- schedule a 150ms blow-off valve burst.
+fn ghurni_forced_induction_trigger_bov(self) {
+    GhForcedInduction_set_bov_active(self, 1);
+    GhForcedInduction_set_bov_remaining(self, f64_to(f64_mul(GhForcedInduction_sample_rate(self), 0.15)));
+    return 0;
+}
+
+# synthesize(rpm, load, duration) -> vec<f64> or GH_ERR_*.
+#must_use
+fn ghurni_forced_induction_synthesize(self, rpm, load, duration) {
+    var vd = ghurni_validate_duration(duration);
+    if (ghurni_is_err(vd) == 1) { return vd; }
+    ghurni_forced_induction_set_rpm(self, rpm);
+    ghurni_forced_induction_set_load(self, load);
+    var n = f64_to(f64_mul(GhForcedInduction_sample_rate(self), duration));
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    ghurni_forced_induction_process_block(self, out);
+    return out;
+}
+
+# process_block(out) -- fill `out` (vec<f64>) with induction sound, DC-block, and
+# advance the sample counter.
+fn ghurni_forced_induction_process_block(self, out) {
+    ghurni_forced_induction_process_block_naad(self, out);
+    var db = GhForcedInduction_dc_blocker(self);
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
+        i = i + 1;
+    }
+    GhForcedInduction_set_sample_position(self, GhForcedInduction_sample_position(self) + n);
+    return 0;
+}
+
+# The naad synthesis core (ports process_block_naad).
+fn ghurni_forced_induction_process_block_naad(self, out) {
+    var sr = GhForcedInduction_sample_rate(self);
+    var nyquist = f64_mul(sr, 0.49);
+    var spool_rpm = GhForcedInduction_spool_rpm(self);
+    var whine_osc = GhForcedInduction_whine_osc(self);
+    var noise = GhForcedInduction_noise_gen(self);
+    var bov_filter = GhForcedInduction_bov_filter(self);
+
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        var spool = ghurni_smooth_next_value(spool_rpm);
+        var whine_freq = f64_clamp(f64_div(spool, f64_from(60)), f64_from(20), nyquist);
+        osc_set_frequency(whine_osc, whine_freq);
+
+        # whine amplitude scales with spool speed
+        var whine_amp = f64_clamp(f64_div(spool, f64_from(20000)), 0, 0.4);
+        var whine = f64_mul(osc_next_sample(whine_osc), whine_amp);
+
+        # compressor noise -- broadband hiss proportional to boost
+        var hiss = f64_mul(f64_mul(noise_next_sample(noise), whine_amp), 0.15);
+
+        # BOV burst
+        var bov = 0;
+        var rem = GhForcedInduction_bov_remaining(self);
+        if (rem > 0) {
+            rem = rem - 1;
+            GhForcedInduction_set_bov_remaining(self, rem);
+            var env = f64_div(f64_from(rem), f64_mul(sr, 0.15));
+            var raw = f64_mul(f64_mul(noise_next_sample(noise), env), 0.6);
+            bov = filter_biquad_process_sample(bov_filter, raw);
+        } else {
+            GhForcedInduction_set_bov_active(self, 0);
+        }
+
+        var s = f64_add(whine, f64_add(hiss, bov));
+        vec_set(out, i, s);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+fn ghurni_forced_induction_rpm(self) { return GhForcedInduction_rpm(self); }
+#must_use
+fn ghurni_forced_induction_sample_rate(self) { return GhForcedInduction_sample_rate(self); }

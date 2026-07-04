@@ -1,0 +1,82 @@
+# smooth.cyr -- one-pole exponential parameter smoother.
+# Ports rust-old/src/smooth.rs (SmoothedParam). Prevents clicks when RPM / load
+# change mid-block by exponentially approaching the target. Was a `pub` type.
+#
+# Requires (from the build/test unit): stdlib alloc + math (F64_ONE, f64_*
+# builtins). The module file has no `include` lines.
+#
+# serde: SmoothedParam was Serialize/Deserialize; RESTORED via #derive(Serialize)
+# (f64 fields typed i64 for lossless bit-pattern serialization). Auto-generates
+# GhSmoothedParam_to_json / _from_json_str.
+
+# is_settled tolerance: 1e-6 (Rust used the literal 1e-6, not f32::EPSILON).
+var GHURNI_SMOOTH_SETTLE = 0.000001;   # 1e-6
+
+# ================================================================
+# GhSmoothedParam
+#   current : current smoothed value
+#   target  : target value (approached smoothly)
+#   coeff   : one-pole coefficient exp(-1/(smooth_time_s*sample_rate)), or 0
+# ================================================================
+#derive(accessors)
+#derive(Serialize)
+struct GhSmoothedParam {
+    current: i64;
+    target: i64;
+    coeff: i64;
+}
+
+# new(initial, smooth_time_s, sample_rate). coeff = exp(-1/(t*sr)) when both
+# t>0 and sr>0, else 0 (snaps instantly).
+#must_use
+fn ghurni_smooth_new(initial, smooth_time_s, sample_rate) {
+    var p = alloc(sizeof(GhSmoothedParam));
+    var coeff = 0;
+    if ((f64_gt(smooth_time_s, 0) == 1) && (f64_gt(sample_rate, 0) == 1)) {
+        coeff = f64_exp(f64_neg(f64_div(F64_ONE, f64_mul(smooth_time_s, sample_rate))));
+    }
+    GhSmoothedParam_set_current(p, initial);
+    GhSmoothedParam_set_target(p, initial);
+    GhSmoothedParam_set_coeff(p, coeff);
+    return p;
+}
+
+# set_target(v) -- set the value to smoothly approach.
+fn ghurni_smooth_set_target(p, target) {
+    GhSmoothedParam_set_target(p, target);
+    return 0;
+}
+
+# next_value() -- advance one sample: current = target + coeff*(current-target).
+#inline
+fn ghurni_smooth_next_value(p) {
+    var target = GhSmoothedParam_target(p);
+    var cur = f64_add(target, f64_mul(GhSmoothedParam_coeff(p), f64_sub(GhSmoothedParam_current(p), target)));
+    GhSmoothedParam_set_current(p, cur);
+    return cur;
+}
+
+# snap() -- jump instantly to target (no smoothing).
+fn ghurni_smooth_snap(p) {
+    GhSmoothedParam_set_current(p, GhSmoothedParam_target(p));
+    return 0;
+}
+
+# current() -- read the current smoothed value without advancing.
+#must_use
+fn ghurni_smooth_current(p) {
+    return GhSmoothedParam_current(p);
+}
+
+# target() -- read the target value.
+#must_use
+fn ghurni_smooth_target(p) {
+    return GhSmoothedParam_target(p);
+}
+
+# is_settled() -- 1 iff |current - target| < 1e-6.
+#must_use
+fn ghurni_smooth_is_settled(p) {
+    var d = f64_abs(f64_sub(GhSmoothedParam_current(p), GhSmoothedParam_target(p)));
+    return f64_lt(d, GHURNI_SMOOTH_SETTLE);
+}

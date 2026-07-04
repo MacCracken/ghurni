@@ -1,0 +1,28 @@
+# traits.cyr -- Synthesizer trait replacement: GH_KIND_* dispatch tags.
+#
+# Rust had `trait Synthesizer { process_block(&mut [f32]); set_rpm(f32);
+# rpm() -> f32; sample_rate() -> f32 }` and used `Box<dyn Synthesizer>` trait
+# objects (the mixer's channels, and the `test_synthesizer_trait_dispatch`
+# heterogeneous vector). Cyrius has no vtables and no dynamic dispatch (ADR-004:
+# method dispatch is convention-based `Struct_method`, resolved at compile time;
+# trait objects "remain a library pattern, not compiler-native").
+#
+# The port replaces the trait object with a (kind, pointer) pair: each synth
+# instance is tagged with its GH_KIND_* discriminant, and a small dispatcher
+# (ghurni_synth_process_block / ghurni_synth_set_rpm, defined in mixer.cyr where
+# the heterogeneity actually lives) switches on the tag to call the concrete
+# synth's method. These constants are the shared vocabulary between the synth
+# modules, the mixer, and consumers building heterogeneous synth collections.
+#
+# The module has no `include` lines and no internal deps.
+
+var GH_KIND_ENGINE           = 0;
+var GH_KIND_GEAR             = 1;
+var GH_KIND_MOTOR            = 2;
+var GH_KIND_TURBINE          = 3;
+var GH_KIND_CLOCK            = 4;
+var GH_KIND_TRANSMISSION     = 5;
+var GH_KIND_DIFFERENTIAL     = 6;
+var GH_KIND_FORCED_INDUCTION = 7;
+var GH_KIND_BELT_DRIVE       = 8;
+var GH_KIND_CHAIN_DRIVE      = 9;

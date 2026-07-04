@@ -1,0 +1,83 @@
+# event.cyr -- discrete mechanical event triggers.
+# Ports rust-old/src/event.rs (the `MechanicalEvent` enum). The Rust enum mixed
+# nullary variants (Backfire, Stall, RevLimiterHit, Startup, Shutdown) with
+# payload variants (Misfire{cylinder}, Knock{cylinder}, GearShift{from,to}).
+# The Cyrius port encodes the discriminant as a GH_EVENT_* integer constant and
+# carries the (at most two) payload fields in a small GhEvent struct, so one
+# representation covers every variant.
+#
+# Requires (from the build/test unit): stdlib alloc (+ str/bayan for serde).
+# The module file has no `include` lines.
+#
+# serde: MechanicalEvent was Serialize/Deserialize (the GearShift roundtrip is
+# exercised in the Rust integration tests); RESTORED via #derive(Serialize) on
+# GhEvent -> GhEvent_to_json / _from_json_str, plus a name mapping mirroring
+# serde's externally-tagged variant names.
+
+# ================================================================
+# Event kinds (was `enum MechanicalEvent`). One per Rust variant, in order.
+# ================================================================
+var GH_EVENT_BACKFIRE        = 0;   # explosive pop in exhaust
+var GH_EVENT_MISFIRE         = 1;   # skipped combustion; payload = cylinder
+var GH_EVENT_KNOCK           = 2;   # pre-detonation ping; payload = cylinder
+var GH_EVENT_STALL           = 3;   # RPM drops to zero
+var GH_EVENT_REV_LIMITER_HIT = 4;   # fuel cut at max RPM
+var GH_EVENT_GEAR_SHIFT      = 5;   # payload = from, to
+var GH_EVENT_STARTUP         = 6;   # startup sequence
+var GH_EVENT_SHUTDOWN        = 7;   # shutdown sequence
+
+# ================================================================
+# GhEvent -- discriminant + up to two integer payload fields.
+#   kind : GH_EVENT_* constant
+#   arg0 : cylinder (Misfire/Knock) or `from` gear (GearShift); else 0
+#   arg1 : `to` gear (GearShift); else 0
+# ================================================================
+#derive(accessors)
+#derive(Serialize)
+struct GhEvent {
+    kind: i64;
+    arg0: i64;
+    arg1: i64;
+}
+
+# General constructor.
+#must_use
+fn ghurni_event_new(kind, arg0, arg1) {
+    var e = alloc(sizeof(GhEvent));
+    GhEvent_set_kind(e, kind);
+    GhEvent_set_arg0(e, arg0);
+    GhEvent_set_arg1(e, arg1);
+    return e;
+}
+
+# Variant convenience constructors (mirror the Rust variant names).
+#must_use
+fn ghurni_event_backfire()          { return ghurni_event_new(GH_EVENT_BACKFIRE, 0, 0); }
+#must_use
+fn ghurni_event_misfire(cylinder)   { return ghurni_event_new(GH_EVENT_MISFIRE, cylinder, 0); }
+#must_use
+fn ghurni_event_knock(cylinder)     { return ghurni_event_new(GH_EVENT_KNOCK, cylinder, 0); }
+#must_use
+fn ghurni_event_stall()             { return ghurni_event_new(GH_EVENT_STALL, 0, 0); }
+#must_use
+fn ghurni_event_rev_limiter_hit()   { return ghurni_event_new(GH_EVENT_REV_LIMITER_HIT, 0, 0); }
+#must_use
+fn ghurni_event_gear_shift(from, to){ return ghurni_event_new(GH_EVENT_GEAR_SHIFT, from, to); }
+#must_use
+fn ghurni_event_startup()           { return ghurni_event_new(GH_EVENT_STARTUP, 0, 0); }
+#must_use
+fn ghurni_event_shutdown()          { return ghurni_event_new(GH_EVENT_SHUTDOWN, 0, 0); }
+
+# Externally-tagged variant name (serde parity / diagnostics).
+#must_use
+fn ghurni_event_name(kind) {
+    if (kind == GH_EVENT_BACKFIRE)        { return "Backfire"; }
+    if (kind == GH_EVENT_MISFIRE)         { return "Misfire"; }
+    if (kind == GH_EVENT_KNOCK)           { return "Knock"; }
+    if (kind == GH_EVENT_STALL)           { return "Stall"; }
+    if (kind == GH_EVENT_REV_LIMITER_HIT) { return "RevLimiterHit"; }
+    if (kind == GH_EVENT_GEAR_SHIFT)      { return "GearShift"; }
+    if (kind == GH_EVENT_STARTUP)         { return "Startup"; }
+    if (kind == GH_EVENT_SHUTDOWN)        { return "Shutdown"; }
+    return "Unknown";
+}

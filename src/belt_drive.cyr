@@ -1,0 +1,192 @@
+# belt_drive.cyr -- belt drive sound synthesis.
+# Ports rust-old/src/belt_drive.rs (BeltDrive synth). Models serpentine / timing
+# belt squeal and flap, driven by pulley RPM and belt tension: a tension-dependent
+# high-frequency squeal oscillator plus band-pass-filtered pink noise flap, both
+# amplitude-modulated at the belt's rotation rate.
+#
+# Requires (from the build/test unit): error.cyr (GH_ERR_*, ghurni_is_err),
+# logging.cyr, dsp.cyr (GhDcBlocker + validation + naad error map), smooth.cyr
+# (GhSmoothedParam) + the naad bundle (osc_*/noise_*/filter_biquad_*) + stdlib
+# alloc/vec/math (F64_PI/F64_TAU). No `include` lines.
+#
+# PORT NOTES
+# - f32 -> f64 throughout. The Rust `naad-backend` (default) path is the ONE
+#   ported path; the `#[cfg(not(naad-backend))]` fallback (rng/math) is dropped
+#   (naad owns the randomness via its NoiseGenerator).
+# - naad constructors (osc / filter) return a heap pointer on success or a
+#   negative ERR_* code on bad params; ghurni_is_err() distinguishes them and
+#   new() maps failures to GH_ERR_SYNTHESIS_FAILED (ports `.map_err`). noise_new
+#   never errors.
+# - serde: BeltDrive held opaque naad backend pointers; deep #[derive(Serialize)]
+#   is dropped. There is no public enum to roundtrip for this module.
+# - process_block interleaves the naad synthesis inline (no separate _naad fn) --
+#   mirrors the Rust, whose belt process_block bodies the naad loop directly.
+# - Rust `noise_gen` seed = `pulley_diameter.to_bits() + tension.to_bits()`;
+#   the port derives a behavioral integer seed (bit-exactness is not meaningful).
+
+# ================================================================
+# GhBeltDrive. Accessor fields carry a mix of ints, f64 bit patterns, and heap
+# pointers (smoother / dc blocker / naad objects), all i64-wide.
+# NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
+# field roles are documented here instead:
+#   pulley_diameter(f64 mm, clamp 20..500) tension(f64 0..1) sample_rate(f64)
+#   rpm(f64) sample_position(int) smooth_rpm(ptr GhSmoothedParam)
+#   dc_blocker(ptr GhDcBlocker) squeal_osc(ptr naad Oscillator)
+#   noise_gen(ptr naad NoiseGenerator) flap_filter(ptr naad BiquadFilter)
+# ================================================================
+#derive(accessors)
+struct GhBeltDrive {
+    pulley_diameter;
+    tension;
+    sample_rate;
+    rpm;
+    sample_position;
+    smooth_rpm;
+    dc_blocker;
+    squeal_osc;
+    noise_gen;
+    flap_filter;
+}
+
+# new(pulley_diameter, tension, sample_rate) -> ptr or GH_ERR_*.
+# pulley_diameter clamps to 20..500 (mm), tension to 0..1.
+#must_use
+fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
+    var vsr = ghurni_validate_sample_rate(sample_rate);
+    if (ghurni_is_err(vsr) == 1) { return vsr; }
+
+    var diameter = f64_clamp(pulley_diameter, f64_from(20), f64_from(500));
+    var tens = f64_clamp(tension, 0, F64_ONE);
+    var nyq = f64_mul(sample_rate, 0.49);
+
+    # Squeal frequency depends on belt speed and tension (2000..5000 Hz).
+    var squeal_freq = f64_min(f64_add(f64_from(2000), f64_mul(f64_sub(F64_ONE, tens), f64_from(3000))), nyq);
+
+    # naad backend: squeal oscillator + pink noise + band-pass flap filter.
+    var squeal_osc = osc_new(WAVEFORM_SINE, squeal_freq, sample_rate);
+    if (ghurni_is_err(squeal_osc) == 1) { return ghurni_map_naad_error(squeal_osc); }
+    var noise = noise_new(NOISE_PINK, f64_to(diameter) + f64_to(tens));
+    var flap_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_from(500), f64_from(2));
+    if (ghurni_is_err(flap_filter) == 1) { return ghurni_map_naad_error(flap_filter); }
+
+    var self = alloc(sizeof(GhBeltDrive));
+    GhBeltDrive_set_pulley_diameter(self, diameter);
+    GhBeltDrive_set_tension(self, tens);
+    GhBeltDrive_set_sample_rate(self, sample_rate);
+    GhBeltDrive_set_rpm(self, 0);
+    GhBeltDrive_set_sample_position(self, 0);
+    GhBeltDrive_set_smooth_rpm(self, ghurni_smooth_new(0, 0.03, sample_rate));
+    GhBeltDrive_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
+    GhBeltDrive_set_squeal_osc(self, squeal_osc);
+    GhBeltDrive_set_noise_gen(self, noise);
+    GhBeltDrive_set_flap_filter(self, flap_filter);
+    return self;
+}
+
+# set_rpm(rpm) -- clamp to 0..20000.
+fn ghurni_belt_drive_set_rpm(self, rpm) {
+    GhBeltDrive_set_rpm(self, f64_clamp(rpm, 0, f64_from(20000)));
+    return 0;
+}
+
+# set_tension(tension) -- clamp to 0..1 (0 = slack/squealy, 1 = tight/quiet).
+fn ghurni_belt_drive_set_tension(self, tension) {
+    GhBeltDrive_set_tension(self, f64_clamp(tension, 0, F64_ONE));
+    return 0;
+}
+
+# belt_speed(rpm) -- belt linear speed in m/s. v = PI * d * RPM / 60000
+# (d in mm -> m).
+#must_use
+#inline
+fn ghurni_belt_drive_belt_speed(self, rpm) {
+    return f64_div(f64_mul(f64_mul(F64_PI, GhBeltDrive_pulley_diameter(self)), rpm), f64_from(60000));
+}
+
+# synthesize(rpm, duration) -> vec<f64> or GH_ERR_*.
+#must_use
+fn ghurni_belt_drive_synthesize(self, rpm, duration) {
+    var vd = ghurni_validate_duration(duration);
+    if (ghurni_is_err(vd) == 1) { return vd; }
+    ghurni_belt_drive_set_rpm(self, rpm);
+    var n = f64_to(f64_mul(GhBeltDrive_sample_rate(self), duration));
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    ghurni_belt_drive_process_block(self, out);
+    return out;
+}
+
+# process_block(out) -- fill `out` (vec<f64>) with belt drive sound. The naad
+# synthesis is interleaved inline (mirrors the Rust); then DC-block and advance
+# the sample counter.
+fn ghurni_belt_drive_process_block(self, out) {
+    var smooth_rpm = GhBeltDrive_smooth_rpm(self);
+    var rpm = GhBeltDrive_rpm(self);
+    ghurni_smooth_set_target(smooth_rpm, rpm);
+
+    var sr = GhBeltDrive_sample_rate(self);
+    var tens = GhBeltDrive_tension(self);
+    var nyq = f64_mul(sr, 0.49);
+
+    # Squeal amplitude inversely proportional to tension.
+    var squeal_amp = f64_mul(f64_sub(F64_ONE, tens), 0.3);
+    # Flap depends on belt speed.
+    var speed = ghurni_belt_drive_belt_speed(self, rpm);
+    var flap_amp = f64_clamp(f64_div(speed, f64_from(20)), 0, 0.2);
+
+    # Belt rotation frequency (one full loop). circumference in meters.
+    var belt_circumference = f64_div(f64_mul(F64_PI, GhBeltDrive_pulley_diameter(self)), f64_from(1000));
+    var belt_rotation_freq = 0;
+    if (f64_gt(belt_circumference, 0) == 1) {
+        belt_rotation_freq = f64_div(speed, f64_max(belt_circumference, 0.1));
+    }
+
+    var osc = GhBeltDrive_squeal_osc(self);
+    var noise = GhBeltDrive_noise_gen(self);
+    var flap_filter = GhBeltDrive_flap_filter(self);
+    var base_pos = GhBeltDrive_sample_position(self);
+
+    # squeal frequency (constant across the block), clamped to nyquist.
+    var squeal_freq = f64_min(f64_add(f64_from(2000), f64_mul(f64_sub(F64_ONE, tens), f64_from(3000))), nyq);
+
+    var n = vec_len(out);
+    var i = 0;
+    while (i < n) {
+        ghurni_smooth_next_value(smooth_rpm);
+
+        # Squeal: high-frequency friction oscillation.
+        osc_set_frequency(osc, squeal_freq);
+        var squeal = f64_mul(osc_next_sample(osc), squeal_amp);
+
+        # Flap: periodic low-frequency thump from belt joints / splices.
+        var raw_flap = f64_mul(noise_next_sample(noise), flap_amp);
+        var flap = filter_biquad_process_sample(flap_filter, raw_flap);
+
+        # Periodic modulation at the belt rotation rate.
+        var abs_pos = f64_from(base_pos + i);
+        var belt_mod = F64_ONE;
+        if (f64_gt(belt_rotation_freq, 0) == 1) {
+            var belt_omega = f64_div(f64_mul(F64_TAU, belt_rotation_freq), sr);
+            belt_mod = f64_add(0.8, f64_mul(0.2, f64_sin(f64_mul(belt_omega, abs_pos))));
+        }
+
+        vec_set(out, i, f64_mul(f64_add(squeal, flap), belt_mod));
+        i = i + 1;
+    }
+
+    var db = GhBeltDrive_dc_blocker(self);
+    var j = 0;
+    while (j < n) {
+        vec_set(out, j, ghurni_dcblocker_process(db, vec_get(out, j)));
+        j = j + 1;
+    }
+    GhBeltDrive_set_sample_position(self, base_pos + n);
+    return 0;
+}
+
+# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+fn ghurni_belt_drive_rpm(self) { return GhBeltDrive_rpm(self); }
+#must_use
+fn ghurni_belt_drive_sample_rate(self) { return GhBeltDrive_sample_rate(self); }

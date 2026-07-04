@@ -1,0 +1,77 @@
+# error.cyr -- ghurni error codes + shared f64 constants and base helpers.
+# L0 base module: ordered FIRST by every build/test entry. Modules never
+# `include` each other -- the entry file / test harness orders them.
+#
+# Ports rust-old/src/error.rs (the `GhurniError` enum + `Result<T>` alias).
+# Rust carried a String payload per variant; the Cyrius port uses integer
+# codes -- fallible functions return GH_ERR_NONE (0) on success or a negative
+# code on failure; diagnostic text via ghurni_err_name().
+#
+# NAMING: every ghurni top-level symbol is `ghurni_`/`GHURNI_`/`Gh`-prefixed
+# so the ghurni distlib coexists with the naad bundle (which exports
+# osc_*/noise_*/filter_biquad_*/additive_*/modulation_lfo_*/db_to_amplitude and
+# its own ERR_*/validate_*) in one flat namespace.
+#
+# FLOATS: ghurni's Rust was f32; the Cyrius port is f64 throughout (naad/hisab
+# are f64-only, widening is forced and improves precision). Decimal float
+# literals (0.08, 46.05...) lex to f64 bit patterns and feed the f64_* builtins
+# directly. GHURNI_EPSILON preserves the f32::EPSILON (2^-23) tolerance the Rust
+# tests used, promoted to f64. Test tolerances are loosened vs the f32 oracle
+# where bit-exactness is not meaningful.
+
+# ================================================================
+# Error codes (was `enum GhurniError`). One per Rust variant, in order.
+# ================================================================
+var GH_ERR_NONE              = 0;
+var GH_ERR_INVALID_PARAMETER = (0 - 1);   # a parameter is out of valid range
+var GH_ERR_SYNTHESIS_FAILED  = (0 - 2);   # a synthesis operation failed
+var GH_ERR_COMPUTATION       = (0 - 3);   # a computation produced an invalid result
+
+# ================================================================
+# Shared f64 sentinels / tolerances (IEEE-754 bit patterns). Exported for
+# consumers (clamps, tests). GHURNI_EPSILON = f32::EPSILON promoted.
+# ================================================================
+var GHURNI_EPSILON = 0x3E80000000000000;   # f32::EPSILON = 2^-23 ~ 1.192e-7
+var GHURNI_POS_INF = 0x7FF0000000000000;   # +inf
+var GHURNI_NEG_INF = 0xFFF0000000000000;   # -inf
+
+# Shared audio/math constants. TAU / PI / FRAC_PI_2 come from the math stdlib
+# (F64_TAU / F64_PI / F64_PI_2). GHURNI_DB_SCALE reproduces the Rust naad path's
+# `db_to_amplitude(x * 20.0 / core::f32::consts::LOG10_E)` exactly, factored as
+# `db_to_amplitude(x * GHURNI_DB_SCALE)` with GHURNI_DB_SCALE = 20 / LOG10_E.
+var GHURNI_DB_SCALE = 46.051701859880914;   # 20.0 / core::f32::consts::LOG10_E
+
+# 1 if `code` is an error (negative), 0 otherwise. A naad constructor that
+# fails returns a small negative ERR_* code; a success returns a large positive
+# heap pointer -- so this cleanly distinguishes them too.
+#must_use
+fn ghurni_is_err(code) {
+    if (code < 0) { return 1; }
+    return 0;
+}
+
+# Static name for an error code (diagnostics / logging / serde parity).
+#must_use
+fn ghurni_err_name(code) {
+    if (code == GH_ERR_NONE) { return "none"; }
+    if (code == GH_ERR_INVALID_PARAMETER) { return "invalid parameter"; }
+    if (code == GH_ERR_SYNTHESIS_FAILED) { return "synthesis failed"; }
+    if (code == GH_ERR_COMPUTATION) { return "computation error"; }
+    return "unknown error";
+}
+
+# Finite test: 1 iff x is neither +/-inf nor NaN. abs(x) < +inf holds for
+# finite x, fails for infinities (inf < inf is false) and NaN (any NaN compare
+# is false). Mirrors Rust `f32::is_finite`.
+#must_use
+fn ghurni_is_finite(x) {
+    return f64_lt(f64_abs(x), GHURNI_POS_INF);
+}
+
+# Floored f64 remainder: a mod b = a - b*floor(a/b). For the non-negative
+# operands ghurni uses (crank angle, sample position, tick/engage phase) this
+# equals Rust's truncated `%`. Assumes b > 0.
+#must_use
+fn ghurni_fmod(a, b) {
+    return f64_sub(a, f64_mul(b, f64_floor(f64_div(a, b))));
+}
