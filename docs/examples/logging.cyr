@@ -1,0 +1,50 @@
+# logging.cyr -- ports rust-old/examples/logging.rs.
+# In the Rust crate, diagnostics went through `tracing` behind the `logging`
+# feature. The Cyrius port wires them through sakshi and they are ALWAYS
+# compiled in (verbosity via sakshi_set_level). Constructing an engine with an
+# invalid sample rate emits a [WARN] and returns an error code.
+#
+# Build + run (from the repo root):
+#   cyrius build docs/examples/logging.cyr build/ex_logging
+#   ./build/ex_logging
+
+include "lib/sakshi.cyr"
+include "lib/hisab.cyr"
+include "lib/goonj.cyr"
+include "lib/naad.cyr"
+include "dist/ghurni.cyr"
+
+fn ex_puts(s) { syscall(1, 1, s, strlen(s)); return 0; }
+
+var EX_NAN = 0x7FF8000000000000;   # f64 NaN bit pattern
+
+fn main() {
+    alloc_init();
+
+    println("ghurni logging example");
+    println("Structured warnings are emitted via sakshi (always compiled in).");
+    println("");
+
+    # Invalid: negative sample rate -> emits a [WARN], returns an error.
+    var e1 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, f64_neg(F64_ONE));
+    if (ghurni_is_err(e1) == 1) {
+        ex_puts("Expected error: "); println(ghurni_err_name(e1));
+    } else {
+        println("Unexpected success");
+    }
+
+    # Invalid: NaN sample rate.
+    var e2 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, EX_NAN);
+    if (ghurni_is_err(e2) == 1) {
+        ex_puts("Expected error: "); println(ghurni_err_name(e2));
+    } else {
+        println("Unexpected success");
+    }
+
+    println("");
+    println("Raise or lower verbosity at runtime with sakshi_set_level.");
+    return 0;
+}
+
+var r = main();
+syscall(60, r);

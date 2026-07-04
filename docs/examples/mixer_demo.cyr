@@ -1,0 +1,70 @@
+# mixer_demo.cyr -- ports rust-old/examples/mixer_demo.rs.
+# Combines engine + turbo + gear in a GhMixer with per-channel gain and pan,
+# renders 1 s of stereo, and prints channel count + left/right peaks.
+#
+# Build + run (from the repo root):
+#   cyrius build docs/examples/mixer_demo.cyr build/ex_mixer_demo
+#   ./build/ex_mixer_demo
+
+include "lib/sakshi.cyr"
+include "lib/hisab.cyr"
+include "lib/goonj.cyr"
+include "lib/naad.cyr"
+include "dist/ghurni.cyr"
+
+fn ex_puts(s) { syscall(1, 1, s, strlen(s)); return 0; }
+fn ex_zeros(len) {
+    var v = vec_new();
+    var i = 0;
+    while (i < len) { vec_push(v, 0); i = i + 1; }
+    return v;
+}
+fn ex_peak(v) {
+    var n = vec_len(v);
+    var p = 0;
+    var i = 0;
+    while (i < n) {
+        var a = f64_abs(vec_get(v, i));
+        if (f64_gt(a, p) == 1) { p = a; }
+        i = i + 1;
+    }
+    return p;
+}
+
+fn main() {
+    alloc_init();
+    var sr = f64_from(44100);
+    var mixer = ghurni_mixer_new();
+
+    # Engine (center).
+    var engine = ghurni_engine_new(GH_ENGINE_DIESEL, 6, sr);
+    var eng_idx = ghurni_mixer_add_channel(mixer, "engine", GH_KIND_ENGINE, engine);
+    ghurni_mixer_set_channel_gain(mixer, eng_idx, 0.8);
+    ghurni_mixer_set_channel_pan(mixer, eng_idx, 0);
+
+    # Turbo (slightly right).
+    var turbo = ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.5, F64_ONE, sr);
+    var turbo_idx = ghurni_mixer_add_channel(mixer, "turbo", GH_KIND_FORCED_INDUCTION, turbo);
+    ghurni_mixer_set_channel_gain(mixer, turbo_idx, 0.4);
+    ghurni_mixer_set_channel_pan(mixer, turbo_idx, 0.3);
+
+    # Gear whine (slightly left).
+    var gear = ghurni_gear_new(32, GH_GEAR_STEEL, sr);
+    var gear_idx = ghurni_mixer_add_channel(mixer, "gear", GH_KIND_GEAR, gear);
+    ghurni_mixer_set_channel_gain(mixer, gear_idx, 0.2);
+    ghurni_mixer_set_channel_pan(mixer, gear_idx, f64_neg(0.3));
+
+    ghurni_mixer_set_rpm(mixer, f64_from(3000));
+
+    var left = ex_zeros(44100);
+    var right = ex_zeros(44100);
+    ghurni_mixer_process_block_stereo(mixer, left, right);
+
+    ex_puts("Stereo mix ("); print_num(ghurni_mixer_channel_count(mixer)); ex_puts(" channels):"); println("");
+    ex_puts("  left  peak: "); fmt_float(ex_peak(left), 4); println("");
+    ex_puts("  right peak: "); fmt_float(ex_peak(right), 4); println("");
+    return 0;
+}
+
+var r = main();
+syscall(60, r);

@@ -1,0 +1,74 @@
+# simple_engine.cyr -- ports rust-old/examples/simple_engine.rs.
+# Creates a V8 gasoline engine with a cross-plane firing order, synthesizes
+# 1 s of audio at 3000 RPM / 60% load, and prints peak / RMS / firing frequency.
+#
+# Build + run (from the repo root):
+#   cyrius build docs/examples/simple_engine.cyr build/ex_simple_engine
+#   ./build/ex_simple_engine
+
+include "lib/sakshi.cyr"
+include "lib/hisab.cyr"
+include "lib/goonj.cyr"
+include "lib/naad.cyr"
+include "dist/ghurni.cyr"
+
+fn ex_puts(s) { syscall(1, 1, s, strlen(s)); return 0; }
+
+fn ex_peak(v) {
+    var n = vec_len(v);
+    var p = 0;
+    var i = 0;
+    while (i < n) {
+        var a = f64_abs(vec_get(v, i));
+        if (f64_gt(a, p) == 1) { p = a; }
+        i = i + 1;
+    }
+    return p;
+}
+fn ex_rms(v) {
+    var n = vec_len(v);
+    if (n == 0) { return 0; }
+    var s = 0;
+    var i = 0;
+    while (i < n) {
+        var x = vec_get(v, i);
+        s = f64_add(s, f64_mul(x, x));
+        i = i + 1;
+    }
+    return f64_sqrt(f64_div(s, f64_from(n)));
+}
+
+fn main() {
+    alloc_init();
+
+    # V8 gasoline engine with cross-plane firing order.
+    var engine = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, f64_from(44100));
+    if (ghurni_is_err(engine) == 1) {
+        println("simple_engine: engine init failed");
+        return 1;
+    }
+    var order = vec_new();
+    vec_push(order, f64_from(0));   vec_push(order, f64_from(90));
+    vec_push(order, f64_from(270)); vec_push(order, f64_from(180));
+    vec_push(order, f64_from(540)); vec_push(order, f64_from(630));
+    vec_push(order, f64_from(450)); vec_push(order, f64_from(360));
+    ghurni_engine_set_firing_order(engine, order);
+
+    # Synthesize 1 s at 3000 RPM, 60% load.
+    var samples = ghurni_engine_synthesize(engine, f64_from(3000), 0.6, F64_ONE);
+    if (ghurni_is_err(samples) == 1) {
+        println("simple_engine: synthesize failed");
+        return 1;
+    }
+
+    println("V8 engine at 3000 RPM:");
+    ex_puts("  samples: "); print_num(vec_len(samples)); println("");
+    ex_puts("  peak:    "); fmt_float(ex_peak(samples), 4); println("");
+    ex_puts("  rms:     "); fmt_float(ex_rms(samples), 4); println("");
+    ex_puts("  firing freq: "); fmt_float(ghurni_engine_firing_frequency(engine, f64_from(3000)), 1); ex_puts(" Hz");
+    println("");
+    return 0;
+}
+
+var r = main();
+syscall(60, r);

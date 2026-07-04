@@ -54,7 +54,24 @@ Bundle: `dist/ghurni.cyr` (2,904 lines, `cyrius distlib`).
 - **RNG seeds** derived from parameters are behavioural, not bit-identical to the
   Rust `to_bits()` seeds (tests don't depend on exact sample values).
 
+## Examples (`docs/examples/*.cyr`, 5 runnable programs)
+
+`simple_engine`, `vehicle_scene`, `mixer_demo`, `error_handling`, `logging` —
+each ports the matching `rust-old/examples/*.rs`, includes the dep bundles +
+`dist/ghurni.cyr`, and builds/runs standalone:
+
+```sh
+cyrius build docs/examples/simple_engine.cyr build/ex_simple_engine && ./build/ex_simple_engine
+```
+
+## CI
+
+`.github/workflows/{ci,release}.yml` use the cyrius toolchain (install from the
+`cyrius.cyml [package].cyrius` pin → `cyrius deps` → `cyrius build` → `cyrius
+test` → build examples; release verifies VERSION/tag consistency + ships a
+source tarball + SHA256SUMS). Mirrors the prani / naad sibling CI.
+
 ## Known follow-ups
 
-- Port the 5 Rust `examples/` to `docs/examples/*.cyr` runnable form.
-- Update `.github/workflows/` from cargo to the cyrius toolchain.
+- None outstanding for parity. (Optional: a `CHANGELOG.md` 2.0.0 entry for the
+  port, if you want the release workflow's changelog extraction to populate.)

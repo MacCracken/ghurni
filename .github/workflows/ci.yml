@@ -5,88 +5,53 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_call:
+  workflow_call:   # reusable: release.yml gates on this CI workflow
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-
 jobs:
-  check:
-    name: Check & Lint
+  build-and-test:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-features --all-targets -- -D warnings
-      - run: cargo check --all-features
-      - run: RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (pinned — CVE-21)
 
-  security:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install cargo-audit --locked
-      - run: cargo audit
+      - name: Install Cyrius toolchain
+        # The cyrius.cyml [package].cyrius pin is the single source of
+        # truth for the toolchain version — never hardcode it here. Read
+        # the pin and hand it to the canonical upstream installer, which
+        # fetches + lays out $HOME/.cyrius/{bin,lib}. Do NOT hand-roll
+        # curl+tar+cp — scripts/install.sh is the supported entry point
+        # (matches prani / naad).
+        run: |
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          echo "Installing Cyrius $CYRIUS_VERSION"
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
 
-  deny:
-    name: Supply Chain
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Resolve dependencies
+        run: cyrius deps
 
-  test:
-    name: Test (${{ matrix.os }}, ${{ matrix.features }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            features: --all-features
-          - os: macos-latest
-            features: --all-features
-          - os: ubuntu-latest
-            features: --no-default-features --features std
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test ${{ matrix.features }}
-      - run: cargo test --doc
+      - name: Build
+        run: |
+          mkdir -p build
+          cyrius build src/main.cyr build/${{ github.event.repository.name }}
 
-  msrv:
-    name: MSRV (1.89)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.89
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-features
+      - name: Test
+        # Bare `cyrius test` picks up the [build] entry AND auto-discovers
+        # tests/*.tcyr — the whole behavioural-parity suite.
+        run: cyrius test
 
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-llvm-cov --locked
-      - run: cargo llvm-cov --all-features --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@v4
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
+      - name: Build examples
+        # Each docs/examples/*.cyr is a standalone runnable program; building
+        # them keeps the demos from bit-rotting against the API.
+        run: |
+          for ex in docs/examples/*.cyr; do
+            name="$(basename "$ex" .cyr)"
+            echo "building $ex"
+            cyrius build "$ex" "build/ex_$name"
+          done

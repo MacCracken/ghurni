@@ -1,0 +1,63 @@
+# error_handling.cyr -- ports rust-old/examples/error_handling.rs.
+# Demonstrates the port's error model: fallible constructors / synthesis return
+# a negative GH_ERR_* code (checked with ghurni_is_err), named via
+# ghurni_err_name. The Rust `Result` + `?` + match-on-variant becomes
+# code-check + name lookup.
+#
+# Build + run (from the repo root):
+#   cyrius build docs/examples/error_handling.cyr build/ex_error_handling
+#   ./build/ex_error_handling
+
+include "lib/sakshi.cyr"
+include "lib/hisab.cyr"
+include "lib/goonj.cyr"
+include "lib/naad.cyr"
+include "dist/ghurni.cyr"
+
+fn ex_puts(s) { syscall(1, 1, s, strlen(s)); return 0; }
+
+var EX_NAN = 0x7FF8000000000000;   # f64 NaN bit pattern
+
+# Pattern 1: propagate — return the first error code, or GH_ERR_NONE.
+fn ex_run_synthesis() {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, f64_from(44100));
+    if (ghurni_is_err(e) == 1) { return e; }
+    var s = ghurni_engine_synthesize(e, f64_from(3000), 0.5, F64_ONE);
+    if (ghurni_is_err(s) == 1) { return s; }
+    return GH_ERR_NONE;
+}
+
+fn main() {
+    alloc_init();
+
+    # Pattern 1: propagate with a code check (the happy path succeeds).
+    var r1 = ex_run_synthesis();
+    if (ghurni_is_err(r1) == 1) {
+        ex_puts("Synthesis error: "); println(ghurni_err_name(r1));
+    }
+
+    # Pattern 2: inspect the error kind — NaN sample rate.
+    var e2 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, EX_NAN);
+    if (ghurni_is_err(e2) == 1) {
+        ex_puts("Invalid parameter (expected): "); println(ghurni_err_name(e2));
+    } else {
+        println("Unexpected success with NaN sample rate");
+    }
+
+    # Pattern 3: negative duration.
+    var eng = ghurni_engine_new(GH_ENGINE_DIESEL, 6, f64_from(44100));
+    if (ghurni_is_err(eng) == 1) {
+        println("error_handling: engine init failed");
+        return 1;
+    }
+    var s3 = ghurni_engine_synthesize(eng, f64_from(2000), 0.5, f64_neg(F64_ONE));
+    if (ghurni_is_err(s3) == 1) {
+        ex_puts("Invalid duration (expected): "); println(ghurni_err_name(s3));
+    } else {
+        println("Unexpected success with negative duration");
+    }
+    return 0;
+}
+
+var r = main();
+syscall(60, r);

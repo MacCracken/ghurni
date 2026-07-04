@@ -1,0 +1,118 @@
+# vehicle_scene.cyr -- ports rust-old/examples/vehicle_scene.rs.
+# Layers engine + turbo + transmission + differential into a 2 s acceleration
+# scene (RPM sweep 2000 -> 5000), block-processed, then prints peak / RMS.
+#
+# Build + run (from the repo root):
+#   cyrius build docs/examples/vehicle_scene.cyr build/ex_vehicle_scene
+#   ./build/ex_vehicle_scene
+
+include "lib/sakshi.cyr"
+include "lib/hisab.cyr"
+include "lib/goonj.cyr"
+include "lib/naad.cyr"
+include "dist/ghurni.cyr"
+
+fn ex_puts(s) { syscall(1, 1, s, strlen(s)); return 0; }
+fn ex_zeros(len) {
+    var v = vec_new();
+    var i = 0;
+    while (i < len) { vec_push(v, 0); i = i + 1; }
+    return v;
+}
+fn ex_mix_into(acc, temp, gain) {
+    var n = vec_len(acc);
+    var i = 0;
+    while (i < n) {
+        vec_set(acc, i, f64_add(vec_get(acc, i), f64_mul(vec_get(temp, i), gain)));
+        i = i + 1;
+    }
+    return 0;
+}
+fn ex_peak(v) {
+    var n = vec_len(v);
+    var p = 0;
+    var i = 0;
+    while (i < n) {
+        var a = f64_abs(vec_get(v, i));
+        if (f64_gt(a, p) == 1) { p = a; }
+        i = i + 1;
+    }
+    return p;
+}
+fn ex_rms(v) {
+    var n = vec_len(v);
+    if (n == 0) { return 0; }
+    var s = 0;
+    var i = 0;
+    while (i < n) {
+        var x = vec_get(v, i);
+        s = f64_add(s, f64_mul(x, x));
+        i = i + 1;
+    }
+    return f64_sqrt(f64_div(s, f64_from(n)));
+}
+
+fn main() {
+    alloc_init();
+    var sr = f64_from(44100);
+
+    var engine = ghurni_preset_v8_muscle_car(sr);
+    var turbo  = ghurni_preset_turbocharger(sr);
+    var trans  = ghurni_preset_manual_5speed(sr);
+    var diff   = ghurni_differential_new(41, 11, sr);
+    if ((ghurni_is_err(engine) == 1) || (ghurni_is_err(turbo) == 1) || (ghurni_is_err(trans) == 1) || (ghurni_is_err(diff) == 1)) {
+        println("vehicle_scene: component init failed");
+        return 1;
+    }
+
+    var block_size = 512;
+    var total = f64_to(f64_mul(sr, f64_from(2)));
+    var mixed = ex_zeros(total);
+
+    var offset = 0;
+    while (offset < total) {
+        var progress = f64_div(f64_from(offset), f64_from(total));
+        var rpm = f64_add(f64_from(2000), f64_mul(progress, f64_from(3000)));
+        var load = f64_add(0.4, f64_mul(progress, 0.4));
+
+        ghurni_engine_set_rpm(engine, rpm);
+        ghurni_engine_set_load(engine, load);
+        ghurni_forced_induction_set_rpm(turbo, rpm);
+        ghurni_forced_induction_set_load(turbo, load);
+        ghurni_transmission_set_rpm(trans, rpm);
+        ghurni_differential_set_rpm(diff, ghurni_transmission_output_rpm(trans));
+
+        var end = offset + block_size;
+        if (end > total) { end = total; }
+        var len = end - offset;
+        var acc = ex_zeros(len);
+
+        var temp = ex_zeros(len);
+        ghurni_engine_process_block(engine, temp);
+        ex_mix_into(acc, temp, 0.5);
+        var temp2 = ex_zeros(len);
+        ghurni_forced_induction_process_block(turbo, temp2);
+        ex_mix_into(acc, temp2, 0.3);
+        var temp3 = ex_zeros(len);
+        ghurni_transmission_process_block(trans, temp3);
+        ex_mix_into(acc, temp3, 0.1);
+        var temp4 = ex_zeros(len);
+        ghurni_differential_process_block(diff, temp4);
+        ex_mix_into(acc, temp4, 0.1);
+
+        var j = 0;
+        while (j < len) { vec_set(mixed, offset + j, vec_get(acc, j)); j = j + 1; }
+        offset = end;
+    }
+
+    println("Vehicle acceleration scene (2s):");
+    println("  components: engine + turbo + transmission + differential");
+    println("  RPM sweep:  2000 -> 5000");
+    ex_puts("  samples:    "); print_num(vec_len(mixed)); println("");
+    ex_puts("  peak:       "); fmt_float(ex_peak(mixed), 4); println("");
+    ex_puts("  rms:        "); fmt_float(ex_rms(mixed), 4); println("");
+    return 0;
+}
+
+var r = main();
+syscall(60, r);
