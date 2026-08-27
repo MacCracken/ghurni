@@ -73,7 +73,7 @@ fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
     var mesh_osc = osc_new(WAVEFORM_SINE, f64_from(100), sample_rate);
     if (ghurni_is_err(mesh_osc) == 1) { return ghurni_map_naad_error(mesh_osc); }
     var noise = noise_new(NOISE_WHITE, teeth * 31);
-    var synchro_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_from(4000), f64_from(3));
+    var synchro_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(4000), f64_from(3));
     if (ghurni_is_err(synchro_filter) == 1) { return ghurni_map_naad_error(synchro_filter); }
 
     var self = alloc(sizeof(GhTransmission));

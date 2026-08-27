@@ -91,7 +91,7 @@ fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sampl
     var whine_osc = osc_new(WAVEFORM_SAW, f64_from(100), sample_rate);
     if (ghurni_is_err(whine_osc) == 1) { return ghurni_map_naad_error(whine_osc); }
     var noise = noise_new(NOISE_WHITE, induction_type * 777);
-    var bov_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_from(2000), f64_from(2));
+    var bov_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(2000), f64_from(2));
     if (ghurni_is_err(bov_filter) == 1) { return ghurni_map_naad_error(bov_filter); }
 
     var self = alloc(sizeof(GhForcedInduction));

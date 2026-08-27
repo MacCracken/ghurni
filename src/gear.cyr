@@ -7,7 +7,7 @@
 # Requires (from the build/test unit): error.cyr (GH_ERR_*, GHURNI_DB_SCALE,
 # ghurni_is_err, ghurni_fmod), logging.cyr, dsp.cyr (GhDcBlocker + validation +
 # naad error map) + the naad bundle (osc_*/noise_*/filter_biquad_*/
-# db_to_amplitude) + stdlib alloc/vec/math. No `include` lines.
+# naad_db_to_amplitude) + stdlib alloc/vec/math. No `include` lines.
 #
 # PORT NOTES
 # - f32 -> f64 throughout. The Rust `naad-backend` (default) path is the ONE
@@ -105,7 +105,7 @@ fn ghurni_gear_new(teeth, material, sample_rate) {
     var mesh_osc = osc_new(WAVEFORM_SINE, initial_mesh_freq, sample_rate);
     if (ghurni_is_err(mesh_osc) == 1) { return ghurni_map_naad_error(mesh_osc); }
     var noise = noise_new(NOISE_WHITE, t * 7 + material);
-    var resonance_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_min(resonance, nyq), 4.0);
+    var resonance_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(resonance, nyq), 4.0);
     if (ghurni_is_err(resonance_filter) == 1) { return ghurni_map_naad_error(resonance_filter); }
 
     var self = alloc(sizeof(GhGear));
@@ -193,7 +193,7 @@ fn ghurni_gear_process_block_naad(self, out) {
         var mesh_phase = ghurni_fmod(f64_div(f64_mul(abs_pos, mesh_freq), sr), F64_ONE);
         var ring_env = F64_ONE;
         if (f64_lt(mesh_phase, 0.05) == 0) {
-            ring_env = db_to_amplitude(f64_mul(f64_div(f64_neg(mesh_phase), decay), GHURNI_DB_SCALE));
+            ring_env = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(mesh_phase), decay), GHURNI_DB_SCALE));
         }
         var ring_excitation = f64_mul(noise_next_sample(noise), ring_env);
         var ring = f64_mul(f64_mul(filter_biquad_process_sample(resonance_filter, ring_excitation), amp), brightness);

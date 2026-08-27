@@ -6,7 +6,7 @@
 #
 # Requires (from the build/test unit): error.cyr (GH_ERR_*, GHURNI_DB_SCALE,
 # ghurni_is_err, ghurni_fmod), logging.cyr, dsp.cyr (GhDcBlocker + validation +
-# naad error map) + the naad bundle (noise_*/filter_biquad_*/db_to_amplitude)
+# naad error map) + the naad bundle (noise_*/filter_biquad_*/naad_db_to_amplitude)
 # + stdlib alloc/vec/math. No `include` lines.
 #
 # PORT NOTES
@@ -126,7 +126,7 @@ fn ghurni_clock_new(clock_type, sample_rate) {
 
     # naad backend: white noise (seed = clock_type*997) + band-pass body filter.
     var noise = noise_new(NOISE_WHITE, clock_type * 997);
-    var body_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_min(resonance, nyq), f64_from(8));
+    var body_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(resonance, nyq), f64_from(8));
     if (ghurni_is_err(body_filter) == 1) { return ghurni_map_naad_error(body_filter); }
 
     var self = alloc(sizeof(GhClock));
@@ -200,11 +200,11 @@ fn ghurni_clock_process_block_naad(self, out) {
             var t = f64_div(phase, 0.02);
             var impulse = f64_mul(f64_sub(F64_ONE, t), amp);
             var ring_excitation = f64_mul(noise_next_sample(noise), amp);
-            var ring = f64_mul(filter_biquad_process_sample(body_filter, ring_excitation), db_to_amplitude(f64_mul(f64_div(f64_neg(phase), decay), GHURNI_DB_SCALE)));
+            var ring = f64_mul(filter_biquad_process_sample(body_filter, ring_excitation), naad_db_to_amplitude(f64_mul(f64_div(f64_neg(phase), decay), GHURNI_DB_SCALE)));
             tick = f64_add(f64_mul(impulse, 0.5), ring);
         } elif (f64_lt(phase, 0.15) == 1) {
             var ring_excitation2 = f64_mul(f64_mul(noise_next_sample(noise), amp), 0.1);
-            tick = f64_mul(f64_mul(filter_biquad_process_sample(body_filter, ring_excitation2), db_to_amplitude(f64_mul(f64_div(f64_neg(phase), decay), GHURNI_DB_SCALE))), 0.3);
+            tick = f64_mul(f64_mul(filter_biquad_process_sample(body_filter, ring_excitation2), naad_db_to_amplitude(f64_mul(f64_div(f64_neg(phase), decay), GHURNI_DB_SCALE))), 0.3);
         }
 
         var mech = f64_mul(f64_mul(noise_next_sample(noise), amp), 0.01);

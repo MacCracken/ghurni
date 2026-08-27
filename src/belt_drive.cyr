@@ -66,7 +66,7 @@ fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
     var squeal_osc = osc_new(WAVEFORM_SINE, squeal_freq, sample_rate);
     if (ghurni_is_err(squeal_osc) == 1) { return ghurni_map_naad_error(squeal_osc); }
     var noise = noise_new(NOISE_PINK, f64_to(diameter) + f64_to(tens));
-    var flap_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_from(500), f64_from(2));
+    var flap_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(500), f64_from(2));
     if (ghurni_is_err(flap_filter) == 1) { return ghurni_map_naad_error(flap_filter); }
 
     var self = alloc(sizeof(GhBeltDrive));

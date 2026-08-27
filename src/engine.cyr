@@ -7,7 +7,7 @@
 # Requires (from the build/test unit): error.cyr (GH_ERR_*, GHURNI_DB_SCALE,
 # ghurni_is_err, ghurni_fmod), logging.cyr, dsp.cyr (GhDcBlocker + validation +
 # naad error map), smooth.cyr (GhSmoothedParam), event.cyr (GhEvent + GH_EVENT_*)
-# + the naad bundle (noise_*/filter_biquad_*/db_to_amplitude) + stdlib
+# + the naad bundle (noise_*/filter_biquad_*/naad_db_to_amplitude) + stdlib
 # alloc/vec/math. No `include` lines.
 #
 # PORT NOTES
@@ -127,9 +127,9 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
 
     # naad backend: white noise + exhaust/intake band-pass filters.
     var noise = noise_new(NOISE_WHITE, engine_type * 1000 + cyl);
-    var exhaust_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, exhaust, 1.5);
+    var exhaust_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, exhaust, 1.5);
     if (ghurni_is_err(exhaust_filter) == 1) { return ghurni_map_naad_error(exhaust_filter); }
-    var intake_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_min(intake, nyq), 2.0);
+    var intake_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(intake, nyq), 2.0);
     if (ghurni_is_err(intake_filter) == 1) { return ghurni_map_naad_error(intake_filter); }
 
     var self = alloc(sizeof(GhEngine));
@@ -309,7 +309,7 @@ fn ghurni_engine_process_block_naad(self, out) {
             if (skip == 0) {
                 if (f64_lt(cyl_norm, 0.08) == 1) {
                     var t = f64_div(cyl_norm, 0.08);
-                    var pulse = db_to_amplitude(f64_mul(f64_neg(f64_mul(f64_from(8), t)), GHURNI_DB_SCALE));
+                    var pulse = naad_db_to_amplitude(f64_mul(f64_neg(f64_mul(f64_from(8), t)), GHURNI_DB_SCALE));
                     var ns = noise_next_sample(noise);
                     combustion_sum = f64_add(combustion_sum, f64_mul(f64_mul(pulse, base_amp), f64_add(F64_ONE, f64_mul(roughness, ns))));
                 }

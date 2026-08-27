@@ -9,7 +9,7 @@
 #
 # NAMING: every ghurni top-level symbol is `ghurni_`/`GHURNI_`/`Gh`-prefixed
 # so the ghurni distlib coexists with the naad bundle (which exports
-# osc_*/noise_*/filter_biquad_*/additive_*/modulation_lfo_*/db_to_amplitude and
+# osc_*/noise_*/filter_biquad_*/additive_*/modulation_lfo_*/naad_db_to_amplitude and
 # its own ERR_*/validate_*) in one flat namespace.
 #
 # FLOATS: ghurni's Rust was f32; the Cyrius port is f64 throughout (naad/hisab
@@ -37,9 +37,20 @@ var GHURNI_NEG_INF = 0xFFF0000000000000;   # -inf
 
 # Shared audio/math constants. TAU / PI / FRAC_PI_2 come from the math stdlib
 # (F64_TAU / F64_PI / F64_PI_2). GHURNI_DB_SCALE reproduces the Rust naad path's
-# `db_to_amplitude(x * 20.0 / core::f32::consts::LOG10_E)` exactly, factored as
-# `db_to_amplitude(x * GHURNI_DB_SCALE)` with GHURNI_DB_SCALE = 20 / LOG10_E.
-var GHURNI_DB_SCALE = 46.051701859880914;   # 20.0 / core::f32::consts::LOG10_E
+# `naad::dsp_util::db_to_amplitude(x * 20.0 / core::f32::consts::LOG10_E)`
+# exactly, factored as `naad_db_to_amplitude(x * GHURNI_DB_SCALE)` with
+# GHURNI_DB_SCALE = 20 / LOG10_E. (The Cyrius-side symbol gained its `naad_`
+# prefix in naad 2.1.3/2.2.0; the Rust oracle's name is unprefixed.)
+# Stored as an IEEE-754 bit pattern, like the sentinels above, NOT as the
+# decimal literal `46.051701859880914`. cyrius <= 6.5.27 packed a decimal float
+# literal as a 32/32 rational `(denom << 32) | (numer & 0xFFFFFFFF)`; past ~9
+# fractional digits BOTH fields overflowed and the literal compiled clean to a
+# different number -- this one to 0.598756873065743, 76.9x too small, which
+# flattened the gear/clock/engine ring-decay envelopes (10^(-x*S/20) at x=1:
+# 0.9334 instead of 0.00498). Fixed in cyrius 6.5.28, and ghurni now pins
+# 6.5.35 -- but `dist/ghurni.cyr` is compiled by the CONSUMER's toolchain, so
+# the hex form is what protects a consumer still on an older pin.
+var GHURNI_DB_SCALE = 0x4047069E2AA2AA5B;   # 20.0 / core::f32::consts::LOG10_E = 46.051701859880914
 
 # 1 if `code` is an error (negative), 0 otherwise. A naad constructor that
 # fails returns a small negative ERR_* code; a success returns a large positive

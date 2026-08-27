@@ -73,7 +73,7 @@ fn ghurni_differential_new(ring_teeth, pinion_teeth, sample_rate) {
     var whine_osc = osc_new(WAVEFORM_SINE, f64_from(100), sample_rate);
     if (ghurni_is_err(whine_osc) == 1) { return ghurni_map_naad_error(whine_osc); }
     var noise = noise_new(NOISE_WHITE, ring * 41 + pinion);
-    var resonance_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, housing_resonance, f64_from(6));
+    var resonance_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, housing_resonance, f64_from(6));
     if (ghurni_is_err(resonance_filter) == 1) { return ghurni_map_naad_error(resonance_filter); }
 
     var self = alloc(sizeof(GhDifferential));

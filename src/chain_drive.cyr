@@ -63,7 +63,7 @@ fn ghurni_chain_drive_new(links, sprocket_teeth, sample_rate) {
 
     # naad backend: white noise + band-pass impact filter (3 kHz, q=3).
     var noise = noise_new(NOISE_WHITE, lk * 17 + st);
-    var impact_filter = filter_biquad_new(FILTER_BANDPASS, sample_rate, f64_min(f64_from(3000), nyq), f64_from(3));
+    var impact_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(f64_from(3000), nyq), f64_from(3));
     if (ghurni_is_err(impact_filter) == 1) { return ghurni_map_naad_error(impact_filter); }
 
     var self = alloc(sizeof(GhChainDrive));

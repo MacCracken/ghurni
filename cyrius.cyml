@@ -5,7 +5,7 @@ description = "ghurni — mechanical sound synthesis (engines, gears, motors, tu
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/ghurni"
 language = "cyrius"
-cyrius = "6.4.2"
+cyrius = "6.5.35"
 
 [build]
 entry = "src/main.cyr"
@@ -15,7 +15,7 @@ output = "build/ghurni"
 # `dist/ghurni.cyr` — every module concatenated in dependency order (deps
 # before dependents). Every module is self-contained (no `include` lines);
 # the entry / test harness orders them. naad symbols (osc_*/noise_*/
-# filter_biquad_*/additive_*/modulation_lfo_*/db_to_amplitude) resolve from
+# filter_biquad_*/additive_*/modulation_lfo_*/naad_db_to_amplitude) resolve from
 # THIS manifest's [deps]. All ghurni top-level symbols are ghurni_/GHURNI_/Gh-
 # prefixed so the bundle coexists with naad + its transitive bundles in one
 # flat namespace.
@@ -78,30 +78,38 @@ stdlib = [
 ]
 
 # naad — audio synthesis primitives. ghurni consumes naad's Oscillator /
-# NoiseGenerator / BiquadFilter / AdditiveSynth / Lfo + db_to_amplitude from
+# NoiseGenerator / BiquadFilter / AdditiveSynth / Lfo + naad_db_to_amplitude from
 # the single monolithic dist bundle. The bundle references hisab + goonj +
 # sakshi symbols, resolved from THIS manifest below. Pinned to git tags (not
 # path deps) so `cyrius deps` resolves identically on every machine and in CI,
-# where the sibling repos are not checked out. Tags match the coherent set the
-# prani sibling consumes.
+# where the sibling repos are not checked out. Tags are the coherent set naad
+# 2.2.1 itself pins (naad -> hisab 2.11.2 + goonj 2.0.4; goonj 2.0.4 -> hisab
+# 2.11.2; hisab 2.11.2 -> sakshi 2.4.11), so the vendored bundles agree with
+# what each was built against.
+#   NOTE the prani sibling is still on the PRE-2.0.1 set (naad 2.1.0 /
+#   hisab 2.6.7 / goonj 2.0.0 / sakshi 2.4.3, cyrius 6.3.45). ghurni is
+#   deliberately ahead of it as of 2.0.1; this comment used to claim the two
+#   matched. Re-check before assuming a shared set.
 [deps.naad]
 git = "https://github.com/MacCracken/naad.git"
-tag = "2.1.0"
+tag = "2.2.1"
 modules = ["dist/naad.cyr"]
 
-# hisab — math/geometry (HVec3/HComplex/FFT/ganita least-squares). Referenced
-# by naad's bundle (envelope/additive/physical/wavetable/dsp_spectral). Pinned
-# to the tag naad consumes.
+# hisab — math/geometry (HVec3/HComplex/FFT). Referenced by naad's bundle
+# (envelope/additive/physical/wavetable/dsp_spectral). Pinned to the tag naad
+# consumes.
+#   naad 2.2.0 ported a thin QR in-tree and no longer calls the stdlib
+#   `ganita_mat_least_squares` at all, so that path is gone from this graph.
 [deps.hisab]
 git = "https://github.com/MacCracken/hisab.git"
-tag = "2.6.7"
+tag = "2.11.2"
 modules = ["dist/hisab.cyr"]
 
 # goonj — acoustics engine. Referenced by naad's acoustics/* modules present
 # in the monolithic bundle. Pulls sakshi + hisab transitively.
 [deps.goonj]
 git = "https://github.com/MacCracken/goonj.git"
-tag = "2.0.0"
+tag = "2.0.4"
 modules = ["dist/goonj.cyr"]
 
 # sakshi — structured logging. Arrives transitively via hisab/goonj/naad;
@@ -109,5 +117,5 @@ modules = ["dist/goonj.cyr"]
 # ghurni's own logging.cyr wrappers link.
 [deps.sakshi]
 git = "https://github.com/MacCracken/sakshi.git"
-tag = "2.4.3"
+tag = "2.4.11"
 modules = ["dist/sakshi.cyr"]

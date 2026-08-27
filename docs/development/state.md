@@ -5,7 +5,9 @@
 
 ## Version
 
-**2.0.0** — full-parity Cyrius port. (1.0.0 was the final Rust crate, preserved at `rust-old/`.)
+**2.0.1** — full-parity Cyrius port, on the refreshed dependency set
+(cyrius 6.5.35 · naad 2.2.1 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11).
+(1.0.0 was the final Rust crate, preserved at `rust-old/`.)
 
 ## Port status: COMPLETE
 
@@ -73,5 +75,38 @@ source tarball + SHA256SUMS). Mirrors the prani / naad sibling CI.
 
 ## Known follow-ups
 
-- None outstanding for parity. (Optional: a `CHANGELOG.md` 2.0.0 entry for the
-  port, if you want the release workflow's changelog extraction to populate.)
+- None outstanding for parity.
+- `CHANGELOG.md` still has **no `2.0.0` entry** for the port itself. 2.0.1 now
+  has one, so `release.yml`'s changelog extraction populates for this tag, but
+  a re-cut of the 2.0.0 tag would still produce an empty release body.
+
+### Rust-era documentation staleness (pre-dates 2.0.1; surfaced auditing it)
+
+None of these affect the build — they are docs that still describe the Rust
+crate rather than the Cyrius port, and each contradicts `CLAUDE.md`:
+
+- `docs/architecture/overview.md` — the module tree lists 20 `.rs` files under a
+  `ghurni/src/` header, including `math.rs` / `rng.rs`, which ADR-004 says were
+  deliberately **not** ported. Actual `src/` holds 19 `.cyr` modules.
+- `docs/architecture/adr-001-naad-backend.md` — status still `Accepted`, and it
+  specifies naad as *optional* behind a `naad-backend` flag with a libm/PCG32
+  fallback and "dual implementation in every synthesizer". `CLAUDE.md` states
+  naad is the ONLY backend. Should be marked superseded by ADR-004.
+- `SECURITY.md` — the dependency table is `rust-old/Cargo.toml` verbatim
+  (serde / thiserror / tracing / libm, naad "Optional"). None of those exist in
+  the port; the real deps (naad, hisab, goonj, sakshi) are absent from it.
+- `docs/guides/testing.md` — documents `cargo test` / `cargo bench` and a
+  "Fallback path (no naad)" that does not exist. Should be `cyrius test/bench`.
+- `docs/development/roadmap.md` — plans `cargo-fuzz` targets; the toolchain
+  ships `cyrius fuzz` (`.fcyr`).
+- CI runs **none** of the quality gates cyrius 6.5.35 provides
+  (`cyrius audit` / `deny` / `fuzz` / `lint` / `fmt`) — only deps/build/test +
+  examples. naad's CI enforces all three of the first group.
+
+### Float-literal hardening
+
+`GHURNI_DB_SCALE` is stored as an IEEE-754 bit pattern, not a decimal literal —
+cyrius <= 6.5.27 miscompiled decimal literals past ~9 fractional digits (see the
+2.0.1 CHANGELOG entry). It was the only such literal in the link unit. Any new
+high-precision float constant should follow the same hex idiom, because
+`dist/ghurni.cyr` is compiled by the **consumer's** toolchain, not ghurni's.
