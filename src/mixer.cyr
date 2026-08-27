@@ -53,6 +53,42 @@ fn ghurni_synth_set_rpm(kind, synth, rpm) {
     return 0;
 }
 
+# rpm half of the tag dispatch: read the current RPM of the synth named by
+# `kind`. Ports `Synthesizer::rpm` (rust-old/src/traits.rs:17), which a
+# heterogeneous `Vec<Box<dyn Synthesizer>>` could call generically. Returns 0
+# for an unknown tag.
+#must_use
+fn ghurni_synth_rpm(kind, synth) {
+    if (kind == GH_KIND_ENGINE)             { return ghurni_engine_rpm(synth); }
+    elif (kind == GH_KIND_GEAR)             { return ghurni_gear_rpm(synth); }
+    elif (kind == GH_KIND_MOTOR)            { return ghurni_motor_rpm(synth); }
+    elif (kind == GH_KIND_TURBINE)          { return ghurni_turbine_rpm(synth); }
+    elif (kind == GH_KIND_CLOCK)            { return ghurni_clock_rpm(synth); }
+    elif (kind == GH_KIND_TRANSMISSION)     { return ghurni_transmission_rpm(synth); }
+    elif (kind == GH_KIND_DIFFERENTIAL)     { return ghurni_differential_rpm(synth); }
+    elif (kind == GH_KIND_FORCED_INDUCTION) { return ghurni_forced_induction_rpm(synth); }
+    elif (kind == GH_KIND_BELT_DRIVE)       { return ghurni_belt_drive_rpm(synth); }
+    elif (kind == GH_KIND_CHAIN_DRIVE)      { return ghurni_chain_drive_rpm(synth); }
+    return 0;
+}
+
+# sample_rate half of the tag dispatch. Ports `Synthesizer::sample_rate`
+# (rust-old/src/traits.rs:20). Returns 0 for an unknown tag.
+#must_use
+fn ghurni_synth_sample_rate(kind, synth) {
+    if (kind == GH_KIND_ENGINE)             { return ghurni_engine_sample_rate(synth); }
+    elif (kind == GH_KIND_GEAR)             { return ghurni_gear_sample_rate(synth); }
+    elif (kind == GH_KIND_MOTOR)            { return ghurni_motor_sample_rate(synth); }
+    elif (kind == GH_KIND_TURBINE)          { return ghurni_turbine_sample_rate(synth); }
+    elif (kind == GH_KIND_CLOCK)            { return ghurni_clock_sample_rate(synth); }
+    elif (kind == GH_KIND_TRANSMISSION)     { return ghurni_transmission_sample_rate(synth); }
+    elif (kind == GH_KIND_DIFFERENTIAL)     { return ghurni_differential_sample_rate(synth); }
+    elif (kind == GH_KIND_FORCED_INDUCTION) { return ghurni_forced_induction_sample_rate(synth); }
+    elif (kind == GH_KIND_BELT_DRIVE)       { return ghurni_belt_drive_sample_rate(synth); }
+    elif (kind == GH_KIND_CHAIN_DRIVE)      { return ghurni_chain_drive_sample_rate(synth); }
+    return 0;
+}
+
 # ================================================================
 # GhMixerChannel: name(cstring ptr) gain(f64) pan(f64) muted(int 0/1)
 # kind(GH_KIND_*) synth(ptr) scratch(vec<f64> or 0). GhMixer: channels(vec of

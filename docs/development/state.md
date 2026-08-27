@@ -59,10 +59,25 @@ path, and belt_drive's block loop.
 - **Tag dispatch** replaces `Box<dyn Synthesizer>` trait objects (ADR-004).
 - **Serde**: enums roundtrip via name↔code helpers; POD structs (DcBlocker,
   SmoothedParam, Event) via `#derive(Serialize)`; synth structs holding opaque
-  naad pointers drop deep serialization (nothing meaningful survived the Rust
-  `#[serde(skip)]` on the backend fields either).
-- **RNG seeds** derived from parameters are behavioural, not bit-identical to the
-  Rust `to_bits()` seeds (tests don't depend on exact sample values).
+  naad pointers drop deep serialization.
+  ⚠ The old justification here — "nothing meaningful survived the Rust
+  `#[serde(skip)]`" — was **false for `MixerChannel`**: only `synth` and
+  `scratch` were skipped, so `name`, `gain`, `pan` and `muted` all serialized
+  and a Rust consumer could persist a whole mixer configuration as a reloadable
+  template. Dropping it is a real capability loss, not a no-op. The synth
+  structs proper (Transmission, Differential, ForcedInduction, …) did round-trip
+  their live DSP state too. Treat this as a deliberate scope cut.
+- **RNG seeds**: only the three synths whose oracle seed folded in a FLOAT are
+  behavioural rather than bit-identical — `belt_drive` (pulley diameter +
+  tension), `turbine` (blades + duct resonance) and `forced_induction`
+  (induction type + drive ratio); each derives a behavioural integer seed
+  instead of the f32 `to_bits()` pattern. **`engine`, `gear`, `motor`, `clock`,
+  `transmission`, `differential` and `chain_drive` seed from integers only and
+  reproduce the oracle's seed EXACTLY** — do not "harmonise" them onto the
+  behavioural convention, it would silently change seven synths' audio.
+  Note the behavioural form must still DEPEND on its float parameter: a bare
+  `f64_to` of a sub-unity value truncates to a constant, which is the defect
+  fixed in `forced_induction` and `belt_drive` (see the 2.0.2 CHANGELOG).
 
 ### Added by the 2.0.2 P-1 sweep
 
@@ -108,6 +123,15 @@ cyrius build docs/examples/simple_engine.cyr build/ex_simple_engine && ./build/e
 `cyrius.cyml [package].cyrius` pin → `cyrius deps` → `cyrius build` → `cyrius
 test` → build examples; release verifies VERSION/tag consistency + ships a
 source tarball + SHA256SUMS). Mirrors the prani / naad sibling CI.
+
+## Retiring `rust-old/`
+
+Checklist and status: [`rust-old-retirement.md`](rust-old-retirement.md).
+**Not yet clear to delete** — the port is functionally complete (83/83 public
+fns, 44/44 tests, zero numeric mismatches), but preset values, per-material
+property constants, the auto-BOV trigger, the differential ring/pinion
+asymmetry and the pan law are pinned by nothing on either side, and 4 of the
+oracle's 10 benchmarks are unported.
 
 ## Known follow-ups
 

@@ -22,7 +22,8 @@
 # - process_block interleaves the naad synthesis inline (no separate _naad fn) --
 #   mirrors the Rust, whose belt process_block bodies the naad loop directly.
 # - Rust `noise_gen` seed = `pulley_diameter.to_bits() + tension.to_bits()`;
-#   the port derives a behavioral integer seed (bit-exactness is not meaningful).
+#   the port derives a behavioral integer seed (bit-exactness is not meaningful),
+#   but both parameters must still reach it -- see the note at the seed itself.
 
 # ================================================================
 # GhBeltDrive. Accessor fields carry a mix of ints, f64 bit patterns, and heap
@@ -65,7 +66,16 @@ fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
     # naad backend: squeal oscillator + pink noise + band-pass flap filter.
     var squeal_osc = osc_new(WAVEFORM_SINE, squeal_freq, sample_rate);
     if (ghurni_is_err(squeal_osc) == 1) { return ghurni_map_naad_error(squeal_osc); }
-    var noise = noise_new(NOISE_PINK, f64_to(diameter) + f64_to(tens));
+    # Seed: the oracle uses `pulley_diameter.to_bits() + tension.to_bits()`
+    # (rust-old/src/belt_drive.rs:72). The port derives a behavioural integer seed
+    # rather than the f32 bit pattern, but it must still DEPEND on both terms.
+    # `tens` is clamped to 0..1, so a bare f64_to(tens) truncates to 0 for every
+    # tension below 1.0 -- which collapsed the tension term entirely and gave every
+    # belt of a given integer diameter one bit-identical pink-noise realisation.
+    # Two belts layered at different tensions (the documented slack-vs-tight use)
+    # then summed perfectly correlated flap noise. x1000 keeps tension
+    # distinguishable to three decimals, matching forced_induction.cyr.
+    var noise = noise_new(NOISE_PINK, f64_to(diameter) + f64_to(f64_mul(tens, f64_from(1000))));
     var flap_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(500), f64_from(2));
     if (ghurni_is_err(flap_filter) == 1) { return ghurni_map_naad_error(flap_filter); }
 
@@ -164,6 +174,12 @@ fn ghurni_belt_drive_process_block(self, out) {
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
+        # Advanced for state parity only -- the result is deliberately discarded.
+        # The oracle writes `let _smooth = self.smooth_rpm.next_value();`
+        # (rust-old/src/belt_drive.rs:131) and computes speed / flap_amp /
+        # belt_rotation_freq from the RAW rpm, so the 0.03 s time constant has no
+        # audible effect in this synth. Do not remove the call (it would desync
+        # the smoother) and do not wire it in (it would change the audio).
         ghurni_smooth_next_value(smooth_rpm);
 
         # Squeal: high-frequency friction oscillation.

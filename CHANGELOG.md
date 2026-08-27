@@ -156,6 +156,58 @@ Every one of these described the 1.x Rust crate and contradicted `CLAUDE.md`:
 - New helper `ghurni_vec_copy` (`src/error.cyr`) for restoring the oracle's
   move semantics at vec-taking boundaries.
 
+### Port completion — items `rust-old/` still held alone
+
+A module-by-module sweep of `rust-old/` against the port, to clear the oracle
+for deletion. **83/83** portable public functions, 7/7 enums (29 variants),
+40/40 trait accessors, 44/44 integration tests and 5/5 examples are ported, and
+every constant, clamp bound, frequency formula and envelope shape was compared
+with **zero numeric mismatches**. Four things were genuinely still missing:
+
+- **`belt_drive`'s noise seed dropped its tension term** — the same defect
+  class as forced_induction's, and unfixed. Tension is clamped to 0..1, so
+  `f64_to(tens)` truncated to 0 for every tension below 1.0: every belt of a
+  given integer diameter shared one bit-identical pink-noise realisation, and
+  the documented slack-vs-tight layering summed perfectly correlated flap noise
+  (~+6 dB and phasey) where the oracle decorrelated it. Now scaled ×1000 to
+  match `forced_induction`. ⚠ **This changes belt_drive audio output**, toward
+  the oracle's intent.
+- **`ghurni_synth_rpm` / `ghurni_synth_sample_rate` added.** The tag dispatch
+  covered only 2 of the `Synthesizer` trait's 4 methods
+  (`rust-old/src/traits.rs:17,20`), so a consumer holding a heterogeneous
+  `(GH_KIND_*, pointer)` collection could not read RPM or sample rate
+  generically — the exact `Vec<Box<dyn Synthesizer>>` shape the oracle's
+  `test_synthesizer_trait_dispatch` exercised.
+- **`ghurni_err_from_name` added.** `GhurniError` was the only public enum with
+  just the forward half, breaking CLAUDE.md's `_name`/`_from_name` rule, though
+  the oracle derived `Deserialize` on it and round-tripped it.
+- **`ghurni_fmod`'s doc comment was wrong, and dangerously so.** It claimed the
+  operands are non-negative. `engine.cyr` passes a **negative** dividend on
+  every sample for every cylinder whose firing offset exceeds the current crank
+  angle — i.e. most cylinders, most of the time — and the floored behaviour is
+  what makes that correct. The oracle spells the negative-safe idiom out by hand
+  (`((a % m) + m) % m`); the port collapses it to one `ghurni_fmod` call. A
+  "simplification" to a truncated remainder would silently drop most firing
+  events on every multi-cylinder engine, and the one existing assertion
+  (`370 mod 360`) would not have noticed. Four negative-dividend assertions now
+  pin it.
+
+Also recorded, not changed: `GHURNI_DB_SCALE`'s comment now states that the
+oracle *divides* by `LOG10_E` where an exp→dB conversion would multiply, making
+the naad decay 5.30× steeper than the `exp(-8t)` its own fallback arm used. That
+asymmetry is the oracle's quirk, reproduced deliberately — without the note it
+reads as a bug worth "fixing", which would rewrite every engine, gear and clock
+envelope. And `belt_drive`'s RPM smoother is now documented as deliberately
+inert (the oracle discards it with `let _smooth = ...` and uses raw RPM).
+
+New: [`docs/development/rust-old-retirement.md`](docs/development/rust-old-retirement.md)
+— the deletion checklist. `rust-old/` is **not yet clear to remove**: a body of
+knowledge still lives only there (all 12 preset parameter sets, 32 per-material
+property constants, the auto-BOV trigger triple, the differential's ring/pinion
+asymmetry, the pan law's channel assignment), two claims in `state.md` are
+actively wrong and become uncheckable once it goes, and 4 of the oracle's 10
+benchmarks are unported.
+
 ### Known — still open
 
 - **Allocation failure is unhandled.** No `alloc()` result is null-checked

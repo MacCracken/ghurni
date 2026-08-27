@@ -335,5 +335,69 @@ ghurni_engine_trigger_event(e8, ghurni_event_knock(7));
 ghurni_engine_process_block(e8, kbuf);
 assert_eq(audio_has_energy(kbuf), 1, "knock re-arms after draining");
 
+
+# ================================================================
+test_group("port completion: items rust-old still held alone");
+# --- belt_drive noise seed must depend on TENSION, not just diameter ---
+# Oracle: `pulley_diameter.to_bits() + tension.to_bits()`
+# (rust-old/src/belt_drive.rs:72). Tension is clamped to 0..1, so a bare
+# f64_to(tens) truncated to 0 for every tension below 1.0 and collapsed the
+# term -- every belt of a given integer diameter shared one pink-noise stream.
+# Same defect class as forced_induction's dropped drive_ratio.
+var ba = ghurni_belt_drive_new(f64_from(120), 0.2, SR);
+var bb = ghurni_belt_drive_new(f64_from(120), 0.9, SR);
+var bna = GhBeltDrive_noise_gen(ba);
+var bnb = GhBeltDrive_noise_gen(bb);
+var belt_differs = 0;
+var belt_nonzero = 0;
+var bi2 = 0;
+while (bi2 < 64) {
+    var bsa = noise_next_sample(bna);
+    var bsb = noise_next_sample(bnb);
+    if (bsa != bsb) { belt_differs = 1; }
+    if (f64_abs(bsa) != 0) { belt_nonzero = 1; }
+    bi2 = bi2 + 1;
+}
+assert_eq(belt_nonzero, 1, "belt reference stream is real signal (not 0 == 0)");
+assert_eq(belt_differs, 1, "tension 0.2 and 0.9 seed DIFFERENT pink-noise streams");
+
+# --- ghurni_err_from_name completes the enum name<->code convention ---
+assert_eq(ghurni_err_from_name("none"), GH_ERR_NONE, "err_from_name none");
+var efn_ip = ghurni_err_from_name("invalid parameter");
+assert_eq(efn_ip, GH_ERR_INVALID_PARAMETER, "err_from_name invalid parameter");
+assert_eq(ghurni_err_from_name("synthesis failed"), GH_ERR_SYNTHESIS_FAILED, "err_from_name synthesis failed");
+assert_eq(ghurni_err_from_name("computation error"), GH_ERR_COMPUTATION, "err_from_name computation error");
+assert_eq(ghurni_err_from_name("nonsense"), 0 - 99, "unknown err name -> sentinel");
+# Round-trips against ghurni_err_name in both directions.
+var efn_rt = ghurni_err_from_name(ghurni_err_name(GH_ERR_SYNTHESIS_FAILED));
+assert_eq(efn_rt, GH_ERR_SYNTHESIS_FAILED, "err name roundtrip");
+assert_eq(ghurni_err_from_name(ghurni_err_name(GH_ERR_COMPUTATION)), GH_ERR_COMPUTATION, "err code roundtrip");
+
+# --- tag dispatch now covers all four Synthesizer methods, not two ---
+# Ports Synthesizer::rpm / ::sample_rate (rust-old/src/traits.rs:17,20).
+var d_eng = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+ghurni_engine_set_rpm(d_eng, f64_from(2500));
+assert_eq(ghurni_synth_rpm(GH_KIND_ENGINE, d_eng), f64_from(2500), "synth_rpm dispatches to engine");
+assert_eq(ghurni_synth_sample_rate(GH_KIND_ENGINE, d_eng), SR, "synth_sample_rate dispatches to engine");
+var d_gear = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_synth_set_rpm(GH_KIND_GEAR, d_gear, f64_from(1500));
+assert_eq(ghurni_synth_rpm(GH_KIND_GEAR, d_gear), f64_from(1500), "synth_rpm dispatches to gear");
+var d_belt = ghurni_belt_drive_new(f64_from(120), 0.6, SR);
+ghurni_synth_set_rpm(GH_KIND_BELT_DRIVE, d_belt, f64_from(2000));
+assert_eq(ghurni_synth_rpm(GH_KIND_BELT_DRIVE, d_belt), f64_from(2000), "synth_rpm dispatches to belt_drive");
+var d_chain = ghurni_chain_drive_new(110, 16, SR);
+assert_eq(ghurni_synth_sample_rate(GH_KIND_CHAIN_DRIVE, d_chain), SR, "synth_sample_rate -> chain_drive");
+assert_eq(ghurni_synth_rpm(99, d_eng), 0, "unknown kind -> 0, no dispatch");
+
+# --- ghurni_fmod's floored behaviour is load-bearing (negative dividends) ---
+# rust-old/src/engine.rs:273 spells out ((a % m) + m) % m by hand because Rust's
+# `%` is truncated. src/engine.cyr collapses that to one ghurni_fmod call, which
+# is correct ONLY while this is floored. engine passes a NEGATIVE dividend on
+# every sample for every cylinder whose firing offset exceeds the crank angle.
+assert_eq(ghurni_fmod(f64_from(370), f64_from(360)), f64_from(10), "fmod positive dividend");
+assert_eq(ghurni_fmod(f64_neg(f64_from(90)), f64_from(720)), f64_from(630), "fmod NEGATIVE dividend wraps positive");
+assert_eq(ghurni_fmod(f64_neg(f64_from(10)), f64_from(360)), f64_from(350), "fmod -10 mod 360 = 350, not -10");
+assert_eq(ghurni_fmod(f64_neg(f64_from(720)), f64_from(720)), 0, "fmod exact negative multiple = 0");
+
 var rc = assert_summary();
 syscall(60, rc);

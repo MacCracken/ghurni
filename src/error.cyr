@@ -39,7 +39,15 @@ var GHURNI_NEG_INF = 0xFFF0000000000000;   # -inf
 # (F64_TAU / F64_PI / F64_PI_2). GHURNI_DB_SCALE reproduces the Rust naad path's
 # `naad::dsp_util::db_to_amplitude(x * 20.0 / core::f32::consts::LOG10_E)`
 # exactly, factored as `naad_db_to_amplitude(x * GHURNI_DB_SCALE)` with
-# GHURNI_DB_SCALE = 20 / LOG10_E. (The Cyrius-side symbol gained its `naad_`
+# GHURNI_DB_SCALE = 20 / LOG10_E, evaluated in f64: the oracle names the f32
+# constant, whose exact quotient is 46.0517007885741, but the f64 widening is
+# the recorded port-wide divergence and 46.051701859880914 is the f64 value.
+# NOTE the oracle DIVIDES by LOG10_E where converting exp(-8t) to 10^(x/20)
+# would MULTIPLY (20*LOG10_E = 8.686). That is the oracle's own quirk, not a
+# derivation: rust-old's non-naad fallback used a plain exp(-8t), so the naad
+# path's decay is 1/LOG10_E^2 = 5.30x steeper. It is reproduced deliberately.
+# Do not "correct" it -- doing so rewrites every engine, gear and clock envelope.
+# (The Cyrius-side symbol gained its `naad_`
 # prefix in naad 2.1.3/2.2.0; the Rust oracle's name is unprefixed.)
 # Stored as an IEEE-754 bit pattern, like the sentinels above, NOT as the
 # decimal literal `46.051701859880914`. cyrius <= 6.5.27 packed a decimal float
@@ -71,6 +79,24 @@ fn ghurni_err_name(code) {
     return "unknown error";
 }
 
+# Inverse of ghurni_err_name: map a diagnostic string back to its code, or
+# GH_ERR_NONE - 99 (an unmatched sentinel distinct from every real code) for an
+# unknown name. Completes the `ghurni_<enum>_name` / `_from_name` pair that
+# CLAUDE.md requires of every public enum -- GhurniError was the one enum with
+# only the forward half, though the oracle derived Deserialize on it
+# (rust-old/src/error.rs:7) and round-tripped it in test_serde_roundtrip_error.
+# NOTE these are thiserror Display strings ("synthesis failed"), not serde
+# variant names ("SynthesisFailed") -- ghurni_err_name emits the same set, so
+# name/from_name round-trip with each other.
+#must_use
+fn ghurni_err_from_name(s) {
+    if (streq(s, "none") == 1)              { return GH_ERR_NONE; }
+    if (streq(s, "invalid parameter") == 1) { return GH_ERR_INVALID_PARAMETER; }
+    if (streq(s, "synthesis failed") == 1)  { return GH_ERR_SYNTHESIS_FAILED; }
+    if (streq(s, "computation error") == 1) { return GH_ERR_COMPUTATION; }
+    return (0 - 99);
+}
+
 # Finite test: 1 iff x is neither +/-inf nor NaN. abs(x) < +inf holds for
 # finite x, fails for infinities (inf < inf is false) and NaN (any NaN compare
 # is false). Mirrors Rust `f32::is_finite`.
@@ -94,9 +120,20 @@ fn ghurni_vec_copy(src) {
     return v;
 }
 
-# Floored f64 remainder: a mod b = a - b*floor(a/b). For the non-negative
-# operands ghurni uses (crank angle, sample position, tick/engage phase) this
-# equals Rust's truncated `%`. Assumes b > 0.
+# Floored f64 remainder: a mod b = a - b*floor(a/b). Assumes b > 0.
+#
+# The FLOORED behaviour is LOAD-BEARING -- do not "simplify" this to a truncated
+# remainder. Rust's `%` is truncated and returns a negative result for a negative
+# dividend, so the oracle spells out the negative-safe idiom by hand:
+#     ((crank_deg - offset) % cycle + cycle) % cycle    (rust-old/src/engine.rs:273)
+# src/engine.cyr collapses that to a single ghurni_fmod call, which is correct
+# ONLY because this is floored. That call site passes a NEGATIVE dividend on
+# every sample for every cylinder whose firing offset exceeds the current crank
+# angle -- i.e. most cylinders, most of the time. A truncated version would
+# return a negative cyl_phase, push cyl_norm out of the [0, 0.08) combustion
+# window, and silently drop most firing events on every multi-cylinder engine.
+# (An earlier version of this comment claimed the operands were non-negative.
+# They are not.)
 #must_use
 fn ghurni_fmod(a, b) {
     return f64_sub(a, f64_mul(b, f64_floor(f64_div(a, b))));
