@@ -79,6 +79,21 @@ fn ghurni_is_finite(x) {
     return f64_lt(f64_abs(x), GHURNI_POS_INF);
 }
 
+# Copy a vec of f64 (by value). Several Rust setters/constructors take a
+# `Vec<f32>` BY VALUE -- the move makes it impossible for the caller to touch the
+# vec again. Cyrius passes the vec as a pointer, so storing the caller's vec
+# aliases it: a later push on the caller's side silently desynchronises the
+# stored length from the count it was validated against. Copying restores the
+# oracle's move semantics.
+#must_use
+fn ghurni_vec_copy(src) {
+    var n = vec_len(src);
+    var v = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(v, vec_get(src, i)); i = i + 1; }
+    return v;
+}
+
 # Floored f64 remainder: a mod b = a - b*floor(a/b). For the non-negative
 # operands ghurni uses (crank angle, sample position, tick/engage phase) this
 # equals Rust's truncated `%`. Assumes b > 0.

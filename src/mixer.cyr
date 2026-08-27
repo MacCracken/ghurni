@@ -36,6 +36,9 @@ fn ghurni_synth_process_block(kind, synth, out) {
     return 0;
 }
 
+# set_rpm half of the tag dispatch: routes `rpm` to the concrete synth named by
+# `kind`. Unknown tags fall through and do nothing -- ghurni_mixer_add_channel
+# range-checks the tag, so a mixer channel can never hold one.
 fn ghurni_synth_set_rpm(kind, synth, rpm) {
     if (kind == GH_KIND_ENGINE)             { ghurni_engine_set_rpm(synth, rpm); }
     elif (kind == GH_KIND_GEAR)             { ghurni_gear_set_rpm(synth, rpm); }
@@ -85,6 +88,14 @@ fn ghurni_mixer_new() {
 # return its index. (Rust took a Box<dyn Synthesizer>; the port takes the
 # (kind, synth) pair.)
 fn ghurni_mixer_add_channel(m, name, kind, synth) {
+    if ((ghurni_is_err(synth) == 1) || (synth == 0)) {
+        ghurni_log_warn("ghurni: mixer add_channel rejected a failed/absent synthesizer");
+        return GH_ERR_INVALID_PARAMETER;
+    }
+    if ((kind < GH_KIND_ENGINE) || (kind > GH_KIND_CHAIN_DRIVE)) {
+        ghurni_log_warn("ghurni: mixer add_channel rejected an unknown synth kind");
+        return GH_ERR_INVALID_PARAMETER;
+    }
     var ch = alloc(sizeof(GhMixerChannel));
     GhMixerChannel_set_name(ch, name);
     GhMixerChannel_set_gain(ch, F64_ONE);
@@ -139,7 +150,9 @@ fn ghurni_mixer_set_rpm(m, rpm) {
     var i = 0;
     while (i < n) {
         var ch = vec_get(channels, i);
-        ghurni_synth_set_rpm(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), rpm);
+        if (GhMixerChannel_synth(ch) != 0) {
+            ghurni_synth_set_rpm(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), rpm);
+        }
         i = i + 1;
     }
     return 0;
@@ -151,13 +164,32 @@ fn ghurni_mixer_channel_count(m) {
     return vec_len(GhMixer_channels(m));
 }
 
-# Build a fresh scratch vec of exactly `len` zeros for one channel (Cyrius vecs
-# have no sub-slice, so process_block must see a vec of exactly `len`).
+# Return the channel's scratch buffer, zeroed, holding exactly `len` samples.
+#
+# Ports the oracle's grow-only reuse (rust-old/src/mixer.rs:124-131):
+#     if ch.scratch.len() < len { ch.scratch.resize(len, 0.0); }
+#     let scratch = &mut ch.scratch[..len];
+#     for s in scratch.iter_mut() { *s = 0.0; }
+# Rust re-slices a longer buffer down to `len`; Cyrius vecs have no sub-slice,
+# so process_block must see a vec of EXACTLY `len` and the buffer is rebuilt
+# only when the block size actually changes. For the streaming case that matters
+# (a fixed audio-callback block size) that is one allocation for the lifetime of
+# the channel instead of one per channel per block -- the previous code built a
+# fresh vec on every call and dropped the old one, and this library never frees,
+# so each block leaked its whole scratch buffer (~4 MB/s of rendered audio at
+# 44.1 kHz with four channels).
 #must_use
-fn ghurni_mixer_scratch(len) {
-    var v = vec_new();
-    var i = 0;
-    while (i < len) { vec_push(v, 0); i = i + 1; }
+fn ghurni_mixer_channel_scratch(ch, len) {
+    var v = GhMixerChannel_scratch(ch);
+    if ((v == 0) || (vec_len(v) != len)) {
+        v = vec_new();
+        var i = 0;
+        while (i < len) { vec_push(v, 0); i = i + 1; }
+        GhMixerChannel_set_scratch(ch, v);
+        return v;
+    }
+    var z = 0;
+    while (z < len) { vec_set(v, z, 0); z = z + 1; }
     return v;
 }
 
@@ -173,9 +205,8 @@ fn ghurni_mixer_process_block(m, out) {
     var ci = 0;
     while (ci < nc) {
         var ch = vec_get(channels, ci);
-        if (GhMixerChannel_muted(ch) == 0) {
-            var scratch = ghurni_mixer_scratch(len);
-            GhMixerChannel_set_scratch(ch, scratch);
+        if ((GhMixerChannel_muted(ch) == 0) && (GhMixerChannel_synth(ch) != 0)) {
+            var scratch = ghurni_mixer_channel_scratch(ch, len);
             ghurni_synth_process_block(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), scratch);
             var gain = f64_mul(GhMixerChannel_gain(ch), master);
             var i = 0;
@@ -202,9 +233,8 @@ fn ghurni_mixer_process_block_stereo(m, left, right) {
     var ci = 0;
     while (ci < nc) {
         var ch = vec_get(channels, ci);
-        if (GhMixerChannel_muted(ch) == 0) {
-            var scratch = ghurni_mixer_scratch(len);
-            GhMixerChannel_set_scratch(ch, scratch);
+        if ((GhMixerChannel_muted(ch) == 0) && (GhMixerChannel_synth(ch) != 0)) {
+            var scratch = ghurni_mixer_channel_scratch(ch, len);
             ghurni_synth_process_block(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), scratch);
             # equal-power pan law
             var pan_norm = f64_mul(f64_add(GhMixerChannel_pan(ch), F64_ONE), 0.5);

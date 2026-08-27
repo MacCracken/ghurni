@@ -82,6 +82,10 @@ struct GhGear {
 fn ghurni_gear_new(teeth, material, sample_rate) {
     var vsr = ghurni_validate_sample_rate(sample_rate);
     if (ghurni_is_err(vsr) == 1) { return vsr; }
+    if ((material < GH_GEAR_STEEL) || (material > GH_GEAR_NYLON)) {
+        ghurni_log_warn("ghurni: unknown gear material");
+        return GH_ERR_INVALID_PARAMETER;
+    }
 
     var t = teeth;
     if (t < 4) { t = 4; }
@@ -141,10 +145,9 @@ fn ghurni_gear_mesh_frequency(self, rpm) {
 # synthesize(rpm, duration) -> vec<f64> or GH_ERR_*.
 #must_use
 fn ghurni_gear_synthesize(self, rpm, duration) {
-    var vd = ghurni_validate_duration(duration);
-    if (ghurni_is_err(vd) == 1) { return vd; }
+    var n = ghurni_sample_count(GhGear_sample_rate(self), duration);
+    if (ghurni_is_err(n) == 1) { return n; }
     ghurni_gear_set_rpm(self, rpm);
-    var n = f64_to(f64_mul(GhGear_sample_rate(self), duration));
     var out = vec_new();
     var i = 0;
     while (i < n) { vec_push(out, 0); i = i + 1; }

@@ -113,10 +113,9 @@ fn ghurni_differential_mesh_frequency(self, driveshaft_rpm) {
 # synthesize(rpm, duration) -> vec<f64> or GH_ERR_* (one-shot).
 #must_use
 fn ghurni_differential_synthesize(self, rpm, duration) {
-    var vd = ghurni_validate_duration(duration);
-    if (ghurni_is_err(vd) == 1) { return vd; }
+    var n = ghurni_sample_count(GhDifferential_sample_rate(self), duration);
+    if (ghurni_is_err(n) == 1) { return n; }
     ghurni_differential_set_rpm(self, rpm);
-    var n = f64_to(f64_mul(GhDifferential_sample_rate(self), duration));
     var out = vec_new();
     var i = 0;
     while (i < n) { vec_push(out, 0); i = i + 1; }

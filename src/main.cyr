@@ -12,6 +12,8 @@ include "lib/goonj.cyr"
 include "lib/naad.cyr"
 include "dist/ghurni.cyr"
 
+# Smoke entry: constructs each synth family, renders a short block through the
+# mixer, and exits 0. `cyrius test` runs this alongside the .tcyr suites.
 fn main() {
     alloc_init();
 
@@ -37,8 +39,14 @@ fn main() {
 
     # A two-synth mixer must also produce finite audio.
     var mix = ghurni_mixer_new();
-    ghurni_mixer_add_channel(mix, "engine", GH_KIND_ENGINE, ghurni_engine_new(GH_ENGINE_DIESEL, 6, f64_from(44100)));
-    ghurni_mixer_add_channel(mix, "gear", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, f64_from(44100)));
+    var meng = ghurni_engine_new(GH_ENGINE_DIESEL, 6, f64_from(44100));
+    var mgear = ghurni_gear_new(32, GH_GEAR_STEEL, f64_from(44100));
+    if ((ghurni_is_err(meng) == 1) || (ghurni_is_err(mgear) == 1)) {
+        println("ghurni: mixer synth init failed");
+        return 1;
+    }
+    if (ghurni_is_err(ghurni_mixer_add_channel(mix, "engine", GH_KIND_ENGINE, meng)) == 1) { return 1; }
+    if (ghurni_is_err(ghurni_mixer_add_channel(mix, "gear", GH_KIND_GEAR, mgear)) == 1) { return 1; }
     ghurni_mixer_set_rpm(mix, f64_from(2500));
     var mono = vec_new();
     var mi = 0;

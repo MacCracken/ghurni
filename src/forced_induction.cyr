@@ -79,6 +79,10 @@ struct GhForcedInduction {
 fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sample_rate) {
     var vsr = ghurni_validate_sample_rate(sample_rate);
     if (ghurni_is_err(vsr) == 1) { return vsr; }
+    if ((induction_type < GH_INDUCTION_TURBO) || (induction_type > GH_INDUCTION_SUPERCHARGER)) {
+        ghurni_log_warn("ghurni: unknown induction type");
+        return GH_ERR_INVALID_PARAMETER;
+    }
 
     var ratio = f64_clamp(drive_ratio, 0.5, f64_from(10));
 
@@ -90,7 +94,15 @@ fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sampl
     # naad backend: saw whine oscillator + white noise + band-pass BOV filter.
     var whine_osc = osc_new(WAVEFORM_SAW, f64_from(100), sample_rate);
     if (ghurni_is_err(whine_osc) == 1) { return ghurni_map_naad_error(whine_osc); }
-    var noise = noise_new(NOISE_WHITE, induction_type * 777);
+    # Seed: the oracle uses `induction_type as u32 * 777 + drive_ratio.to_bits()`
+    # (rust-old/src/forced_induction.rs:95). The port derives a behavioural
+    # integer seed rather than the f32 bit pattern -- same convention belt_drive
+    # and turbine use -- but it must still DEPEND on the ratio: dropping the term
+    # entirely (as 2.0.1 and earlier did) collapsed the seed space to two values,
+    # so every Turbo shared one bit-identical hiss and two layered turbos summed
+    # coherently instead of decorrelating. x1000 keeps the clamped 0.5..10 ratio
+    # distinguishable to three decimals.
+    var noise = noise_new(NOISE_WHITE, induction_type * 777 + f64_to(f64_mul(ratio, f64_from(1000))));
     var bov_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(2000), f64_from(2));
     if (ghurni_is_err(bov_filter) == 1) { return ghurni_map_naad_error(bov_filter); }
 
@@ -129,7 +141,11 @@ fn ghurni_forced_induction_set_load(self, load) {
     var prev = GhForcedInduction_load(self);
     var l = f64_clamp(load, 0, F64_ONE);
     GhForcedInduction_set_load(self, l);
-    if ((f64_gt(prev, 0.5) == 1) && (f64_lt(l, 0.2) == 1) && (f64_gt(ghurni_smooth_current(GhForcedInduction_spool_rpm(self)), f64_from(5000)) == 1)) {
+    var spool_now = ghurni_smooth_current(GhForcedInduction_spool_rpm(self));
+    var was_boosted = f64_gt(prev, 0.5);
+    var now_closed = f64_lt(l, 0.2);
+    var spooled_up = f64_gt(spool_now, f64_from(5000));
+    if ((was_boosted == 1) && (now_closed == 1) && (spooled_up == 1)) {
         ghurni_forced_induction_trigger_bov(self);
     }
     var target = f64_mul(f64_mul(GhForcedInduction_rpm(self), GhForcedInduction_drive_ratio(self)), l);
@@ -147,11 +163,10 @@ fn ghurni_forced_induction_trigger_bov(self) {
 # synthesize(rpm, load, duration) -> vec<f64> or GH_ERR_*.
 #must_use
 fn ghurni_forced_induction_synthesize(self, rpm, load, duration) {
-    var vd = ghurni_validate_duration(duration);
-    if (ghurni_is_err(vd) == 1) { return vd; }
+    var n = ghurni_sample_count(GhForcedInduction_sample_rate(self), duration);
+    if (ghurni_is_err(n) == 1) { return n; }
     ghurni_forced_induction_set_rpm(self, rpm);
     ghurni_forced_induction_set_load(self, load);
-    var n = f64_to(f64_mul(GhForcedInduction_sample_rate(self), duration));
     var out = vec_new();
     var i = 0;
     while (i < n) { vec_push(out, 0); i = i + 1; }

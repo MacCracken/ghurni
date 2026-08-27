@@ -38,19 +38,25 @@ fn main() {
 
     # Engine (center).
     var engine = ghurni_engine_new(GH_ENGINE_DIESEL, 6, sr);
+    if (ghurni_is_err(engine) == 1) { println("mixer_demo: engine init failed"); return 1; }
     var eng_idx = ghurni_mixer_add_channel(mixer, "engine", GH_KIND_ENGINE, engine);
+    if (ghurni_is_err(eng_idx) == 1) { println("mixer_demo: add engine failed"); return 1; }
     ghurni_mixer_set_channel_gain(mixer, eng_idx, 0.8);
     ghurni_mixer_set_channel_pan(mixer, eng_idx, 0);
 
     # Turbo (slightly right).
     var turbo = ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.5, F64_ONE, sr);
+    if (ghurni_is_err(turbo) == 1) { println("mixer_demo: turbo init failed"); return 1; }
     var turbo_idx = ghurni_mixer_add_channel(mixer, "turbo", GH_KIND_FORCED_INDUCTION, turbo);
+    if (ghurni_is_err(turbo_idx) == 1) { println("mixer_demo: add turbo failed"); return 1; }
     ghurni_mixer_set_channel_gain(mixer, turbo_idx, 0.4);
     ghurni_mixer_set_channel_pan(mixer, turbo_idx, 0.3);
 
     # Gear whine (slightly left).
     var gear = ghurni_gear_new(32, GH_GEAR_STEEL, sr);
+    if (ghurni_is_err(gear) == 1) { println("mixer_demo: gear init failed"); return 1; }
     var gear_idx = ghurni_mixer_add_channel(mixer, "gear", GH_KIND_GEAR, gear);
+    if (ghurni_is_err(gear_idx) == 1) { println("mixer_demo: add gear failed"); return 1; }
     ghurni_mixer_set_channel_gain(mixer, gear_idx, 0.2);
     ghurni_mixer_set_channel_pan(mixer, gear_idx, f64_neg(0.3));
 

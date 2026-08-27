@@ -1,0 +1,339 @@
+# hardening.tcyr -- the P-1 sweep's regression suite (2.0.2).
+#
+# Every assertion here pins a defect that was REAL in 2.0.1 and is fixed in
+# 2.0.2. Each one was verified to FAIL against the unpatched source before
+# being written down -- a test that passes both before and after the fix is
+# worse than no test, because it makes the gap invisible.
+#
+# The two defect classes these come from (the same two naad 2.1.3 found):
+#   CLASS 1  Rust usize/u32/enum guarantees erased by Cyrius's signed i64. The
+#            oracle's body validates nothing because the bad value is
+#            UNREPRESENTABLE, so a transliterated guard is only half a bound.
+#   CLASS 2  f64_to TRUNCATES where Rust's `as` casts SATURATE. Rust maps an
+#            over-range f64 to usize::MAX; f64_to overflows to INT64_MIN, which
+#            is neither `> MAX` nor `== 0`, so one-sided clamps let it through.
+#
+# NOTE these suites deliberately assert on ERROR CODES and STRUCTURAL facts
+# (lengths, gear indices, survival of a call that used to abort the process),
+# never on `audio_all_finite` / `audio_has_energy` alone -- those helpers hold
+# for almost any value and are exactly why the 76.9x-wrong GHURNI_DB_SCALE
+# survived a whole release with a green suite.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+
+# ---- audio assertion helpers (same shape the other suites use) ----
+fn audio_all_finite(v) {
+    var n = vec_len(v);
+    if (n == 0) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (ghurni_is_finite(vec_get(v, i)) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+fn audio_has_energy(v) {
+    if (audio_all_finite(v) == 0) { return 0; }
+    var n = vec_len(v);
+    var i = 0;
+    while (i < n) {
+        if (f64_gt(f64_abs(vec_get(v, i)), 0.001) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+var SR = f64_from(44100);
+
+# ================================================================
+test_group("GHURNI_DB_SCALE is pinned to an exact value");
+# The 2.0.1 post-mortem: cyrius <= 6.5.27 miscompiled the decimal literal
+# `46.051701859880914` to 0.598756873065743 (76.9x too small), flattening the
+# gear/clock/engine ring-decay envelopes -- and the ENTIRE 135-assertion suite
+# still passed, because every audio assertion was finite/has-energy/ordering.
+# These two assertions are the mutation guard that gap needed: the constant
+# itself, and the envelope value it actually produces.
+assert_eq(GHURNI_DB_SCALE, 0x4047069E2AA2AA5B, "GHURNI_DB_SCALE bit pattern == 20/LOG10_E");
+# 10^(-1 * 46.051701859880914 / 20) = 0.004982128296440718. Under the broken
+# constant this was 0.9333878779699565 -- a 187x difference.
+var env1 = naad_db_to_amplitude(f64_neg(GHURNI_DB_SCALE));
+assert_lt(env1, 0.005, "decay envelope at t=1 is ~0.00498, not ~0.93");
+assert_gt(env1, 0.0049, "decay envelope at t=1 is not degenerate");
+# And at half the exponent: 10^(-0.5*46.0517/20) = 0.0705690...
+var env2 = naad_db_to_amplitude(f64_mul(f64_neg(GHURNI_DB_SCALE), 0.5));
+assert_lt(env2, 0.0706, "decay envelope at t=0.5 upper bound");
+assert_gt(env2, 0.0705, "decay envelope at t=0.5 lower bound");
+
+# ================================================================
+test_group("sample-count guard (CLASS 2: f64_to saturation)");
+# ghurni_sample_count compares in f64 BEFORE the f64_to, so the INT64_MIN
+# overflow is never reached. 1e30 as a literal is not available, so build it.
+var HUGE = f64_mul(f64_mul(f64_from(1000000000), f64_from(1000000000)), f64_from(1000000));
+assert_eq(ghurni_is_err(ghurni_sample_count(SR, HUGE)), 1, "1e24 s rejected, not wrapped to INT64_MIN");
+assert_eq(ghurni_sample_count(SR, F64_ONE), 44100, "1 s @ 44.1 kHz = 44100 samples");
+assert_eq(ghurni_sample_count(SR, f64_from(2)), 88200, "2 s @ 44.1 kHz = 88200 samples");
+# The cap sits below the stdlib's VEC_CAP_MAX so vec growth can never abort.
+assert_eq(ghurni_is_err(ghurni_sample_count(SR, f64_from(10000))), 1, "10000 s exceeds the buffer cap");
+assert_lt(GHURNI_MAX_SAMPLES, 0x10000000, "cap stays under the stdlib VEC_CAP_MAX");
+# A count that rounds to zero is an error, not a silent empty success.
+assert_eq(ghurni_is_err(ghurni_sample_count(SR, 0.000001)), 1, "sub-sample duration rejected");
+# Invalid sample rate / duration still route through the existing validators.
+assert_eq(ghurni_is_err(ghurni_sample_count(0, F64_ONE)), 1, "0 Hz rejected");
+assert_eq(ghurni_is_err(ghurni_sample_count(SR, GHURNI_POS_INF)), 1, "inf duration rejected");
+
+# ================================================================
+test_group("synthesize reports the overflow instead of returning empty");
+# 2.0.1 returned a length-0 vec here, and ghurni_is_err() called it SUCCESS.
+var eng = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+assert_eq(ghurni_is_err(eng), 0, "engine constructs");
+var eng_huge = ghurni_engine_synthesize(eng, f64_from(3000), 0.5, HUGE);
+assert_eq(ghurni_is_err(eng_huge), 1, "engine: huge duration is an error");
+var gr = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+assert_eq(ghurni_is_err(ghurni_gear_synthesize(gr, f64_from(1500), HUGE)), 1, "gear: huge duration is an error");
+var clk = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+assert_eq(ghurni_is_err(ghurni_clock_synthesize(clk, HUGE)), 1, "clock: huge duration is an error");
+# ...and the ordinary path is untouched.
+var ok1s = ghurni_engine_synthesize(eng, f64_from(3000), 0.5, F64_ONE);
+assert_eq(ghurni_is_err(ok1s), 0, "1 s synthesize still succeeds");
+assert_eq(vec_len(ok1s), 44100, "1 s synthesize returns exactly 44100 samples");
+
+# ================================================================
+test_group("enum-id range guards (CLASS 1: exhaustive match erased)");
+# Rust matched a closed enum, so an out-of-range id was unrepresentable. The
+# port used to fall through to whatever the last elif left in place.
+assert_eq(ghurni_is_err(ghurni_engine_new(99, 4, SR)), 1, "engine type 99 rejected");
+assert_eq(ghurni_is_err(ghurni_engine_new(0 - 1, 4, SR)), 1, "engine type -1 rejected");
+assert_eq(ghurni_is_err(ghurni_gear_new(32, 99, SR)), 1, "gear material 99 rejected");
+assert_eq(ghurni_is_err(ghurni_motor_new(99, 4, SR)), 1, "motor type 99 rejected");
+assert_eq(ghurni_is_err(ghurni_clock_new(99, SR)), 1, "clock type 99 rejected");
+assert_eq(ghurni_is_err(ghurni_forced_induction_new(99, f64_from(2), 0.5, SR)), 1, "induction type 99 rejected");
+# The -1 sentinel that ghurni_<enum>_from_name returns for an unknown name is
+# now safe to feed straight into a constructor.
+assert_eq(ghurni_enginetype_from_name("Nonsense"), 0 - 1, "unknown name -> -1 sentinel");
+var from_bad_name = ghurni_engine_new(ghurni_enginetype_from_name("Nonsense"), 4, SR);
+assert_eq(ghurni_is_err(from_bad_name), 1, "sentinel is rejected, not accepted as a type");
+# Every valid id still constructs.
+assert_eq(ghurni_is_err(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR)), 0, "Gasoline ok");
+assert_eq(ghurni_is_err(ghurni_engine_new(GH_ENGINE_HYBRID, 4, SR)), 0, "Hybrid (last variant) ok");
+var sc_ok = ghurni_forced_induction_new(GH_INDUCTION_SUPERCHARGER, f64_from(2), 0.5, SR);
+assert_eq(ghurni_is_err(sc_ok), 0, "Supercharger ok");
+
+# ================================================================
+test_group("forced_induction keeps the caller's spool_inertia");
+# The `inertia = 0.01` default was only overridden inside the Turbo branch, so
+# an unrecognised type silently discarded the argument. With the id guarded,
+# Turbo must honour it and Supercharger must pin 0.01 (the oracle's match arm).
+var turbo = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.5, SR);
+assert_eq(GhForcedInduction_spool_inertia(turbo), 0.5, "Turbo keeps spool_inertia 0.5");
+var sc = ghurni_forced_induction_new(GH_INDUCTION_SUPERCHARGER, f64_from(2), 0.5, SR);
+assert_eq(GhForcedInduction_spool_inertia(sc), 0.01, "Supercharger pins 0.01 (oracle match arm)");
+# Clamp bounds from the oracle: spool_inertia.clamp(0.1, 5.0).
+var t_lo = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.001, SR);
+assert_eq(GhForcedInduction_spool_inertia(t_lo), 0.1, "Turbo clamps spool_inertia up to 0.1");
+var t_hi = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), f64_from(99), SR);
+assert_eq(GhForcedInduction_spool_inertia(t_hi), f64_from(5), "Turbo clamps spool_inertia down to 5.0");
+
+# ================================================================
+test_group("forced_induction noise seed depends on drive_ratio");
+# The oracle seeds with `induction_type as u32 * 777 + drive_ratio.to_bits()`
+# (rust-old/src/forced_induction.rs:95). 2.0.1 dropped the ratio term entirely,
+# collapsing the seed space to two values, so every Turbo shared one identical
+# hiss and two layered turbos summed coherently instead of decorrelating.
+#
+# This pulls from the NOISE GENERATOR DIRECTLY rather than comparing rendered
+# audio. Comparing audio would be VACUOUS: drive_ratio also sets the compressor
+# speed, so the rendered blocks differ even when the seed is identical -- the
+# first version of this test passed with the defect reintroduced.
+var fa = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.02, SR);
+var fb = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(9), 0.02, SR);
+var na = GhForcedInduction_noise_gen(fa);
+var nb = GhForcedInduction_noise_gen(fb);
+assert_neq(na, nb, "two distinct noise generators (precondition)");
+var seed_differs = 0;
+var nonzero = 0;
+var ni = 0;
+while (ni < 64) {
+    var sa = noise_next_sample(na);
+    var sb = noise_next_sample(nb);
+    if (sa != sb) { seed_differs = 1; }
+    if (f64_abs(sa) != 0) { nonzero = 1; }
+    ni = ni + 1;
+}
+assert_eq(nonzero, 1, "reference stream is real signal (not a 0 == 0 compare)");
+assert_eq(seed_differs, 1, "ratio 2 and ratio 9 seed DIFFERENT noise streams");
+
+# Same parameters must still give the identical stream (ADR-003 determinism).
+var fc = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.02, SR);
+var fd = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.02, SR);
+var nc = GhForcedInduction_noise_gen(fc);
+var nd = GhForcedInduction_noise_gen(fd);
+var det = 1;
+var nj = 0;
+while (nj < 64) {
+    if (noise_next_sample(nc) != noise_next_sample(nd)) { det = 0; }
+    nj = nj + 1;
+}
+assert_eq(det, 1, "identical parameters remain bit-identical (determinism)");
+
+# The two induction types must also stay decorrelated from each other.
+var fe = ghurni_forced_induction_new(GH_INDUCTION_SUPERCHARGER, f64_from(2), 0.02, SR);
+var ne = GhForcedInduction_noise_gen(fe);
+var nf2 = GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.02, SR));
+var type_differs = 0;
+var nk = 0;
+while (nk < 64) {
+    if (noise_next_sample(ne) != noise_next_sample(nf2)) { type_differs = 1; }
+    nk = nk + 1;
+}
+assert_eq(type_differs, 1, "Turbo and Supercharger seed different streams");
+
+# ================================================================
+test_group("transmission shift_to has BOTH bounds (CLASS 1)");
+# Rust typed the parameter `u32`, so its one-sided `< ratios.len()` was a
+# complete bound. In Cyrius the same line is only half of one.
+var ratios = vec_new();
+vec_push(ratios, f64_from(3)); vec_push(ratios, f64_from(2)); vec_push(ratios, f64_from(1));
+var tr = ghurni_transmission_new(ratios, 40, SR);
+ghurni_transmission_shift_to(tr, 1);
+assert_eq(GhTransmission_current_gear(tr), 1, "shift_to(1) accepted");
+ghurni_transmission_shift_to(tr, 99);
+assert_eq(GhTransmission_current_gear(tr), 1, "shift_to(99) rejected (upper bound)");
+ghurni_transmission_shift_to(tr, 0 - 1);
+assert_eq(GhTransmission_current_gear(tr), 1, "shift_to(-1) rejected (lower bound)");
+ghurni_transmission_shift_to(tr, 0 - 9999);
+assert_eq(GhTransmission_current_gear(tr), 1, "shift_to(-9999) rejected");
+ghurni_transmission_shift_to(tr, 2);
+assert_eq(GhTransmission_current_gear(tr), 2, "shift_to(2) still accepted (last valid gear)");
+
+# ================================================================
+test_group("owned vecs: constructors/setters copy (Rust moved)");
+# Rust's `set_firing_order(offsets: Vec<f32>)` and `Transmission::new(ratios:
+# Vec<f32>)` MOVE the vec, so the caller provably cannot touch it again. The
+# port stored the caller's pointer, so a later push desynchronised the stored
+# length from the count it was validated against -- and the engine's per-sample
+# loop then indexed misfire_flags out of bounds, aborting the whole process.
+var tr2ratios = vec_new();
+vec_push(tr2ratios, f64_from(3)); vec_push(tr2ratios, f64_from(2));
+var tr2 = ghurni_transmission_new(tr2ratios, 40, SR);
+assert_eq(vec_len(GhTransmission_ratios(tr2)), 2, "transmission copied 2 ratios");
+vec_push(tr2ratios, f64_from(1));
+assert_eq(vec_len(GhTransmission_ratios(tr2)), 2, "caller's later push does not reach the transmission");
+
+var e4 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+var order = vec_new();
+vec_push(order, f64_from(0)); vec_push(order, f64_from(180));
+vec_push(order, f64_from(360)); vec_push(order, f64_from(540));
+ghurni_engine_set_firing_order(e4, order);
+assert_eq(vec_len(GhEngine_firing_offsets(e4)), 4, "engine copied 4 offsets");
+vec_push(order, f64_from(720));
+assert_eq(vec_len(GhEngine_firing_offsets(e4)), 4, "caller's later push does not reach the engine");
+# The call that used to abort the process must now simply run.
+var blk = vec_new();
+var bi = 0;
+while (bi < 256) { vec_push(blk, 0); bi = bi + 1; }
+ghurni_engine_process_block(e4, blk);
+assert_eq(vec_len(blk), 256, "process_block survived a desynchronised firing order");
+
+# ================================================================
+test_group("mixer rejects a failed or absent synthesizer");
+# The oracle's field is `Option<Box<dyn Synthesizer>>`: a Box is always a live
+# synth (Engine::new returns Result, so the caller must unwrap first), and
+# every one of the three use sites is guarded by `if let Some(synth)`. The port
+# stored whatever i64 it was handed and dereferenced it -- SIGSEGV.
+var mix = ghurni_mixer_new();
+var failed = ghurni_engine_new(GH_ENGINE_DIESEL, 6, 0);
+assert_eq(ghurni_is_err(failed), 1, "constructor with 0 Hz fails (precondition)");
+var rc_bad = ghurni_mixer_add_channel(mix, "bad", GH_KIND_ENGINE, failed);
+assert_eq(ghurni_is_err(rc_bad), 1, "error code rejected as a synth");
+assert_eq(ghurni_mixer_channel_count(mix), 0, "rejected channel was not added");
+var rc_null = ghurni_mixer_add_channel(mix, "null", GH_KIND_GEAR, 0);
+assert_eq(ghurni_is_err(rc_null), 1, "null synth rejected (the Rust None case)");
+assert_eq(ghurni_mixer_channel_count(mix), 0, "null channel was not added");
+# The kind tag is an enum in Rust too, so it gets the same CLASS 1 treatment.
+var goodgear = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+assert_eq(ghurni_is_err(ghurni_mixer_add_channel(mix, "kind", 99, goodgear)), 1, "out-of-range kind rejected");
+assert_eq(ghurni_is_err(ghurni_mixer_add_channel(mix, "kind", 0 - 1, goodgear)), 1, "negative kind rejected");
+assert_eq(ghurni_mixer_channel_count(mix), 0, "no bad channel was added");
+# A good channel still works, and rendering it does not crash.
+var idx = ghurni_mixer_add_channel(mix, "gear", GH_KIND_GEAR, goodgear);
+assert_eq(idx, 0, "valid channel gets index 0");
+assert_eq(ghurni_mixer_channel_count(mix), 1, "valid channel added");
+var mbuf = vec_new();
+var mi = 0;
+while (mi < 128) { vec_push(mbuf, 0); mi = mi + 1; }
+ghurni_mixer_set_rpm(mix, f64_from(3000));
+ghurni_mixer_process_block(mix, mbuf);
+assert_eq(audio_all_finite(mbuf), 1, "mixer still renders finite audio");
+assert_eq(audio_has_energy(mbuf), 1, "mixer still renders real signal");
+
+# ================================================================
+test_group("mixer scratch is reused, not reallocated per block");
+# Ports the oracle's grow-only buffer (rust-old/src/mixer.rs:124-131). 2.0.1
+# built a fresh vec per channel per block and dropped the old one; this library
+# never frees, so every block leaked its whole scratch buffer (measured: 278 MB
+# per 100 s of 4-channel audio, now 0).
+var m2 = ghurni_mixer_new();
+ghurni_mixer_add_channel(m2, "g", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+var buf2 = vec_new();
+var bj = 0;
+while (bj < 256) { vec_push(buf2, 0); bj = bj + 1; }
+ghurni_mixer_process_block(m2, buf2);
+var ch0 = vec_get(GhMixer_channels(m2), 0);
+var scratch_first = GhMixerChannel_scratch(ch0);
+assert_gt(scratch_first, 0, "scratch buffer was created");
+assert_eq(vec_len(scratch_first), 256, "scratch is exactly the block length");
+ghurni_mixer_process_block(m2, buf2);
+assert_eq(GhMixerChannel_scratch(ch0), scratch_first, "second block reuses the SAME buffer");
+ghurni_mixer_process_block(m2, buf2);
+assert_eq(GhMixerChannel_scratch(ch0), scratch_first, "third block reuses it too");
+# A changed block size must rebuild it to exactly the new length (Cyrius vecs
+# have no sub-slice, so process_block must see a vec of exactly `len`).
+var buf3 = vec_new();
+var bk = 0;
+while (bk < 512) { vec_push(buf3, 0); bk = bk + 1; }
+ghurni_mixer_process_block(m2, buf3);
+assert_eq(vec_len(GhMixerChannel_scratch(ch0)), 512, "buffer rebuilt for a new block size");
+
+# ================================================================
+test_group("engine event vecs are bounded by their own lengths");
+# The oracle uses `.get(cyl).unwrap_or(false)` and `knock_remaining.iter_mut()`,
+# so it can never go out of bounds however the lengths drift. Exercise the
+# knock/misfire paths with events actually armed, through the public API.
+var e8 = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+ghurni_engine_trigger_event(e8, ghurni_event_knock(3));
+ghurni_engine_trigger_event(e8, ghurni_event_misfire(5));
+var kbuf = vec_new();
+var ki = 0;
+while (ki < 4410) { vec_push(kbuf, 0); ki = ki + 1; }
+ghurni_engine_process_block(e8, kbuf);
+assert_eq(audio_all_finite(kbuf), 1, "knock+misfire block is finite");
+assert_eq(audio_has_energy(kbuf), 1, "knock+misfire block has real signal");
+# Render past the knock envelope so the armed-flag path drains and re-arms.
+ghurni_engine_process_block(e8, kbuf);
+ghurni_engine_process_block(e8, kbuf);
+assert_eq(audio_all_finite(kbuf), 1, "post-knock blocks stay finite");
+ghurni_engine_trigger_event(e8, ghurni_event_knock(7));
+ghurni_engine_process_block(e8, kbuf);
+assert_eq(audio_has_energy(kbuf), 1, "knock re-arms after draining");
+
+var rc = assert_summary();
+syscall(60, rc);

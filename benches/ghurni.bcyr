@@ -2,8 +2,8 @@
 # Run: cyrius bench
 # Covers the inner-loop / per-call functions consumers hit: the DC blocker
 # (applied to every synthesis buffer), the parameter smoother (per-sample RPM /
-# load ramps), and full one-shot synthesis for the engine, gear, and mixer (the
-# headline paths, exercising the whole naad stack).
+# load ramps), full one-shot synthesis for the engine and gear, the STREAMING
+# 4-channel mixer path a real audio callback uses, and belt_drive's block loop.
 #
 # Batch pattern: bench_new → bench_batch_start → tight loop → bench_batch_stop
 # → bench_report. Per-sample ops use large N to amortize clock overhead.
@@ -43,7 +43,8 @@ fn main() {
     var k = 0;
     while (k < 200) {
         var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
-        ghurni_engine_synthesize(e, f64_from(3000), 0.5, 0.05);
+        var ev = ghurni_engine_synthesize(e, f64_from(3000), 0.5, 0.05);
+        if (vec_len(ev) == 0) { return 1; }
         k = k + 1;
     }
     bench_batch_stop(b3, 200);
@@ -55,11 +56,49 @@ fn main() {
     var m = 0;
     while (m < 200) {
         var g = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
-        ghurni_gear_synthesize(g, f64_from(1500), 0.05);
+        var gv = ghurni_gear_synthesize(g, f64_from(1500), 0.05);
+        if (vec_len(gv) == 0) { return 1; }
         m = m + 1;
     }
     bench_batch_stop(b4, 200);
     bench_report(b4);
+
+    # --- STREAMING mixer: 4 channels x 512-sample blocks (the consumer path).
+    # This is the shape a real audio callback uses, and the one the per-block
+    # scratch allocation used to dominate: 2.0.1 built a fresh scratch vec for
+    # every channel on every block and never reused it.
+    var mix = ghurni_mixer_new();
+    var me = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+    var mg = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+    var mt = ghurni_turbine_new(12, f64_from(800), SR);
+    var mm = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR);
+    ghurni_mixer_add_channel(mix, "engine", GH_KIND_ENGINE, me);
+    ghurni_mixer_add_channel(mix, "gear", GH_KIND_GEAR, mg);
+    ghurni_mixer_add_channel(mix, "turbine", GH_KIND_TURBINE, mt);
+    ghurni_mixer_add_channel(mix, "motor", GH_KIND_MOTOR, mm);
+    ghurni_mixer_set_rpm(mix, f64_from(3000));
+    var mbuf = vec_new();
+    var mi = 0;
+    while (mi < 512) { vec_push(mbuf, 0); mi = mi + 1; }
+    var b5 = bench_new("ghurni_mixer_process_block 4ch_512 (streaming)");
+    bench_batch_start(b5);
+    var mb = 0;
+    while (mb < 2000) { ghurni_mixer_process_block(mix, mbuf); mb = mb + 1; }
+    bench_batch_stop(b5, 2000);
+    bench_report(b5);
+
+    # --- belt drive process_block (block-invariant hoists live here) ---
+    var bd = ghurni_belt_drive_new(f64_from(120), 0.6, SR);
+    ghurni_belt_drive_set_rpm(bd, f64_from(2000));
+    var bbuf = vec_new();
+    var bi = 0;
+    while (bi < 2205) { vec_push(bbuf, 0); bi = bi + 1; }
+    var b6 = bench_new("ghurni_belt_drive_process_block 2205");
+    bench_batch_start(b6);
+    var bb = 0;
+    while (bb < 500) { ghurni_belt_drive_process_block(bd, bbuf); bb = bb + 1; }
+    bench_batch_stop(b6, 500);
+    bench_report(b6);
 
     return 0;
 }

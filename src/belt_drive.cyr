@@ -106,10 +106,9 @@ fn ghurni_belt_drive_belt_speed(self, rpm) {
 # synthesize(rpm, duration) -> vec<f64> or GH_ERR_*.
 #must_use
 fn ghurni_belt_drive_synthesize(self, rpm, duration) {
-    var vd = ghurni_validate_duration(duration);
-    if (ghurni_is_err(vd) == 1) { return vd; }
+    var n = ghurni_sample_count(GhBeltDrive_sample_rate(self), duration);
+    if (ghurni_is_err(n) == 1) { return n; }
     ghurni_belt_drive_set_rpm(self, rpm);
-    var n = f64_to(f64_mul(GhBeltDrive_sample_rate(self), duration));
     var out = vec_new();
     var i = 0;
     while (i < n) { vec_push(out, 0); i = i + 1; }
@@ -150,13 +149,24 @@ fn ghurni_belt_drive_process_block(self, out) {
     # squeal frequency (constant across the block), clamped to nyquist.
     var squeal_freq = f64_min(f64_add(f64_from(2000), f64_mul(f64_sub(F64_ONE, tens), f64_from(3000))), nyq);
 
+    # Both of these are block-invariant, so they are hoisted out of the
+    # per-sample loop. osc_set_frequency only validates and stores the field
+    # (lib/naad.cyr) -- it does not touch the phase accumulator -- so setting it
+    # once per block instead of once per sample is bit-identical. Likewise
+    # belt_omega derives only from belt_rotation_freq and sr, both fixed here.
+    osc_set_frequency(osc, squeal_freq);
+    var belt_active = f64_gt(belt_rotation_freq, 0);
+    var belt_omega = 0;
+    if (belt_active == 1) {
+        belt_omega = f64_div(f64_mul(F64_TAU, belt_rotation_freq), sr);
+    }
+
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
         ghurni_smooth_next_value(smooth_rpm);
 
         # Squeal: high-frequency friction oscillation.
-        osc_set_frequency(osc, squeal_freq);
         var squeal = f64_mul(osc_next_sample(osc), squeal_amp);
 
         # Flap: periodic low-frequency thump from belt joints / splices.
@@ -166,8 +176,7 @@ fn ghurni_belt_drive_process_block(self, out) {
         # Periodic modulation at the belt rotation rate.
         var abs_pos = f64_from(base_pos + i);
         var belt_mod = F64_ONE;
-        if (f64_gt(belt_rotation_freq, 0) == 1) {
-            var belt_omega = f64_div(f64_mul(F64_TAU, belt_rotation_freq), sr);
+        if (belt_active == 1) {
             belt_mod = f64_add(0.8, f64_mul(0.2, f64_sin(f64_mul(belt_omega, abs_pos))));
         }
 

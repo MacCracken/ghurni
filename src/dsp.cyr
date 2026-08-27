@@ -101,6 +101,46 @@ fn ghurni_validate_duration(duration) {
     return GH_ERR_NONE;
 }
 
+# ================================================================
+# Sample-count guard (P-1, 2.0.2). Ports the `(sample_rate * duration) as usize`
+# line every one-shot `synthesize` uses (rust-old/src/engine.rs:225 and the nine
+# siblings). Rust's `as usize` SATURATES, so an over-range product becomes
+# usize::MAX and `vec![0.0; usize::MAX]` fails loudly; Cyrius `f64_to` OVERFLOWS
+# to INT64_MIN, which is < 0, so `while (i < n)` never runs and synthesize used
+# to return a length-0 vec that ghurni_is_err() reports as SUCCESS.
+#
+# There is also no upper bound in the oracle: the stdlib vec aborts the whole
+# process (`_vec_die()` -> exit(1)) once a push would exceed VEC_CAP_MAX
+# (0x10000000 elements), so a caller-supplied duration above ~6087 s at 44.1 kHz
+# used to kill the host. That violates the zero-panic rule, so the port caps the
+# count and reports GH_ERR_INVALID_PARAMETER instead -- a deliberate divergence
+# from the uncapped oracle, recorded in docs/development/state.md.
+#
+# GHURNI_MAX_SAMPLES = 2^26 = 67,108,864 samples ~ 25.4 min at 44.1 kHz, well
+# under VEC_CAP_MAX so the doubling growth cannot reach the abort.
+var GHURNI_MAX_SAMPLES = 0x4000000;
+
+# sample_count(sample_rate, duration) -> count > 0, or a negative GH_ERR_*.
+# Compares in f64 BEFORE the f64_to, so the overflow is never reached.
+#must_use
+fn ghurni_sample_count(sample_rate, duration) {
+    var vsr = ghurni_validate_sample_rate(sample_rate);
+    if (ghurni_is_err(vsr) == 1) { return vsr; }
+    var vd = ghurni_validate_duration(duration);
+    if (ghurni_is_err(vd) == 1) { return vd; }
+    var total = f64_mul(sample_rate, duration);
+    if (f64_gt(total, f64_from(GHURNI_MAX_SAMPLES)) == 1) {
+        ghurni_log_warn("ghurni: duration x sample rate exceeds the maximum buffer length");
+        return GH_ERR_INVALID_PARAMETER;
+    }
+    var n = f64_to(total);
+    if (n < 1) {
+        ghurni_log_warn("ghurni: duration x sample rate yields no samples");
+        return GH_ERR_INVALID_PARAMETER;
+    }
+    return n;
+}
+
 # map_naad_error -- ports naad_init_error (naad-backend gated). Rust emitted a
 # `tracing::error!(... "naad backend error")` and returned
 # GhurniError::SynthesisFailed; the port wires the diagnostic to sakshi and

@@ -1,57 +1,108 @@
 # Testing Guide
 
-## Running Tests
+## Running
 
-```bash
-# All features (naad-backend)
-cargo test --all-features
-
-# Fallback path (no naad)
-cargo test --no-default-features --features std
-
-# Single test
-cargo test test_gasoline_engine
+```sh
+cyrius test                  # every tests/*.tcyr suite + the [build] entry
+cyrius test tests/engine.tcyr    # one suite
+cyrius bench                 # benches/*.bcyr
+cyrius coverage              # reference coverage of src/
+cyrius audit                 # fmt + lint + docs + tests + bench (the CI gate)
 ```
 
-## Test Categories
+`cyrius audit` must exit 0 before a release. It is the same gate naad's CI
+enforces.
 
-### Synthesis Tests
-- Every synthesizer type tested with valid parameters
-- Output checked for: non-empty, all finite, has energy (non-zero samples)
+## Suite Layout
 
-### Parameter Sweep Tests
-- RPM and load swept across full ranges
-- Asserts all output samples are finite (no NaN/Inf)
+Each `tests/*.tcyr` file includes the `src/*.cyr` modules it needs directly
+(not the `dist/` bundle), defines its own small audio helpers, and ends with
+`assert_summary()`.
 
-### Continuity Tests
-- Verifies process_block produces consistent output across split block boundaries
-- Energy comparison between one-block and multi-block synthesis
+| Suite | Covers |
+|-------|--------|
+| `foundations` | error codes/helpers, validation, DcBlocker, SmoothedParam, MechanicalEvent + serde |
+| `engine` | all engine types, firing frequency, custom firing order, events, decel pop, load ordering, param sweep, EngineType serde |
+| `synths` | gear / motor / turbine / clock / transmission / differential / forced_induction / belt / chain |
+| `serde` | EngineType / GearMaterial / MotorType / ClockType / InductionType roundtrips + GhurniError name mapping |
+| `mixer` | mono / stereo / mute, tag dispatch, process-block continuity, presets |
+| `smoke_all` | full-unit integration: every synth + mixer + preset produce finite audio |
+| `hardening` | the P-1 regression suite — every defect fixed in 2.0.2 |
 
-### Serde Roundtrip Tests
-- All public enums serialized to JSON and deserialized back
-- Verifies Display output matches
+## Writing Assertions That Are Worth Having
 
-### Event Tests
-- Backfire, misfire, knock triggered on engine
-- BOV triggered on forced induction
-- Output checked for validity after events
+**A vacuous test is worse than no test, because it makes the gap invisible.**
+ghurni has shipped proof of this: `GHURNI_DB_SCALE` was wrong by a factor of
+76.9 for the whole of 2.0.0, flattening the gear / clock / engine decay
+envelopes — and all 135 assertions passed, because every audio assertion was
+`audio_all_finite` / `audio_has_energy` / an energy ordering, and all three hold
+for both the right and the wrong value.
 
-### Trait Dispatch Tests
-- Multiple synthesizer types accessed through `dyn Synthesizer`
-- Verifies trait object dispatch works correctly
+So:
 
-## Adding Tests
+- **Assert exact values wherever the arithmetic is exact.** Firing frequency is
+  `cylinders * rpm / 120` for a 4-stroke — a 4-cylinder at 3000 RPM is exactly
+  100 Hz, not "approximately". Pick fixtures that make values exact: sample
+  rates and RPMs that give whole-number periods, dyadic coefficients, short
+  tables.
+- **Derive the expected value from `rust-old/`, never from what ghurni prints.**
+  A value transcribed from current output freezes whatever bug is there today
+  as "correct" — the worst possible outcome.
+- **Prefer structural facts over audio predicates**: error codes, buffer
+  lengths, gear indices, "this call no longer aborts the process", "these two
+  noise streams differ". They fail loudly and for one reason.
+- **Guard against `0 == 0`.** If a loop compares two buffers, first assert the
+  reference actually contains signal. Several assertions in `hardening.tcyr`
+  exist only to prove another assertion is not vacuous.
+- **Isolate what you claim to test.** The first version of the
+  forced-induction seed test compared rendered audio from two drive ratios — but
+  drive ratio also sets the compressor speed, so the audio differed even with
+  the seed defect reintroduced. It had to pull from the noise generator directly.
 
-New synthesizers should have at minimum:
-1. Constructor test (valid params)
-2. Synthesis test (produces finite output with energy)
-3. Serde roundtrip for any new enums
-4. Send/Sync assertion in `lib.rs`
+## Mutation-Check Every New Assertion
+
+Before a fix ships, revert it and confirm the new test **fails**. A test that
+passes both with and without the fix is pinning nothing. Every assertion in
+`tests/hardening.tcyr` was verified this way — the mutation pass is what caught
+the vacuous seed test described above.
+
+```sh
+# revert the guard in src/…, then:
+cyrius test tests/hardening.tcyr    # must FAIL
+# restore it, then:
+cyrius test tests/hardening.tcyr    # must PASS
+```
+
+## Verifying a Refactor Changed No Audio
+
+For any edit to a synthesis path that is supposed to be behaviour-preserving
+(hoisting a block-invariant, extracting a subexpression, wrapping a long line),
+prove it rather than reasoning about it: build the bundle before and after, run
+the same fixture through both, and compare a checksum over every sample. The
+2.0.2 sweep did this for the belt-drive hoist and for the engine/clock line
+wrapping; both came back bit-identical.
+
+## Coverage
+
+```sh
+cyrius coverage
+```
+
+Reports reference coverage of `src/` — a floor, not a correctness proof. A
+function being referenced by a test says nothing about whether the assertion
+around it is meaningful; read the section above before treating a percentage as
+progress.
 
 ## Benchmarks
 
-```bash
-cargo bench
+```sh
+cyrius bench
 ```
 
-Criterion benchmarks cover all synthesizers at various block sizes (64-4096 samples).
+`benches/ghurni.bcyr` covers the per-sample primitives (DC blocker, smoother),
+one-shot synthesis for engine and gear, the **streaming** 4-channel mixer path a
+real audio callback uses, and belt-drive's block loop.
+
+Never claim a performance improvement without a measurement, and interleave the
+A/B runs — run-to-run variance on the per-sample benchmarks is comfortably
+±30%, enough to invent or hide a small win if you measure once each.
