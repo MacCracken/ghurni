@@ -47,6 +47,10 @@ struct GhChainDrive {
 }
 
 # new(links, sprocket_teeth, sample_rate) -> ptr or GH_ERR_*.
+# links clamps to 10..500 and sprocket_teeth to 4..64 -- the LEGAL bounds. The
+# oracle documented the TYPICAL ones as ~100-120 links and 14-18 teeth for a
+# motorcycle (rust-old/src/chain_drive.rs:39-40); anything inside the clamp is
+# accepted and will simply sound unusual.
 #must_use
 fn ghurni_chain_drive_new(links, sprocket_teeth, sample_rate) {
     var vsr = ghurni_validate_sample_rate(sample_rate);

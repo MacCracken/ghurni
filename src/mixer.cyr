@@ -124,7 +124,7 @@ fn ghurni_mixer_new() {
 # return its index. (Rust took a Box<dyn Synthesizer>; the port takes the
 # (kind, synth) pair.)
 fn ghurni_mixer_add_channel(m, name, kind, synth) {
-    if ((ghurni_is_err(synth) == 1) || (synth == 0)) {
+    if ((ghurni_is_err(synth) == 1) || (synth < GHURNI_MIN_VALID_PTR)) {
         ghurni_log_warn("ghurni: mixer add_channel rejected a failed/absent synthesizer");
         return GH_ERR_INVALID_PARAMETER;
     }

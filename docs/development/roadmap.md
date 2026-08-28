@@ -19,64 +19,72 @@ it ships. Nothing here is scheduled by date; the ordering is by dependency.
 
 ---
 
-## Arc 0 — `2.0.3` "Pin the Oracle"
+## Arc 0 — `2.0.3` "Pin the Oracle"  ✅ SHIPPED
+
+> Released 2026-08-27. 10 suites / 450 assertions (was 7 / 224), coverage
+> 49% → 66%, 14 benchmarks (was 6), a 1631-check fuzz harness, and the full CI
+> gate chain. See the 2.0.3 CHANGELOG entry.
 
 **Theme: make every behaviour `rust-old/` currently proves provable without it.**
 Nothing here changes audio or adds public API. This is the deck-clearing patch
 that makes the oracle deletable and the audio arcs safe.
 
 ### Pin what only the oracle checks
-- [ ] **All 12 preset parameter sets.** Only 4 are touched by any test, and only
+- [x] **All 12 preset parameter sets.** Only 4 are touched by any test, and only
       for "has energy" — no assertion reads a stored value back. A typo
       (`3.8` → `3.6` in `manual_6speed`) is caught by nothing today.
-- [ ] **The 36 per-material / per-type property constants.** Clock's 16 and
+- [x] **The 36 per-material / per-type property constants.** Clock's 16 and
       motor's 8 are reachable through pure `#must_use` fns
       (`ghurni_clock_tick_rate_for` / `_resonance_for` / `_decay_for` / `_amp_for`,
       `ghurni_motor_noise_cutoff` / `_noise_level`) — one-line assertions each.
       Gear's 12 are inline literals in `ghurni_gear_new`, so they need the
       `GhGear_resonance` / `_decay` / `_brightness` accessor route.
       *(The retirement doc says "32"; the actual enumeration is 36.)*
-- [ ] Engine even-firing offsets, per-type exhaust/intake resonances, event durations.
-- [ ] The auto-BOV trigger triple (`prev_load > 0.5`, `load < 0.2`, `spool > 5000`).
-- [ ] The differential's **ring/pinion asymmetry** — mesh frequency uses *pinion*
+- [x] Engine even-firing offsets, per-type exhaust/intake resonances, event durations.
+- [x] The auto-BOV trigger triple (`prev_load > 0.5`, `load < 0.2`, `spool > 5000`).
+- [x] The differential's **ring/pinion asymmetry** — mesh frequency uses *pinion*
       teeth. A swap is completely silent today.
-- [ ] The equal-power pan law's **left=cos / right=sin** assignment and its
+- [x] The equal-power pan law's **left=cos / right=sin** assignment and its
       −3 dB centre attenuation. A left/right swap passes the suite today.
-- [ ] `ChainDrive` silence below 1 Hz engagement **and its non-advancing RNG**.
-- [ ] `process_block_stereo` leaves the longer buffer's tail **untouched**.
-- [ ] `Transmission::new` accepts an **empty** ratios vec; `current_ratio()` → 1.0.
+- [x] `ChainDrive` silence below 1 Hz engagement **and its non-advancing RNG**.
+- [x] `process_block_stereo` leaves the longer buffer's tail **untouched**.
+- [x] `Transmission::new` accepts an **empty** ratios vec; `current_ratio()` → 1.0.
 
 ### New test machinery
-- [ ] **Golden-file regression** — checksum every synth's output for fixed
+- [x] **Golden-file regression** — checksum every synth's output for fixed
       parameters. This is the gate that makes the semver rule above enforceable:
       after this lands, an unintended audio change fails CI instead of shipping.
       **Highest-value item in the arc.**
-- [ ] **Spectral validation** — assert the peak bin matches the expected
+- [x] **Spectral validation** — assert the peak bin matches the expected
       firing / mesh / blade-pass frequency. Cheaper than the old roadmap assumed:
       naad already ships `fft_magnitudes` (`lib/naad.cyr:499`), so this is a
       direct call, not an FFT project. Input length must be a power of two, so
       use 4096/8192 rather than the current 4410/2205 block sizes.
-- [ ] **Fuzz harness** — `cyrius fuzz` runs `fuzz/*.fcyr`; ghurni has none, and
+- [x] **Fuzz harness** — `cyrius fuzz` runs `fuzz/*.fcyr`; ghurni has none, and
       the command currently **exits 0 while finding nothing**, which is a vacuous
       gate. Drive the public boundary with `INT64_MIN`, NaN, ±inf, subnormals,
       `f64::MAX`, non-power-of-two lengths. Sweep enum ids at valid parameters
       and values at a valid id — correlate them and the harness proves nothing
       (naad's lesson).
-- [ ] **Rest-state invariant** — one cheap check that collapses three findings:
-      no synth should be as loud stopped as running. See Arc 1 for the fix; the
-      *test* can land here as a characterisation (recording today's values), then
-      flip to the invariant in 2.1.0.
+- [x] **Rest-state invariant** — landed as a CHARACTERISATION in
+      `oracle_pins.tcyr`: chain_drive and forced_induction are asserted exactly
+      silent at rest (already correct), while motor's stopped-equals-running and
+      belt_drive's louder-stopped are pinned as *known defects* so Arc 1's fix
+      cannot land silently. Those assertions must be rewritten as the invariant
+      when 2.1.0 introduces the loudness law.
 
 ### Release hygiene — blocks a clean 2.0.3
 - [ ] **12 compiled ELF binaries (11 MB) are tracked in git** and ship inside
       every release tarball, including 5 stale `build/err_*` from an old naming
-      scheme. `git rm -r --cached build/`.
-- [ ] **`.gitignore` is still the Rust crate's** (`/target`, `Cargo.lock`,
+      scheme. `.gitignore` covers `/build/` as of 2.0.3, but untracking is a git
+      operation the maintainer runs: **`git rm -r --cached build/`**. Carried
+      into 2.0.4.
+- [x] **`.gitignore` is still the Rust crate's** (`/target`, `Cargo.lock`,
       `*.rs.bk`, `*.pdb`) and has no `/build/` — which is how the binaries got in.
-- [ ] **`scripts/version-bump.sh` is Rust-era**: it writes `VERSION`, then seds a
+- [x] **`scripts/version-bump.sh` is Rust-era**: it writes `VERSION`, then seds a
       root `Cargo.toml` that does not exist and runs `cargo generate-lockfile`.
       It half-bumps the repo and fails. It would corrupt the 2.0.3 release.
-- [ ] **CI runs no quality gates.** `.github/workflows/ci.yml` is
+- [x] **CI runs no quality gates.** `.github/workflows/ci.yml` is
       deps → build → test → build-examples. Add `cyrius audit` (exits 0 today),
       `cyrius deny` (exits 0), `cyrius distlib --check` (nothing currently
       prevents `dist/ghurni.cyr` drifting from `src/` — and `dist/` is what
@@ -84,36 +92,42 @@ that makes the oracle deletable and the audio arcs safe.
       and never executes them, so a compiling-but-crashing example passes.
 
 ### Documentation defects (several ship inside `dist/ghurni.cyr`)
-- [ ] **README advertises a wastegate.** `grep -rn wastegate src/ dist/` returns
+- [x] **README advertises a wastegate.** `grep -rn wastegate src/ dist/` returns
       nothing. Either implement it (Arc 2) or stop claiming it.
-- [ ] `src/dsp.cyr:12` cites `tests/dsp.tcyr`, **which does not exist** — and the
+- [x] `src/dsp.cyr:12` cites `tests/dsp.tcyr`, **which does not exist** — and the
       comment ships to consumers at `dist/ghurni.cyr:196`.
-- [ ] ADR-004 still carries the serde justification `state.md` already corrected
+- [x] ADR-004 still carries the serde justification `state.md` already corrected
       as false (`MixerChannel` serialized `name`/`gain`/`pan`/`muted`).
-- [ ] Stale measured numbers across `state.md`, `overview.md`, `README.md`.
-      Current truth: **82/167 functions referenced (49%)**, **7 suites /
-      224 assertions**, `dist/ghurni.cyr` 3,161 lines.
-- [ ] The retirement checklist's own `rust-old` reference counts are wrong.
-- [ ] No `2.0.0` CHANGELOG entry — a re-cut of that tag still ships an empty
+- [x] Stale measured numbers across `state.md`, `overview.md`, `README.md`.
+      Truth as shipped in 2.0.3: **111/167 functions referenced (66%)**,
+      **10 suites / 450 assertions**, 14 benchmarks, 1631 fuzz checks,
+      `dist/ghurni.cyr` 3,242 lines.
+- [x] The retirement checklist's own `rust-old` reference counts are wrong.
+- [x] No `2.0.0` CHANGELOG entry — a re-cut of that tag still ships an empty
       release body. Release machinery, not a nicety.
-- [ ] Record the undocumented contracts: `smooth_time_s` is **tau** (63%), not a
+- [x] Record the undocumented contracts: `smooth_time_s` is **tau** (63%), not a
       settling time; `MechanicalEvent` cylinder is 0-indexed and `GearShift.from`
       0 = neutral; the cross-plane V8 offsets exist because uneven intervals make
       the burble; the supercharger preset's `spool_inertia` argument is inert.
 
 ### Small correctness items found by the sweep
-- [ ] `ghurni_dcblocker_new` is the **only** public constructor that does not
+- [x] `ghurni_dcblocker_new` is the **only** public constructor that does not
       validate its sample rate.
-- [ ] `ghurni_gear_new` clamps teeth only from below; every sibling
-      integer-count constructor clamps both ends.
-- [ ] `GhSmoothedParam`'s derived serde roundtrip is untested while both sibling
+- [x] ~~`ghurni_gear_new` clamps teeth only from below~~ — **investigated, not a
+      defect.** The oracle does the same (`teeth.max(4)`, `rust-old/src/gear.rs:72`,
+      documented "Number of teeth (4+)"), and a huge tooth count is safe because
+      mesh frequency is Nyquist-clamped before it reaches the oscillator (verified
+      by execution at 100000 teeth). Adding an upper bound would DIVERGE from the
+      oracle, not fix anything. The lower clamp and the huge-teeth path are now
+      pinned in `oracle_pins.tcyr` instead.
+- [x] `GhSmoothedParam`'s derived serde roundtrip is untested while both sibling
       POD structs are.
-- [ ] Two setters silently no-op and return success — the exact shape 2.0.2 hunted.
-- [ ] `f64_clamp` propagates NaN where `f64_max`/`f64_min` absorb it. Several NaN
+- [x] Two setters silently no-op and return success — the exact shape 2.0.2 hunted.
+- [x] `f64_clamp` propagates NaN where `f64_max`/`f64_min` absorb it. Several NaN
       entry points render 100% non-finite audio, and **SECURITY.md claims
       otherwise**. Fix the doc here; fix the behaviour in Arc 1 (it is an audio
       change at the boundary).
-- [ ] **Benchmark gap** — 6 of the oracle's 10, plus its 64→4096 block-size sweep.
+- [x] **Benchmark gap** — 6 of the oracle's 10, plus its 64→4096 block-size sweep.
       Missing: motor, turbine, clock, transmission, turbocharger.
 
 ---
@@ -123,7 +137,7 @@ that makes the oracle deletable and the audio arcs safe.
 **Theme: retire `rust-old/`.** Its own release so the deletion is a revertable
 commit rather than noise inside a feature arc.
 
-- [ ] Everything in [`rust-old-retirement.md`](rust-old-retirement.md) is checked.
+- [x] Everything in [`rust-old-retirement.md`](rust-old-retirement.md) is checked. *(zero open items as of 2.0.3)*
 - [ ] `git rm -r rust-old/`; update the 61 references across 34 files.
 - [ ] **Rewrite CLAUDE.md's correctness bar.** It currently reads "matches what
       the Rust naad-backend path did". That stops being checkable the moment the

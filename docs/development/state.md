@@ -5,7 +5,7 @@
 
 ## Version
 
-**2.0.2** — full-parity Cyrius port, hardened. Dependency set:
+**2.0.3** — full-parity Cyrius port, hardened and pinned. Dependency set:
 cyrius 6.5.35 · naad 2.2.1 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
 (1.0.0 was the final Rust crate, preserved at `rust-old/`.)
 
@@ -25,9 +25,9 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (3,161 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (3,242 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 7 suites, 224 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 10 suites, 450 assertions, 0 failures)
 
 | Suite | Covers |
 |-------|--------|
@@ -38,13 +38,17 @@ Bundle: `dist/ghurni.cyr` (3,161 lines, `cyrius distlib`).
 | `mixer` | mono/stereo/mute, trait dispatch, process-block continuity, presets |
 | `smoke_all` | full-unit integration: every synth + mixer + preset produce finite audio |
 | `hardening` | the 2.0.2 P-1 regression suite — every defect it fixed, each assertion mutation-checked |
+| `oracle_pins` | 2.0.3 — every value that lived only in `rust-old/`, derived from the oracle's source |
+| `goldens` | 2.0.3 — rendered-audio checksums; the gate that makes "a patch may not change audio" enforceable |
+| `spectral` | 2.0.3 — FFT peak assertions that audio sits where the RPM physics says it should |
 
 `cyrius bench` (`benches/ghurni.bcyr`): DcBlocker ~20 ns/sample, smoother
 ~15 ns/sample, engine/gear one-shot synthesis, the streaming 4-channel mixer
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
-`cyrius coverage`: 82/167 functions referenced (49%) — a floor, not a proof.
+`cyrius coverage`: 111/167 functions referenced (66%) — a floor, not a proof.
+Fuzz: `fuzz/ghurni.fcyr`, 1631 adversarial checks (`cyrius fuzz`).
 
 ## Deliberate divergences from `rust-old/`
 
@@ -120,18 +124,22 @@ cyrius build docs/examples/simple_engine.cyr build/ex_simple_engine && ./build/e
 ## CI
 
 `.github/workflows/{ci,release}.yml` use the cyrius toolchain (install from the
-`cyrius.cyml [package].cyrius` pin → `cyrius deps` → `cyrius build` → `cyrius
-test` → build examples; release verifies VERSION/tag consistency + ships a
-source tarball + SHA256SUMS). Mirrors the prani / naad sibling CI.
+`cyrius.cyml [package].cyrius` pin). As of 2.0.3 CI runs the full gate chain:
+`deps` → `build` → `test` → `distlib --check` → `audit` → `deny` → `fuzz` →
+`coverage --min` → build **and run** the examples. Release verifies VERSION/tag
+consistency and ships a source tarball + SHA256SUMS.
+
+⚠ **12 compiled ELF binaries (11 MB) are still tracked under `build/`** and ship
+in every release tarball. `.gitignore` covers them as of 2.0.3, but untracking
+needs `git rm -r --cached build/`.
 
 ## Retiring `rust-old/`
 
 Checklist and status: [`rust-old-retirement.md`](rust-old-retirement.md).
-**Not yet clear to delete** — the port is functionally complete (83/83 public
-fns, 44/44 tests, zero numeric mismatches), but preset values, per-material
-property constants, the auto-BOV trigger, the differential ring/pinion
-asymmetry and the pan law are pinned by nothing on either side, and 4 of the
-oracle's 10 benchmarks are unported.
+**Zero open items as of 2.0.3** — every value and contract that lived only in
+the oracle is now pinned by an assertion or recorded in a source comment. The
+deletion itself is 2.0.4 ("Delete the Oracle"), kept as its own release so it is
+a revertable commit rather than noise inside a feature arc.
 
 ## Known follow-ups
 

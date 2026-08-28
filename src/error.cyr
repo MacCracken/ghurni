@@ -60,6 +60,20 @@ var GHURNI_NEG_INF = 0xFFF0000000000000;   # -inf
 # the hex form is what protects a consumer still on an older pin.
 var GHURNI_DB_SCALE = 0x4047069E2AA2AA5B;   # 20.0 / core::f32::consts::LOG10_E = 46.051701859880914
 
+# Lowest address a real heap pointer can have. Everything below is the null
+# page, which no allocation ever occupies (Linux mmap_min_addr defaults to
+# 65536, and this allocator hands back addresses around 1.4e14).
+#
+# This is a HEURISTIC, not pointer validation -- Cyrius has no allocator oracle,
+# so an arbitrary wild pointer is still undefined behaviour and will still
+# fault. The oracle did not need one: `Box<dyn Synthesizer>` made a non-pointer
+# UNREPRESENTABLE (rust-old/src/mixer.rs:25), and ADR-004's (kind, pointer) pair
+# cannot fully restore that. What this DOES catch is the realistic accident --
+# a small integer passed where a synth pointer belongs, e.g. a GH_KIND_* tag or
+# a channel index. The fuzz harness reaches it by feeding 100 as a synth, which
+# was accepted and dereferenced (SIGSEGV) before 2.0.3.
+var GHURNI_MIN_VALID_PTR = 65536;
+
 # 1 if `code` is an error (negative), 0 otherwise. A naad constructor that
 # fails returns a small negative ERR_* code; a success returns a large positive
 # heap pointer -- so this cleanly distinguishes them too.

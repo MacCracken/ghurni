@@ -50,7 +50,10 @@ struct GhBeltDrive {
 }
 
 # new(pulley_diameter, tension, sample_rate) -> ptr or GH_ERR_*.
-# pulley_diameter clamps to 20..500 (mm), tension to 0..1.
+# pulley_diameter clamps to 20..500 (mm), tension to 0..1. Those are the LEGAL
+# bounds; the oracle documented the TYPICAL one as ~50-200 mm
+# (rust-old/src/belt_drive.rs:41). A value inside the clamp but outside that
+# range is accepted and will simply sound unusual.
 #must_use
 fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
     var vsr = ghurni_validate_sample_rate(sample_rate);

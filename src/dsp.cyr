@@ -32,6 +32,19 @@ struct GhDcBlocker {
 }
 
 # new(sample_rate) -- zeroed state; pole radius from the sample rate.
+#
+# Infallible, like the oracle (rust-old/src/dsp.rs:22 returns `Self`, not a
+# Result). In Rust `dsp` was `pub(crate)` (rust-old/src/lib.rs:65), so this was
+# unreachable from outside the crate and every internal caller had already run
+# validate_sample_rate. Cyrius has no visibility control -- the flat distlib
+# namespace exposes it -- so it must survive a direct call with a bad rate.
+#
+# A non-positive rate needs no special case: TAU*10/0 is +inf, 1 - inf is -inf,
+# and the clamp floors it at 0.9, which is a stable pole. NaN is the one value
+# the oracle's expression cannot absorb, because f64_clamp PROPAGATES NaN where
+# f64_max/f64_min would swallow it -- an unguarded NaN rate poisons r and every
+# sample that ever passes through the filter. Treat it as the degenerate case
+# the clamp already handles.
 #must_use
 fn ghurni_dcblocker_new(sample_rate) {
     var b = alloc(sizeof(GhDcBlocker));
@@ -39,6 +52,7 @@ fn ghurni_dcblocker_new(sample_rate) {
     GhDcBlocker_set_y_prev(b, 0);
     # r = clamp(1.0 - (TAU * 10 / sample_rate), 0.9, 0.9999)
     var r = f64_sub(F64_ONE, f64_div(f64_mul(F64_TAU, f64_from(10)), sample_rate));
+    if (ghurni_is_finite(r) == 0) { r = 0.9; }
     GhDcBlocker_set_r(b, f64_clamp(r, 0.9, 0.9999));
     return b;
 }

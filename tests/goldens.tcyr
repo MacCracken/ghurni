@@ -1,0 +1,135 @@
+# goldens.tcyr -- rendered-audio regression goldens (2.0.3).
+#
+# WHAT THIS IS FOR. These checksums pin CHANGE DETECTION, not correctness. A
+# green golden says "the audio is byte-for-byte what it was when the value was
+# recorded"; it says nothing about whether that audio is right. Correctness
+# lives in oracle_pins.tcyr (values derived from rust-old/) and hardening.tcyr.
+#
+# WHY IT EXISTS. ghurni's semver rule is that a PATCH release may not change
+# rendered audio -- but 2.0.1 and 2.0.2 both did, and nothing caught it either
+# time. 2.0.1's was a miscompiled constant that made the gear/clock/engine decay
+# envelopes 187x too flat, and the whole 135-assertion suite stayed green. This
+# file is the gate that makes that impossible to repeat: if a checksum below
+# moves, either the change was intended (bump a MINOR, write an ADR, and update
+# the value in the same commit) or it is a bug.
+#
+# HOW TO UPDATE. Never "fix" a golden to make CI pass. Work out WHY it moved
+# first. If the move is intended, record the reason in the CHANGELOG entry for
+# the release that changes it.
+#
+# QUANTIZATION. Samples are truncated to 1e-6 before hashing. ghurni's DSP leans
+# on f64_sin / f64_cos / f64_exp / f64_pow, and a different platform's libm may
+# differ in the last ulp; quantizing absorbs that while still catching any real
+# audio change, which moves samples by orders of magnitude more. If a golden
+# ever fails ONLY on a new platform, suspect libm before suspecting ghurni.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+
+var SR = f64_from(44100);
+
+# FNV-ish offset basis, then a shift-xor-accumulate over the quantized samples.
+# Order-sensitive: swapping two samples changes the result.
+fn golden_ck(v) {
+    var n = vec_len(v);
+    var r = 1469598103;
+    var i = 0;
+    while (i < n) {
+        var q = f64_to(f64_mul(vec_get(v, i), f64_from(1000000)));
+        r = r + (q ^ (r << 1));
+        i = i + 1;
+    }
+    return r;
+}
+
+# Every golden asserts the LENGTH too. A checksum alone would pass on an empty
+# buffer, which is exactly the silent-failure shape 2.0.2 fixed in synthesize().
+fn golden(v, want_len, want_ck, name) {
+    assert_eq(vec_len(v), want_len, name);
+    assert_eq(golden_ck(v), want_ck, name);
+    return 0;
+}
+
+# ================================================================
+test_group("golden: engine");
+golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), 0.6, 0.1),
+       4410, 0 - 8766513367084661521, "gasoline 4cyl @3000 load 0.6");
+golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_DIESEL, 6, SR), f64_from(1500), 0.9, 0.1),
+       4410, 0 - 1987024575981388422, "diesel 6cyl @1500 load 0.9");
+
+# ================================================================
+test_group("golden: rotating");
+golden(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(1500), 0.1),
+       4410, 0 - 7489493870062565672, "steel gear 32t @1500");
+golden(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), f64_from(4000), 0.5, 0.1),
+       4410, 0 - 2830928156387266083, "brushless motor 8p @4000");
+golden(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), f64_from(8000), 0.1),
+       4410, 1448162320472386103, "ducted turbine 12b @8000");
+golden(ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_GRANDFATHER_CLOCK, SR), 0.5),
+       22050, 0 - 7415208127804752968, "grandfather clock 0.5 s");
+
+# ================================================================
+test_group("golden: drivetrain");
+golden(ghurni_differential_synthesize(ghurni_differential_new(41, 11, SR), f64_from(3000), 0.1),
+       4410, 0 - 2363300520625950448, "differential 41/11 @3000");
+var g_ratios = vec_new();
+vec_push(g_ratios, 3.5); vec_push(g_ratios, 2.1); vec_push(g_ratios, 1.4);
+golden(ghurni_transmission_synthesize(ghurni_transmission_new(g_ratios, 24, SR), f64_from(3000), 0.1),
+       4410, 0 - 1081137850606190045, "transmission 3-speed @3000");
+golden(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), f64_from(5000), 0.8, 0.1),
+       4410, 0 - 2886452106669785957, "turbo ratio 2.0 @5000 load 0.8");
+
+# ================================================================
+test_group("golden: drives");
+golden(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(2000), 0.1),
+       4410, 4082743555079396767, "belt 120mm tension 0.6 @2000");
+golden(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_from(3000), 0.1),
+       4410, 0 - 2656417122739950350, "chain 110 links 16t @3000");
+
+# ================================================================
+test_group("golden: the checksum itself is sensitive");
+# A golden suite whose hash cannot tell two buffers apart is worse than none.
+# These prove the function reacts to magnitude, to ORDER, and to length.
+var probe_a = vec_new();
+var probe_b = vec_new();
+var pi = 0;
+while (pi < 64) { vec_push(probe_a, f64_from(pi)); vec_push(probe_b, f64_from(pi)); pi = pi + 1; }
+assert_eq(golden_ck(probe_a), golden_ck(probe_b), "identical buffers hash identically");
+vec_set(probe_b, 30, f64_add(vec_get(probe_b, 30), 0.001));
+assert_neq(golden_ck(probe_a), golden_ck(probe_b), "a 0.001 change in ONE sample changes the hash");
+# Order sensitivity: swap two samples, same multiset, different hash.
+var probe_c = vec_new();
+var ci = 0;
+while (ci < 64) { vec_push(probe_c, f64_from(ci)); ci = ci + 1; }
+var tmp = vec_get(probe_c, 5);
+vec_set(probe_c, 5, vec_get(probe_c, 6));
+vec_set(probe_c, 6, tmp);
+assert_neq(golden_ck(probe_a), golden_ck(probe_c), "swapping two samples changes the hash");
+# Quantization floor: a change far below 1e-6 is deliberately invisible, which
+# is what makes these portable across libm implementations.
+var probe_d = vec_new();
+var di = 0;
+while (di < 64) { vec_push(probe_d, f64_from(di)); di = di + 1; }
+vec_set(probe_d, 12, f64_add(vec_get(probe_d, 12), 0.000000001));
+assert_eq(golden_ck(probe_a), golden_ck(probe_d), "a 1e-9 change is below the quantization floor");
+
+var rc = assert_summary();
+syscall(60, rc);

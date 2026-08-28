@@ -3,7 +3,9 @@
 # Covers the inner-loop / per-call functions consumers hit: the DC blocker
 # (applied to every synthesis buffer), the parameter smoother (per-sample RPM /
 # load ramps), full one-shot synthesis for the engine and gear, the STREAMING
-# 4-channel mixer path a real audio callback uses, and belt_drive's block loop.
+# 4-channel mixer path a real audio callback uses, belt_drive's block loop,
+# the five synths the oracle benchmarked and the port had missed, and a
+# block-size sweep (64 / 512 / 4096) for the streaming per-call overhead.
 #
 # Batch pattern: bench_new → bench_batch_start → tight loop → bench_batch_stop
 # → bench_report. Per-sample ops use large N to amortize clock overhead.
@@ -99,6 +101,113 @@ fn main() {
     while (bb < 500) { ghurni_belt_drive_process_block(bd, bbuf); bb = bb + 1; }
     bench_batch_stop(b6, 500);
     bench_report(b6);
+
+    # --- the five synths the oracle benchmarked and the port did not ---
+    # rust-old/benches/benchmarks.rs had 9 named benches + a block-size sweep;
+    # ghurni had 6 paths and none of these. Durations are 0.05 s to match the
+    # engine/gear entries above rather than the oracle's 1 s, so the whole file
+    # stays quick enough to run in `cyrius audit` on every commit.
+    var b7 = bench_new("ghurni_motor_synthesize brushless_0.05s@44k");
+    bench_batch_start(b7);
+    var q7 = 0;
+    while (q7 < 200) {
+        var mo = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR);
+        var mv = ghurni_motor_synthesize(mo, f64_from(10000), 0.5, 0.05);
+        if (vec_len(mv) == 0) { return 1; }
+        q7 = q7 + 1;
+    }
+    bench_batch_stop(b7, 200);
+    bench_report(b7);
+
+    var b8 = bench_new("ghurni_turbine_synthesize 16blade_0.05s@44k");
+    bench_batch_start(b8);
+    var q8 = 0;
+    while (q8 < 200) {
+        var tu = ghurni_turbine_new(16, f64_from(600), SR);
+        var tv = ghurni_turbine_synthesize(tu, f64_from(8000), 0.05);
+        if (vec_len(tv) == 0) { return 1; }
+        q8 = q8 + 1;
+    }
+    bench_batch_stop(b8, 200);
+    bench_report(b8);
+
+    var b9 = bench_new("ghurni_clock_synthesize wristwatch_0.05s@44k");
+    bench_batch_start(b9);
+    var q9 = 0;
+    while (q9 < 200) {
+        var cl = ghurni_clock_new(GH_CLOCK_WRISTWATCH, SR);
+        var cv = ghurni_clock_synthesize(cl, 0.05);
+        if (vec_len(cv) == 0) { return 1; }
+        q9 = q9 + 1;
+    }
+    bench_batch_stop(b9, 200);
+    bench_report(b9);
+
+    var b10 = bench_new("ghurni_transmission_synthesize 5speed_0.05s@44k");
+    bench_batch_start(b10);
+    var q10 = 0;
+    while (q10 < 200) {
+        var rr = vec_new();
+        vec_push(rr, 3.5); vec_push(rr, 2.1); vec_push(rr, 1.4);
+        vec_push(rr, F64_ONE); vec_push(rr, 0.8);
+        var tx = ghurni_transmission_new(rr, 24, SR);
+        var xv = ghurni_transmission_synthesize(tx, f64_from(3000), 0.05);
+        if (vec_len(xv) == 0) { return 1; }
+        q10 = q10 + 1;
+    }
+    bench_batch_stop(b10, 200);
+    bench_report(b10);
+
+    var b11 = bench_new("ghurni_forced_induction_synthesize turbo_0.05s@44k");
+    bench_batch_start(b11);
+    var q11 = 0;
+    while (q11 < 200) {
+        var fi = ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.5, F64_ONE, SR);
+        var fv = ghurni_forced_induction_synthesize(fi, f64_from(5000), 0.8, 0.05);
+        if (vec_len(fv) == 0) { return 1; }
+        q11 = q11 + 1;
+    }
+    bench_batch_stop(b11, 200);
+    bench_report(b11);
+
+    # --- block-size sweep (ports rust-old bench_process_block_sizes) ---
+    # The streaming path's per-BLOCK overhead is what a real audio callback
+    # pays, and it only shows up by comparing sizes: a fixed cost per call looks
+    # free at 4096 and dominates at 64. One engine, reused, so the numbers are
+    # per-sample-comparable across sizes.
+    var sweep_eng = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+    ghurni_engine_set_rpm(sweep_eng, f64_from(3000));
+    ghurni_engine_set_load(sweep_eng, 0.6);
+
+    var b12 = bench_new("engine_process_block size_64");
+    var buf64 = vec_new();
+    var z64 = 0;
+    while (z64 < 64) { vec_push(buf64, 0); z64 = z64 + 1; }
+    bench_batch_start(b12);
+    var n64 = 0;
+    while (n64 < 4000) { ghurni_engine_process_block(sweep_eng, buf64); n64 = n64 + 1; }
+    bench_batch_stop(b12, 4000);
+    bench_report(b12);
+
+    var b13 = bench_new("engine_process_block size_512");
+    var buf512 = vec_new();
+    var z512 = 0;
+    while (z512 < 512) { vec_push(buf512, 0); z512 = z512 + 1; }
+    bench_batch_start(b13);
+    var n512 = 0;
+    while (n512 < 500) { ghurni_engine_process_block(sweep_eng, buf512); n512 = n512 + 1; }
+    bench_batch_stop(b13, 500);
+    bench_report(b13);
+
+    var b14 = bench_new("engine_process_block size_4096");
+    var buf4096 = vec_new();
+    var z4096 = 0;
+    while (z4096 < 4096) { vec_push(buf4096, 0); z4096 = z4096 + 1; }
+    bench_batch_start(b14);
+    var n4096 = 0;
+    while (n4096 < 64) { ghurni_engine_process_block(sweep_eng, buf4096); n4096 = n4096 + 1; }
+    bench_batch_stop(b14, 64);
+    bench_report(b14);
 
     return 0;
 }

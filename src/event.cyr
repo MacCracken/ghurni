@@ -32,6 +32,15 @@ var GH_EVENT_SHUTDOWN        = 7;   # shutdown sequence
 #   arg0 : cylinder (Misfire/Knock) or `from` gear (GearShift); else 0
 #   arg1 : `to` gear (GearShift); else 0
 # ================================================================
+# PAYLOAD CONVENTIONS (rust-old/src/event.rs:14,19,28 -- the oracle's doc
+# comments are the only place these were written down):
+#   Misfire  arg0 = cylinder, 0-INDEXED
+#   Knock    arg0 = cylinder, 0-INDEXED
+#   GearShift arg0 = from, arg1 = to; from 0 = NEUTRAL
+# arg0/arg1 are unused for Backfire / Stall / RevLimiterHit / Startup /
+# Shutdown. Note those five are currently accepted and silently discarded by
+# every synth -- the oracle did the same (`_ => {}` at engine.rs:202) -- and
+# implementing them is roadmapped for 2.3.0.
 #derive(accessors)
 #derive(Serialize)
 struct GhEvent {

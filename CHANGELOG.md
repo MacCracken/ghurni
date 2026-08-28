@@ -5,6 +5,119 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2026-08-27
+
+**Arc 0 — "Pin the Oracle."** The deck-clearing patch that makes `rust-old/`
+deletable and the coming audio work safe. Every behaviour the oracle currently
+proves is now proved by an assertion instead.
+
+**No public API change and no audio change.** Two guards were added at the
+boundary (below); neither alters output for any valid input, and the new golden
+suite proves it.
+
+| | before | after |
+|---|---|---|
+| test suites | 7 | **10** |
+| assertions | 224 | **450** |
+| reference coverage | 49% | **66%** |
+| benchmarks | 6 | **14** |
+| fuzz checks | 0 (no harness) | **1631** |
+| CI gates | build + test | **+ audit, deny, distlib --check, fuzz, coverage ratchet, examples RUN** |
+
+### Added — test machinery
+
+- **`tests/goldens.tcyr`** — rendered-audio regression goldens for all ten
+  synths. This is the gate that makes ghurni's semver rule enforceable: a patch
+  release may not change audio, but **2.0.1 and 2.0.2 both did and nothing
+  caught it**. Verified against the real failures — reintroducing the 2.0.1
+  `GHURNI_DB_SCALE` miscompile, the 2.0.2 belt-seed collapse, or a one-part-in-a-
+  million gain change all fail the suite. Samples are quantized to 1e-6 before
+  hashing so a different platform's libm cannot cause a false alarm, and four
+  self-checks prove the hash reacts to magnitude, order and length.
+- **`tests/oracle_pins.tcyr`** (166 assertions) — every value that lived only in
+  `rust-old/`: all 12 preset parameter sets, the 36 per-material / per-type
+  property constants, engine resonances and even-firing offsets, event
+  durations, the auto-BOV trigger triple, the differential's ring/pinion
+  asymmetry, the equal-power pan law, ChainDrive's sub-1 Hz silence and
+  non-advancing RNG, the stereo tail contract, and the empty-ratios fallback.
+  Every expected value was read from the oracle's source, never from what ghurni
+  prints — a value transcribed from current output freezes today's bugs as
+  "correct", which is exactly how `GHURNI_DB_SCALE` survived.
+- **`tests/spectral.tcyr`** — FFT assertions that rendered audio actually sits
+  at the frequency the physics predicts. Nothing checked this before: every
+  audio assertion was finite / has-energy / an ordering, all of which hold for a
+  synth emitting entirely the wrong pitch. Gear mesh, motor EM hum, turbine
+  blade pass and differential whine each land within one 5.4 Hz bin of
+  `(rpm/60) × count`, and frequency is asserted to *scale* with both rpm and
+  tooth/pole/blade count.
+- **`fuzz/ghurni.fcyr`** — 1631 adversarial checks over the public boundary,
+  following naad's separated-sweep design (correlating an enum id with its
+  numeric parameters makes the harness prove nothing — naad measured that).
+
+### Fixed
+
+- **The fuzz harness found a SIGSEGV on its first run.** `ghurni_mixer_add_channel`
+  rejected error codes and null, but a small positive integer — a `GH_KIND_*`
+  tag or a channel index passed where a synth pointer belongs — passed both
+  guards and was dereferenced. Now rejected below `GHURNI_MIN_VALID_PTR` (the
+  null page). This is a heuristic, not pointer validation; the contract's real
+  limit is documented in SECURITY.md and the integration guide.
+- **`ghurni_dcblocker_new` produced a non-finite pole for a NaN sample rate.**
+  `f64_clamp` propagates NaN where `f64_max`/`f64_min` absorb it, so the filter
+  and everything downstream went non-finite. A non-positive rate needed no fix —
+  the oracle's expression already floors it at 0.9. `DcBlocker` was `pub(crate)`
+  in Rust and unreachable from outside; Cyrius's flat namespace exposes it.
+
+### Fixed — release machinery
+
+- **`scripts/version-bump.sh` was Rust-era and would have corrupted this
+  release.** It wrote `VERSION`, then `sed`'d a root `Cargo.toml` that does not
+  exist and ran `cargo generate-lockfile`; with `set -e` it **half-bumped the
+  repo and died**. Rewritten for Cyrius: validates semver, refuses a no-op bump,
+  restamps the bundle, verifies the tree agrees, and prints the release checklist.
+- **`.gitignore` was still the Rust crate's** and had no `/build/` — which is how
+  **12 compiled ELF binaries (11 MB) came to be tracked and shipped inside every
+  release tarball**, including 5 stale `build/err_*` from an old naming scheme.
+  ⚠ The ignore rule is in place, but untracking them needs
+  `git rm -r --cached build/`.
+- **CI ran no quality gates.** Added `cyrius audit`, `cyrius deny`,
+  `cyrius distlib --check` (nothing prevented `dist/ghurni.cyr` drifting from
+  `src/`, and `dist/` is what consumers compile), `cyrius fuzz`, and a coverage
+  ratchet. The examples are now **run**, not merely built — a demo that compiled
+  and then faulted used to pass. The fuzz step guards against its own vacuity:
+  `cyrius fuzz` exits 0 when it finds no harnesses, so the absence of `fuzz/` is
+  now itself a failure.
+
+### Fixed — documentation
+
+- **README advertised a wastegate** that appears nowhere in `src/` or `dist/`.
+- **`src/dsp.cyr` cited `tests/dsp.tcyr`, which does not exist** — and the
+  comment shipped to consumers inside `dist/ghurni.cyr`.
+- **ADR-004's serde justification was false.** It said the synth structs dropped
+  deep serialization because "nothing meaningful survived the Rust
+  `#[serde(skip)]`". `MixerChannel` skipped only `synth` and `scratch` —
+  `name`, `gain`, `pan` and `muted` all serialized, so a Rust consumer could
+  persist a whole mixer configuration. The drop is a real capability cut taken
+  deliberately, not a no-op.
+- **SECURITY.md claimed RPM/load were clamped to valid ranges.** They are, but
+  NaN is not absorbed; that is now stated, with the workaround, and scheduled.
+- **A missing `2.0.0` CHANGELOG entry** meant a re-cut of that tag shipped an
+  empty release body. Written retroactively.
+- The contracts that lived only in the oracle's doc comments are now in the
+  source: `smooth_time_s` is **tau** (63%), not a settling time; `MechanicalEvent`
+  cylinders are 0-indexed and `GearShift.from` 0 = neutral; the cross-plane V8
+  offsets are uneven *on purpose* (that is the burble); the supercharger preset's
+  `spool_inertia` argument is inert; `sample_position` is vestigial in three
+  synths; and the clamps are the *legal* bounds, not the *typical* ones.
+
+### Notes
+
+- `docs/development/rust-old-retirement.md` now has **zero open items**. The
+  deletion itself is 2.0.4.
+- Coverage rose 49% → 65% as a side effect of the pinning suite; it is tracked
+  as a CI **ratchet**, not a target. 2.0.1 shipped a 76.9×-wrong constant through
+  a fully green suite — coverage is a floor, never a correctness proof.
+
 ## [2.0.2] - 2026-08-27
 
 A P-1 audit / refactor / hardening / optimization / security sweep, plus the
@@ -304,6 +417,50 @@ energy and one relative energy ordering, all of which hold for both values.
   references to a removed symbol.
 - `cyrius build` · `cyrius test` (6 suites, 135 assertions + 6 from the smoke
   entry, 0 failures) · `cyrius bench` · all 5 `docs/examples/*.cyr` build and run.
+
+## [2.0.0] - 2026-07-04
+
+**The Cyrius port.** ghurni is rewritten from Rust to [Cyrius](https://github.com/MacCracken/cyrius)
+for AGNOS, alongside its sibling libraries. The Rust crate (1.0.0) is preserved
+at `rust-old/` as the parity oracle. See
+[ADR-004](docs/architecture/adr-004-cyrius-port.md).
+
+*(This entry was written retroactively in 2.0.3. The 2.0.0 tag shipped without
+one, so `release.yml`'s changelog extraction produced an empty release body.)*
+
+### Changed — the port
+
+- **naad is the only backend.** The Rust crate was feature-gated: a default
+  `naad-backend` path and a fallback using a local PCG32 (`rng.rs`) plus libm
+  wrappers (`math.rs`). AGNOS always ships naad, so only the naad path is
+  ported — 18 of the oracle's 20 modules. `rng.rs`, `math.rs` and every
+  per-synth fallback loop are dropped, and naad's `NoiseGenerator` owns all
+  stochastic content. [ADR-001](docs/architecture/adr-001-naad-backend.md),
+  which specified the dual path, is superseded.
+- **f32 → f64 throughout.** naad and hisab are f64-only, so the widening is
+  forced. It is a precision improvement but a real behavioural difference in a
+  few places; the divergence list lives in `docs/development/state.md`.
+- **Integer error codes replace `GhurniError`.** Cyrius has no
+  `Result<T, String>`. Fallible functions return a heap pointer on success or a
+  negative `GH_ERR_*` code, distinguished by `ghurni_is_err`.
+- **Tag dispatch replaces trait objects.** Cyrius has no vtables, so
+  `Box<dyn Synthesizer>` becomes a `(GH_KIND_*, pointer)` pair plus a
+  hand-written switch in `mixer.cyr` — the explicit equivalent of the trait's
+  vtable.
+- **Serde parity where it is meaningful.** Public enums map to `GH_<ENUM>_*`
+  integers with `name` / `from_name` helpers using serde's externally-tagged
+  variant names. POD structs (`GhDcBlocker`, `GhSmoothedParam`, `GhEvent`) get
+  `#derive(Serialize)`. Deep serialization of the synth structs is dropped.
+- **All symbols are `ghurni_` / `GHURNI_` / `Gh`-prefixed** so the distlib
+  bundle coexists with naad, hisab, goonj and sakshi in one flat namespace.
+
+### Ported
+
+All ten synthesizers (engine, gear, motor, turbine, clock, transmission,
+differential, forced induction, belt drive, chain drive), the mixer, the twelve
+presets, the L0 foundations (error, logging, dsp, smooth, event, traits), all 44
+Rust integration tests reproduced as behavioural-parity `.tcyr` suites, all five
+examples, and the benchmark harness.
 
 ## [1.0.0] - 2026-03-28
 

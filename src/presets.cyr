@@ -12,6 +12,11 @@
 fn ghurni_preset_v8_muscle_car(sample_rate) {
     var engine = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, sample_rate);
     if (ghurni_is_err(engine) == 1) { return engine; }
+    # Cross-plane V8 firing order. The UNEVEN intervals are the point: they are
+    # what create the burble a cross-plane V8 is recognised by (the oracle's
+    # inline note at rust-old/src/presets.rs:19). An even 0/90/180/.../630 split
+    # would be a flat-plane V8 and sound wrong, so these eight numbers are not
+    # arbitrary and must not be "tidied" into order.
     var order = vec_new();
     vec_push(order, f64_from(0));   vec_push(order, f64_from(90));
     vec_push(order, f64_from(270)); vec_push(order, f64_from(180));
@@ -58,6 +63,11 @@ fn ghurni_preset_turbocharger(sample_rate) {
 }
 
 # Supercharger -- belt-driven, instant response.
+# NOTE the 0.01 spool_inertia below is INERT: ghurni_forced_induction_new
+# overrides spool_inertia to 0.01 for every Supercharger regardless of what the
+# caller passes (porting the oracle's `InductionType::Supercharger => 0.01,
+# // Near-instant response` at rust-old/src/forced_induction.rs:70). It is
+# written out here to match the oracle's call, not because it is tunable.
 #must_use
 fn ghurni_preset_supercharger(sample_rate) {
     return ghurni_forced_induction_new(GH_INDUCTION_SUPERCHARGER, 1.5, 0.01, sample_rate);

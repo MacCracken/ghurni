@@ -28,6 +28,14 @@ struct GhSmoothedParam {
 
 # new(initial, smooth_time_s, sample_rate). coeff = exp(-1/(t*sr)) when both
 # t>0 and sr>0, else 0 (snaps instantly).
+#
+# `smooth_time_s` is a TIME CONSTANT (tau), NOT a settling time. The oracle
+# documents it as "Time constant in seconds (63% of the way to target)"
+# (rust-old/src/smooth.rs:20). After exactly t*sr samples the value has covered
+# 1 - 1/e = 63.2% of the distance and is still moving -- it never arrives
+# exactly. So the call-site values (0.02 / 0.03 / 0.05 s, and forced_induction's
+# spool_inertia) are tau, and a caller wanting "settled in 50 ms" wants a
+# considerably smaller number. tests/oracle_pins.tcyr pins the 63% behaviour.
 #must_use
 fn ghurni_smooth_new(initial, smooth_time_s, sample_rate) {
     var p = alloc(sizeof(GhSmoothedParam));

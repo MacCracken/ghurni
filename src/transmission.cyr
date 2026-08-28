@@ -179,6 +179,11 @@ fn ghurni_transmission_process_block(self, out) {
         var hiss = f64_mul(noise_next_sample(noise), 0.02);
         vec_set(out, i, f64_add(mesh, f64_add(synchro, hiss)));
 
+        # VESTIGIAL: advanced every block, read by nothing in this module. Its only
+        # readers in the oracle were the non-naad fallback arms, which ADR-004 drops.
+        # Kept so the struct stays field-compatible with the oracle and with its nine
+        # siblings, where the counter IS live (engine/gear/motor/turbine/clock/belt/
+        # chain all derive phase from it). Do not remove without checking all ten.
         GhTransmission_set_sample_position(self, GhTransmission_sample_position(self) + 1);
         i = i + 1;
     }

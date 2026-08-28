@@ -28,16 +28,25 @@ negative `GH_ERR_*` code instead.
 | `duration × sample_rate` | `f64_to` overflow to `INT64_MIN`; vec growth past the stdlib cap aborts the process | `ghurni_sample_count` compares in f64 *before* the conversion and caps at `GHURNI_MAX_SAMPLES` (2^26) |
 | Enum-id parameters | Out-of-range id falls through to a wrong default | Every constructor range-checks its id and returns `GH_ERR_INVALID_PARAMETER` |
 | `shift_to` gear index | Negative index silently corrupts state | Both bounds checked |
-| Mixer channel synth | A failed constructor's error code or null dereferenced as a struct (SIGSEGV) | `add_channel` rejects `ghurni_is_err(synth)` and `synth == 0`; the dispatch loops skip an absent synth |
+| Mixer channel synth | A failed constructor's error code, null, or a small integer dereferenced as a struct (SIGSEGV) | `add_channel` rejects `ghurni_is_err(synth)` and anything below `GHURNI_MIN_VALID_PTR` (the null page); the dispatch loops skip an absent synth. See the pointer-contract limit below |
 | Mixer kind tag | Type confusion between synth structs | `add_channel` range-checks the `GH_KIND_*` tag |
 | Caller-owned vecs | Caller mutating a stored vec desynchronises lengths → out-of-bounds abort | `set_firing_order` and `transmission_new` copy the vec (restoring Rust's move semantics); the engine's event loops are bounded by their own lengths |
-| RPM / load parameters | Out-of-range values | Clamped to valid ranges |
+| RPM / load parameters | Out-of-range values | Clamped to valid ranges. ⚠ **NaN is NOT absorbed**: `f64_clamp` propagates it where `f64_max`/`f64_min` would swallow it, so a NaN RPM or load renders non-finite audio and poisons smoother state. Guarding it changes rendered audio, so it is scheduled for 2.1.0 behind an ADR; until then, validate with `ghurni_is_finite` before calling the setters |
 | DC blocker coefficient | Oscillation at low sample rates | Pole radius clamped to [0.9, 0.9999] |
 | Buffer lengths | Mismatched stereo buffers | `min()` of the two lengths |
 | Serde deserialization | Crafted JSON injecting non-finite f64 bit patterns into filter state | `GhDcBlocker` / `GhSmoothedParam` store f64 bit patterns as i64; a hostile value yields non-finite audio, not memory unsafety. Callers deserializing untrusted state should validate with `ghurni_is_finite` |
 
 ### Known limitations
 
+- **A `(GH_KIND_*, pointer)` pair must MATCH, and nothing can check that.** The
+  kind tag declares which struct the pointer addresses; registering a `GhGear`
+  under `GH_KIND_ENGINE` makes the dispatcher read `GhEngine` fields off a
+  smaller allocation. `add_channel` range-checks the tag and rejects non-pointers
+  below the null page, but it cannot verify that a given pointer is of the
+  claimed type, and an arbitrary wild pointer above the floor is undefined
+  behaviour. This is inherent to ADR-004: the oracle's `Box<dyn Synthesizer>`
+  carried its own vtable, and a raw `i64` does not. Consumers must pair the tag
+  with the synth that produced it.
 - **`alloc()` results are not null-checked.** The library assumes the bump
   allocator succeeds; there is no allocation-failure path anywhere in the
   Cyrius port, and none of the sibling libraries have one either. Under memory

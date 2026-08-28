@@ -4,9 +4,11 @@
 Cyrius port ([ADR-004](../architecture/adr-004-cyrius-port.md)). This document
 is the checklist for deleting it.
 
-**Status: NOT YET CLEAR.** The port is functionally complete — but a body of
-knowledge still exists *only* in the oracle, and deleting it before that is
-written down would make several load-bearing decisions unverifiable.
+**Status after 2.0.3: NEARLY CLEAR.** Every value and contract that lived only
+in the oracle is now pinned by an assertion or recorded in a source comment —
+`tests/oracle_pins.tcyr` (166 assertions), `tests/spectral.tcyr` and
+`tests/goldens.tcyr`. One documentation item remains, below. The deletion itself
+is Arc 0b / 2.0.4.
 
 ## What the sweep verified
 
@@ -20,7 +22,7 @@ Cyrius port (`math.rs` and `rng.rs` are deliberately unported — ADR-004).
 | `Synthesizer` trait | 4 methods × 10 synths = 40 / 40 concrete accessors |
 | Integration tests | **44 / 44** Rust `#[test]`s reproduced as `.tcyr` assertions |
 | Examples | 5 / 5 ported and running |
-| Benchmarks | **6 / 10** — see gaps below |
+| Benchmarks | **14 entries** — closed in 2.0.3, all 5 missing synths + a block-size sweep |
 | Numeric fidelity | Every constant, clamp bound, frequency formula, envelope shape and noise-draw ordering checked. **Zero mismatches found.** |
 
 Nothing in the repo *builds* against `rust-old/`; the coupling is entirely
@@ -63,50 +65,50 @@ Each of these exists *only* in `rust-old/` today. Write it into a `.cyr`
 comment, a test assertion, or `state.md` — whichever the item names.
 
 **Constants and parameters nothing pins**
-- [ ] **All 12 preset parameter sets.** Verified identical to the oracle, but
+- [x] **All 12 preset parameter sets.** *(done in 2.0.3)* Verified identical to the oracle, but
       only 4 are called by any test on *either* side, and every assertion is
       finite-or-has-energy — none reads a value back. A typo (`3.8` → `3.6` in
       `manual_6speed`) is currently caught only by diffing against `presets.rs`.
       → assert the stored ratios / teeth / blade count / rpm / load for all 12.
-- [ ] **The 32 per-material / per-type property constants** (gear resonance,
+- [x] **The 36 per-material / per-type property constants** *(done in 2.0.3)* (gear resonance,
       decay, brightness ×4 materials; motor cutoff and noise level ×4; clock
       tick rate, resonance, decay, amplitude ×4). None pinned.
-- [ ] **The engine's even-firing offsets**, exhaust/intake resonance per
+- [x] **The engine's even-firing offsets**, exhaust/intake resonance per
       `EngineType`, and event durations.
-- [ ] **The auto-BOV trigger triple** (`prev_load > 0.5`, `load < 0.2`,
+- [x] **The auto-BOV trigger triple** *(done in 2.0.3, each leg isolated)* (`prev_load > 0.5`, `load < 0.2`,
       `spool > 5000`) — pinned by no test on either side.
-- [ ] **The differential's ring/pinion asymmetry** — mesh frequency uses *pinion*
+- [x] **The differential's ring/pinion asymmetry** *(done in 2.0.3, in both the accessor and the rendered spectrum)* — mesh frequency uses *pinion*
       teeth, not ring. A swap is completely silent today.
-- [ ] **The equal-power pan law's left=cos / right=sin assignment** and its
+- [x] **The equal-power pan law's left=cos / right=sin assignment** *(done in 2.0.3)* and its
       −3 dB centre attenuation. A left/right swap passes the suite today.
 
 **Contracts and rationale**
-- [ ] `smooth_time_s` is **tau** (63% of the way to target), not a settling time.
-- [ ] `MechanicalEvent` payloads: cylinder is 0-indexed; `GearShift.from` 0 = neutral.
-- [ ] The cross-plane V8 offsets exist because uneven intervals create the burble.
-- [ ] The supercharger preset's `spool_inertia` argument is inert (always 0.01).
-- [ ] `ChainDrive` is exactly silent below 1 Hz engagement **and its RNG does not
+- [x] `smooth_time_s` is **tau** (63% of the way to target), not a settling time. *(done in 2.0.3 — comment + assertion)*
+- [x] `MechanicalEvent` payloads: cylinder is 0-indexed; `GearShift.from` 0 = neutral. *(done in 2.0.3)*
+- [x] The cross-plane V8 offsets exist because uneven intervals create the burble. *(done in 2.0.3)*
+- [x] The supercharger preset's `spool_inertia` argument is inert (always 0.01). *(done in 2.0.3 — noted at both sites)*
+- [x] `ChainDrive` is exactly silent below 1 Hz engagement *(done in 2.0.3)* **and its RNG does not
       advance** during that silence — so its noise is a function of RPM history.
-- [ ] `process_block_stereo` leaves the tail of the longer buffer **untouched**,
+- [x] `process_block_stereo` leaves the tail of the longer buffer **untouched** *(done in 2.0.3)*,
       not zeroed. Untested on both sides.
-- [ ] `sample_position` is vestigial in transmission / differential /
+- [x] `sample_position` is vestigial *(done in 2.0.3 — noted at each write site)* in transmission / differential /
       forced_induction (its only readers were the dropped fallback arms).
-- [ ] `Transmission::new` accepts an **empty** ratios vec; `current_ratio()` then
+- [x] `Transmission::new` accepts an **empty** ratios vec *(done in 2.0.3)*; `current_ratio()` then
       returns 1.0.
-- [ ] Typical-vs-legal parameter ranges from the Rust rustdoc (pulley diameter
+- [x] Typical-vs-legal parameter ranges from the Rust rustdoc *(done in 2.0.3)* (pulley diameter
       "typically 50–200 mm", chain links "typically 100–120").
 
 ### 2. Correct two claims in `state.md` that are wrong today
 
 Both become uncheckable the moment the oracle goes:
 
-- [ ] **The RNG-seed bullet is over-broad.** It says seeds are "behavioural, not
+- [x] **The RNG-seed bullet is over-broad.** *(corrected in 2.0.2)* It says seeds are "behavioural, not
       bit-identical" without scope. Only `belt_drive`, `turbine` and
       `forced_induction` fold in a float. `engine`, `gear`, `motor`, `clock`,
       `transmission`, `differential` and `chain_drive` seed from integers and are
       **bit-identical to the oracle** — a maintainer "harmonising" them would
       silently change seven synths' audio.
-- [ ] **The serde justification is factually wrong.** It says the synth structs
+- [x] **The serde justification is factually wrong.** *(corrected in state.md 2.0.2, and in ADR-004 in 2.0.3)* It says the synth structs
       dropped deep serialization because "nothing meaningful survived the Rust
       `#[serde(skip)]`". For `MixerChannel` that is false: only `synth` and
       `scratch` were skipped — `name`, `gain`, `pan` and `muted` all serialized,
@@ -114,9 +116,10 @@ Both become uncheckable the moment the oracle goes:
 
 ### 3. Close the benchmark gap
 
-`rust-old/benches/benchmarks.rs` has 9 named benchmarks plus a block-size sweep;
-`benches/ghurni.bcyr` has 6. Missing: **motor**, **turbine**, **clock**,
-**transmission**, **turbocharger**, and the **64→4096 block-size sweep**.
+**Closed in 2.0.3.** `benches/ghurni.bcyr` now has 14 entries, covering all five
+missing synths (motor, turbine, clock, transmission, turbocharger) and a
+64 / 512 / 4096 block-size sweep. Measured per-sample cost is flat across block
+sizes (~0.67 µs), so the streaming per-call overhead is negligible.
 
 ## Deliberately NOT carried over
 

@@ -1,0 +1,188 @@
+# spectral.tcyr -- FFT assertions that the rendered audio actually sits at the
+# frequency the physics says it should (2.0.3).
+#
+# WHY THIS SUITE EXISTS. ghurni's entire thesis is "RPM is the fundamental
+# parameter": mesh frequency is (rpm/60) x teeth, blade pass is (rpm/60) x
+# blades, EM hum is (rpm/60) x poles. Until now NOTHING checked that the
+# rendered signal actually lands there. Every audio assertion in the suite was
+# finite / has-energy / an energy ordering, all of which hold for a synth
+# emitting the wrong pitch entirely -- a transposed gear whine, a blade-pass
+# term wired to ring teeth instead of pinion, an off-by-60 in an rpm-to-Hz
+# conversion. This is the class that catches those.
+#
+# WHAT IT DOES NOT CATCH, so nobody over-trusts it: a peak-bin assertion pins
+# FREQUENCY, not amplitude or envelope shape. The 2.0.1 GHURNI_DB_SCALE
+# miscompile flattened decay envelopes 187x without moving any peak -- goldens.tcyr
+# is what catches that. The two suites are complementary.
+#
+# METHOD. naad's `fft_magnitudes` returns n/2+1 magnitude bins scaled by 1/n and
+# requires a POWER-OF-TWO input, so blocks are 8192 (not the 4410/2205 the rest
+# of the suite uses). Bin width is 44100/8192 = 5.383 Hz. Each synth is settled
+# with one discarded block first, because set_rpm ramps through GhSmoothedParam
+# and the first block is still climbing. Expected frequencies are derived from
+# the ORACLE's formulas, never read off the FFT.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+
+var SR = f64_from(44100);
+var SPEC_N = 8192;
+
+fn spec_block() {
+    var v = vec_new();
+    var i = 0;
+    while (i < SPEC_N) { vec_push(v, 0); i = i + 1; }
+    return v;
+}
+
+# Index of the largest magnitude bin, skipping DC (bin 0), which carries any
+# residual offset rather than a tone.
+fn spec_peak_bin(v) {
+    var mags = fft_magnitudes(v);
+    var n = vec_len(mags);
+    var best = 0;
+    var bi = 0;
+    var i = 1;
+    while (i < n) {
+        var m = vec_get(mags, i);
+        if (f64_gt(m, best) == 1) { best = m; bi = i; }
+        i = i + 1;
+    }
+    return bi;
+}
+
+fn spec_peak_mag(v) {
+    var mags = fft_magnitudes(v);
+    var n = vec_len(mags);
+    var best = 0;
+    var i = 1;
+    while (i < n) {
+        var m = vec_get(mags, i);
+        if (f64_gt(m, best) == 1) { best = m; }
+        i = i + 1;
+    }
+    return best;
+}
+
+# The bin a given frequency falls in: f * N / sample_rate, rounded.
+fn spec_bin_for(hz) {
+    return f64_to(f64_add(f64_div(f64_mul(hz, f64_from(SPEC_N)), SR), 0.5));
+}
+
+# Assert the dominant bin is within +/-1 of the physics-derived one. One bin is
+# 5.383 Hz here, so this is a ~0.7% tolerance on an 800 Hz tone -- tight enough
+# to catch a wrong multiplier, loose enough to survive windowing leakage.
+fn assert_peak_at(v, want_hz, name) {
+    var got = spec_peak_bin(v);
+    var want = spec_bin_for(want_hz);
+    var d = got - want;
+    if (d < 0) { d = 0 - d; }
+    assert_lte(d, 1, name);
+    return 0;
+}
+
+# ================================================================
+test_group("gear mesh frequency = (rpm/60) x teeth");
+# 32 teeth @ 1500 rpm = 800 Hz. @ 3000 rpm = 1600 Hz.
+var g = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_gear_set_rpm(g, f64_from(1500));
+var gw = spec_block();
+ghurni_gear_process_block(g, gw);
+var gb = spec_block();
+ghurni_gear_process_block(g, gb);
+# Guard against a vacuous compare: there must BE a peak to find.
+assert_gt(spec_peak_mag(gb), 0.0001, "gear produced a real spectral peak");
+assert_peak_at(gb, f64_from(800), "gear 32t @1500 rpm peaks at 800 Hz");
+# Frequency must SCALE with rpm -- this is the thesis, stated as an assertion.
+ghurni_gear_set_rpm(g, f64_from(3000));
+var gw2 = spec_block();
+ghurni_gear_process_block(g, gw2);
+var gb2 = spec_block();
+ghurni_gear_process_block(g, gb2);
+assert_peak_at(gb2, f64_from(1600), "doubling rpm doubles the mesh frequency");
+# ...and with tooth count, independently.
+var g16 = ghurni_gear_new(16, GH_GEAR_STEEL, SR);
+ghurni_gear_set_rpm(g16, f64_from(1500));
+var gw3 = spec_block();
+ghurni_gear_process_block(g16, gw3);
+var gb3 = spec_block();
+ghurni_gear_process_block(g16, gb3);
+assert_peak_at(gb3, f64_from(400), "halving teeth halves the mesh frequency");
+
+# ================================================================
+test_group("motor EM hum = (rpm/60) x poles");
+# 8 poles @ 1500 rpm = 200 Hz.
+var m = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR);
+ghurni_motor_set_rpm(m, f64_from(1500));
+var mw = spec_block();
+ghurni_motor_process_block(m, mw);
+var mb = spec_block();
+ghurni_motor_process_block(m, mb);
+assert_gt(spec_peak_mag(mb), 0.0001, "motor produced a real spectral peak");
+assert_peak_at(mb, f64_from(200), "motor 8-pole @1500 rpm peaks at 200 Hz");
+# 4 poles at the same rpm must halve it.
+var m4 = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR);
+ghurni_motor_set_rpm(m4, f64_from(1500));
+var mw4 = spec_block();
+ghurni_motor_process_block(m4, mw4);
+var mb4 = spec_block();
+ghurni_motor_process_block(m4, mb4);
+assert_peak_at(mb4, f64_from(100), "motor 4-pole @1500 rpm peaks at 100 Hz");
+
+# ================================================================
+test_group("turbine blade pass = (rpm/60) x blades");
+# 12 blades @ 8000 rpm = 1600 Hz. Open (no duct) so the duct tone cannot win.
+var t = ghurni_turbine_new(12, 0, SR);
+ghurni_turbine_set_rpm(t, f64_from(8000));
+var tw = spec_block();
+ghurni_turbine_process_block(t, tw);
+var tb = spec_block();
+ghurni_turbine_process_block(t, tb);
+assert_gt(spec_peak_mag(tb), 0.0001, "turbine produced a real spectral peak");
+assert_peak_at(tb, f64_from(1600), "turbine 12-blade @8000 rpm peaks at 1600 Hz");
+# 3-blade propeller at the same rpm = 400 Hz.
+var t3 = ghurni_turbine_new(3, 0, SR);
+ghurni_turbine_set_rpm(t3, f64_from(8000));
+var tw3 = spec_block();
+ghurni_turbine_process_block(t3, tw3);
+var tb3 = spec_block();
+ghurni_turbine_process_block(t3, tb3);
+assert_peak_at(tb3, f64_from(400), "turbine 3-blade @8000 rpm peaks at 400 Hz");
+
+# ================================================================
+test_group("differential whine uses PINION teeth, not ring");
+# mesh = (rpm/60) x pinion. 11 pinion @ 3000 rpm = 550 Hz.
+# With ring (41) it would be 2050 Hz -- so this assertion alone catches a swap,
+# and it catches it in the RENDERED AUDIO rather than in the accessor.
+var d = ghurni_differential_new(41, 11, SR);
+ghurni_differential_set_rpm(d, f64_from(3000));
+var dw = spec_block();
+ghurni_differential_process_block(d, dw);
+var db = spec_block();
+ghurni_differential_process_block(d, db);
+assert_gt(spec_peak_mag(db), 0.0001, "differential produced a real spectral peak");
+assert_peak_at(db, f64_from(550), "differential 11-pinion @3000 rpm peaks at 550 Hz");
+var ring_bin = spec_bin_for(f64_from(2050));
+var got_bin = spec_peak_bin(db);
+assert_neq(got_bin, ring_bin, "differential peak is NOT at the ring-teeth frequency");
+
+var rc = assert_summary();
+syscall(60, rc);

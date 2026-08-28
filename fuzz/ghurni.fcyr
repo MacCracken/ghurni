@@ -1,0 +1,430 @@
+# ghurni.fcyr -- adversarial numeric sweep over the public boundary.
+#
+# ghurni has no I/O and no parsers, so the only untrusted input it can receive
+# is NUMBERS a consumer forwarded from somewhere less trusted -- a save file, a
+# preset, a network peer driving RPM. This harness drives the guarded surface
+# with the values that actually break Cyrius ports.
+#
+# The value table is not arbitrary. Every entry has caused a real defect here or
+# in a sibling:
+#   0, -1              the HALF-BOUND class. Rust's usize/u32/enum made the bad
+#                      value unrepresentable, so the oracle's body validates
+#                      nothing and a transliterated guard is half a bound.
+#                      2.0.2 found this in shift_to, five enum constructors and
+#                      the mixer's synth pointer.
+#   INT64_MIN          what f64_to produces on overflow, where Rust's `as`
+#                      SATURATES. 2.0.2's silently-empty synthesize() was this.
+#   NaN, +/-inf        pass straight through f64_clamp (which propagates NaN
+#                      where f64_max/f64_min absorb it) into persistent filter
+#                      state.
+#   subnormal, f64MAX  the ends of the domain.
+#   non-power-of-two   100, 1000: INT64_MIN % 1024 == 0, so power-of-two buffer
+#                      lengths MASK the truncation class entirely.
+#
+# THE CONTRACTS ASSERTED
+#   1. The process survives. Every abort -- SIGSEGV, SIGFPE, or the stdlib's
+#      _vec_die() on an out-of-range index -- is a failure, and that is most of
+#      the value here: ghurni's rule is zero panics in library code.
+#   2. A constructor either reports an error or returns a usable object. It
+#      never reports success on an input it cannot honour.
+#   3. A synth that constructed successfully never renders a non-finite sample
+#      from finite inputs.
+#
+# NAAD'S LESSON, APPLIED. Driving an enum id and the numeric parameters from ONE
+# loop index CORRELATES them: an out-of-range id then only ever pairs with an
+# already-invalid sample rate, is rejected before the id guard is reached, and
+# the harness proves nothing. naad measured this -- with all three id guards
+# reverted, the correlated version reported a clean run. Every sweep below is
+# therefore separated: ids swept at KNOWN-VALID parameters, values swept at a
+# KNOWN-VALID id.
+
+include "lib/sakshi.cyr"
+include "lib/hisab.cyr"
+include "lib/goonj.cyr"
+include "lib/naad.cyr"
+include "dist/ghurni.cyr"
+
+var FZ_NAN  = 0x7FF8000000000000;
+var FZ_PINF = 0x7FF0000000000000;
+var FZ_NINF = 0xFFF0000000000000;
+var FZ_TINY = 0x0000000000000001;   # smallest subnormal
+var FZ_HUGE = 0x7FEFFFFFFFFFFFFF;   # f64::MAX
+var FZ_HALF = 0x3FE0000000000000;   # 0.5
+var FZ_ONE  = 0x3FF0000000000000;
+var FZ_NEG1 = 0xBFF0000000000000;
+
+var fz_fail = 0;
+var fz_checks = 0;
+
+fn fz_val(i) {
+    var k = i % 12;
+    if (k == 0) { return 0; }
+    if (k == 1) { return FZ_ONE; }
+    if (k == 2) { return FZ_NEG1; }
+    if (k == 3) { return FZ_NAN; }
+    if (k == 4) { return FZ_PINF; }
+    if (k == 5) { return FZ_NINF; }
+    if (k == 6) { return FZ_TINY; }
+    if (k == 7) { return FZ_HUGE; }
+    if (k == 8) { return FZ_HALF; }
+    if (k == 9) { return f64_from(44100); }
+    if (k == 10) { return f64_from(3000); }
+    return f64_from(0 - 3000);
+}
+
+fn fz_int(i) {
+    var k = i % 10;
+    if (k == 0) { return 0; }
+    if (k == 1) { return 1; }
+    if (k == 2) { return 0 - 1; }
+    if (k == 3) { return 8; }
+    if (k == 4) { return 0 - 48000; }
+    if (k == 5) { return 48000; }
+    if (k == 6) { return 100; }
+    if (k == 7) { return 1000; }
+    if (k == 8) { return 0 - 9223372036854775807 - 1; }   # INT64_MIN
+    return 127;
+}
+
+fn fz_check(cond, what) {
+    fz_checks = fz_checks + 1;
+    if (cond == 0) {
+        print(what, strlen(what));
+        println("");
+        fz_fail = fz_fail + 1;
+    }
+    return 0;
+}
+
+# A constructor must either report an error or hand back something usable.
+fn fz_ctor(p, what) {
+    fz_check(ghurni_is_err(p) == 1 || p > 0, what);
+    return 0;
+}
+
+# Render a block through a synth by tag and assert every sample is finite.
+fn fz_render(kind, synth, n, what) {
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    ghurni_synth_process_block(kind, synth, out);
+    var ok = 1;
+    var j = 0;
+    while (j < n) {
+        if (ghurni_is_finite(vec_get(out, j)) == 0) { ok = 0; j = n; }
+        j = j + 1;
+    }
+    fz_check(ok, what);
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    sakshi_set_level(0);
+
+    var SR = f64_from(44100);
+
+    # ---------------------------------------------------------------
+    # 1. ENUM IDS, swept at KNOWN-VALID numeric parameters.
+    # Rust's exhaustive match proved the id was a real variant; i64 cannot.
+    # ---------------------------------------------------------------
+    var i = 0;
+    while (i < 30) {
+        var id = i - 8;                                  # -8 .. 21, straddles 0..3
+
+        var e = ghurni_engine_new(id, 4, SR);
+        fz_ctor(e, "ghurni_engine_new: neither an error nor a usable pointer");
+        fz_check(ghurni_is_err(e) == 1 || (id >= GH_ENGINE_GASOLINE && id <= GH_ENGINE_HYBRID),
+          "ghurni_engine_new accepted an out-of-range engine type");
+
+        var g = ghurni_gear_new(32, id, SR);
+        fz_ctor(g, "ghurni_gear_new: neither an error nor a usable pointer");
+        fz_check(ghurni_is_err(g) == 1 || (id >= GH_GEAR_STEEL && id <= GH_GEAR_NYLON),
+          "ghurni_gear_new accepted an out-of-range material");
+
+        var m = ghurni_motor_new(id, 4, SR);
+        fz_ctor(m, "ghurni_motor_new: neither an error nor a usable pointer");
+        fz_check(ghurni_is_err(m) == 1 || (id >= GH_MOTOR_DC_BRUSHED && id <= GH_MOTOR_SERVO),
+          "ghurni_motor_new accepted an out-of-range motor type");
+
+        var c = ghurni_clock_new(id, SR);
+        fz_ctor(c, "ghurni_clock_new: neither an error nor a usable pointer");
+        fz_check(ghurni_is_err(c) == 1 || (id >= GH_CLOCK_WRISTWATCH && id <= GH_CLOCK_POCKET_WATCH),
+          "ghurni_clock_new accepted an out-of-range clock type");
+
+        var f = ghurni_forced_induction_new(id, f64_from(2), FZ_HALF, SR);
+        fz_ctor(f, "ghurni_forced_induction_new: neither an error nor a usable pointer");
+        fz_check(ghurni_is_err(f) == 1 || (id >= GH_INDUCTION_TURBO && id <= GH_INDUCTION_SUPERCHARGER),
+          "ghurni_forced_induction_new accepted an out-of-range induction type");
+
+        i = i + 1;
+    }
+
+    # ---------------------------------------------------------------
+    # 2. SAMPLE RATE, swept at a KNOWN-VALID enum id and count.
+    # A synth that constructs must render finite audio; one that cannot must
+    # say so. Nothing may abort.
+    # ---------------------------------------------------------------
+    i = 0;
+    while (i < 24) {
+        var sr = fz_val(i);
+
+        var e2 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, sr);
+        fz_ctor(e2, "engine_new(bad sr): neither an error nor a usable pointer");
+        if (ghurni_is_err(e2) == 0) {
+            fz_check(ghurni_is_finite(GhEngine_sample_rate(e2)) == 1,
+              "engine constructed with a non-finite sample rate");
+            fz_render(GH_KIND_ENGINE, e2, 100, "engine rendered a non-finite sample");
+        }
+
+        var t = ghurni_turbine_new(12, f64_from(600), sr);
+        fz_ctor(t, "turbine_new(bad sr): neither an error nor a usable pointer");
+        if (ghurni_is_err(t) == 0) {
+            fz_render(GH_KIND_TURBINE, t, 100, "turbine rendered a non-finite sample");
+        }
+
+        var b = ghurni_belt_drive_new(f64_from(120), FZ_HALF, sr);
+        fz_ctor(b, "belt_drive_new(bad sr): neither an error nor a usable pointer");
+        if (ghurni_is_err(b) == 0) {
+            fz_render(GH_KIND_BELT_DRIVE, b, 100, "belt_drive rendered a non-finite sample");
+        }
+
+        # The DC blocker is reachable from the flat namespace even though the
+        # oracle had it pub(crate). Its pole must stay finite and stable.
+        var db = ghurni_dcblocker_new(sr);
+        fz_check(ghurni_is_finite(GhDcBlocker_r(db)) == 1,
+          "dcblocker built a non-finite pole radius");
+        fz_check(f64_ge(GhDcBlocker_r(db), 0.9) == 1 && f64_le(GhDcBlocker_r(db), 0.9999) == 1,
+          "dcblocker pole escaped [0.9, 0.9999]");
+
+        i = i + 1;
+    }
+
+    # ---------------------------------------------------------------
+    # 3. INTEGER COUNTS, swept at a valid id and sample rate.
+    # cylinders/teeth/poles/blades/links were Rust unsigned types.
+    # ---------------------------------------------------------------
+    i = 0;
+    while (i < 40) {
+        var n = fz_int(i);
+
+        var e3 = ghurni_engine_new(GH_ENGINE_GASOLINE, n, SR);
+        fz_ctor(e3, "engine_new(bad cylinders): neither an error nor a usable pointer");
+        if (ghurni_is_err(e3) == 0) {
+            fz_check(GhEngine_cylinders(e3) >= 1 && GhEngine_cylinders(e3) <= 16,
+              "engine cylinders escaped the 1..16 clamp");
+            fz_render(GH_KIND_ENGINE, e3, 100, "engine(bad cylinders) rendered non-finite");
+        }
+
+        var g3 = ghurni_gear_new(n, GH_GEAR_STEEL, SR);
+        fz_ctor(g3, "gear_new(bad teeth): neither an error nor a usable pointer");
+        if (ghurni_is_err(g3) == 0) {
+            fz_check(GhGear_teeth(g3) >= 4, "gear teeth fell below the 4 floor");
+            fz_render(GH_KIND_GEAR, g3, 100, "gear(bad teeth) rendered non-finite");
+        }
+
+        var mo = ghurni_motor_new(GH_MOTOR_BRUSHLESS, n, SR);
+        fz_ctor(mo, "motor_new(bad poles): neither an error nor a usable pointer");
+        if (ghurni_is_err(mo) == 0) {
+            fz_check(GhMotor_poles(mo) >= 2 && GhMotor_poles(mo) <= 24,
+              "motor poles escaped the 2..24 clamp");
+            fz_render(GH_KIND_MOTOR, mo, 100, "motor(bad poles) rendered non-finite");
+        }
+
+        var tb = ghurni_turbine_new(n, f64_from(600), SR);
+        fz_ctor(tb, "turbine_new(bad blades): neither an error nor a usable pointer");
+        if (ghurni_is_err(tb) == 0) {
+            fz_check(GhTurbine_blades(tb) >= 2 && GhTurbine_blades(tb) <= 64,
+              "turbine blades escaped the 2..64 clamp");
+        }
+
+        var cd = ghurni_chain_drive_new(n, 16, SR);
+        fz_ctor(cd, "chain_drive_new(bad links): neither an error nor a usable pointer");
+        if (ghurni_is_err(cd) == 0) {
+            fz_render(GH_KIND_CHAIN_DRIVE, cd, 100, "chain_drive(bad links) rendered non-finite");
+        }
+
+        var df = ghurni_differential_new(n, 11, SR);
+        fz_ctor(df, "differential_new(bad ring): neither an error nor a usable pointer");
+        if (ghurni_is_err(df) == 0) {
+            fz_check(GhDifferential_ring_teeth(df) >= 20 && GhDifferential_ring_teeth(df) <= 80,
+              "differential ring teeth escaped the 20..80 clamp");
+        }
+
+        i = i + 1;
+    }
+
+    # ---------------------------------------------------------------
+    # 4. DURATION, at a valid synth. This is the CLASS 2 site: f64_to overflows
+    # to INT64_MIN where Rust's `as` saturates, and the stdlib vec ABORTS the
+    # process past VEC_CAP_MAX. Neither may happen.
+    # ---------------------------------------------------------------
+    i = 0;
+    while (i < 24) {
+        var d = fz_val(i);
+        var e4 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+        var buf = ghurni_engine_synthesize(e4, f64_from(3000), FZ_HALF, d);
+        # Either a negative error code, or a real buffer -- never a silently
+        # empty vec reported as success (the 2.0.2 defect).
+        fz_check(ghurni_is_err(buf) == 1 || vec_len(buf) > 0,
+          "synthesize returned an EMPTY buffer and reported success");
+        fz_check(ghurni_is_err(ghurni_sample_count(SR, d)) == 1 || ghurni_sample_count(SR, d) > 0,
+          "sample_count returned a non-positive count as success");
+        i = i + 1;
+    }
+
+    # ---------------------------------------------------------------
+    # 5. RPM / LOAD on a live synth, then render. Persistent smoother and
+    # filter state must not be poisoned into permanent non-finiteness.
+    # ---------------------------------------------------------------
+    i = 0;
+    while (i < 24) {
+        var e5 = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+        ghurni_engine_set_rpm(e5, fz_val(i));
+        ghurni_engine_set_load(e5, fz_val(i + 5));
+        var out5 = vec_new();
+        var k = 0;
+        while (k < 100) { vec_push(out5, 0); k = k + 1; }
+        ghurni_engine_process_block(e5, out5);
+        # A finite RPM/load pair must give finite audio. Non-finite INPUT is a
+        # documented open item (roadmap Arc 1: f64_clamp propagates NaN), so it
+        # is not asserted here -- asserting it would fail today and this harness
+        # must be green to be useful as a gate.
+        if (ghurni_is_finite(fz_val(i)) == 1 && ghurni_is_finite(fz_val(i + 5)) == 1) {
+            var ok5 = 1;
+            var q = 0;
+            while (q < 100) {
+                if (ghurni_is_finite(vec_get(out5, q)) == 0) { ok5 = 0; q = 100; }
+                q = q + 1;
+            }
+            fz_check(ok5, "finite rpm/load produced non-finite audio");
+        }
+        i = i + 1;
+    }
+
+    # ---------------------------------------------------------------
+    # 6. TRANSMISSION gear index -- the 2.0.2 half-bound, swept both ways.
+    # ---------------------------------------------------------------
+    var ratios = vec_new();
+    vec_push(ratios, f64_from(3)); vec_push(ratios, f64_from(2)); vec_push(ratios, F64_ONE);
+    var tr = ghurni_transmission_new(ratios, 24, SR);
+    i = 0;
+    while (i < 40) {
+        var gear = fz_int(i);
+        ghurni_transmission_shift_to(tr, gear);
+        var cg = GhTransmission_current_gear(tr);
+        fz_check(cg >= 0 && cg < 3, "transmission current_gear escaped 0..2");
+        fz_check(ghurni_is_finite(ghurni_transmission_current_ratio(tr)) == 1,
+          "transmission current_ratio went non-finite");
+        i = i + 1;
+    }
+
+    # ---------------------------------------------------------------
+    # 7. MIXER -- kind tags and synth pointers, the 2.0.2 SIGSEGV surface.
+    # ---------------------------------------------------------------
+    # THE CONTRACT LIMIT, stated up front. A (kind, pointer) pair must MATCH:
+    # the kind tag says which struct the pointer addresses, and nothing can
+    # check that. Registering a GhGear under GH_KIND_ENGINE makes the dispatcher
+    # read GhEngine fields off a smaller allocation -- undefined behaviour, and
+    # unavoidable under ADR-004, because the oracle's `Box<dyn Synthesizer>`
+    # carried its own vtable and a raw i64 does not. So the tag sweep below
+    # never RENDERS: it only asserts which tags are accepted. Rendering happens
+    # separately, on a correctly-paired mixer.
+    var tag_mix = ghurni_mixer_new();
+    i = 0;
+    while (i < 40) {
+        var kind = i - 12;                       # -12 .. 27, straddles 0..9
+        var real_gear = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+        var rc = ghurni_mixer_add_channel(tag_mix, "fz", kind, real_gear);
+        fz_check(ghurni_is_err(rc) == 1 || (kind >= GH_KIND_ENGINE && kind <= GH_KIND_CHAIN_DRIVE),
+          "mixer accepted an out-of-range kind tag");
+        fz_check(ghurni_is_err(rc) == 0 || (kind < GH_KIND_ENGINE || kind > GH_KIND_CHAIN_DRIVE),
+          "mixer REJECTED an in-range kind tag");
+        # A non-pointer as the synth must be refused. Every fz_int value is
+        # below GHURNI_MIN_VALID_PTR (the largest is 48000), so ALL of them must
+        # come back as an error -- error codes, null, and small positive
+        # integers alike. Note the contract's limit again: an ARBITRARY wild
+        # pointer above the floor is still undefined behaviour, because Cyrius
+        # has no allocator oracle. That is not asserted; the library cannot
+        # honour it.
+        fz_check(ghurni_is_err(ghurni_mixer_add_channel(tag_mix, "fz", GH_KIND_GEAR, fz_int(i))) == 1,
+          "mixer accepted a non-pointer as a synthesizer");
+        i = i + 1;
+    }
+
+    # A correctly-paired mixer must render without faulting, and stay finite.
+    var mix = ghurni_mixer_new();
+    ghurni_mixer_add_channel(mix, "eng", GH_KIND_ENGINE, ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR));
+    ghurni_mixer_add_channel(mix, "gear", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+    ghurni_mixer_add_channel(mix, "mot", GH_KIND_MOTOR, ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR));
+    ghurni_mixer_add_channel(mix, "chain", GH_KIND_CHAIN_DRIVE, ghurni_chain_drive_new(110, 16, SR));
+    i = 0;
+    while (i < 24) {
+        ghurni_mixer_set_rpm(mix, fz_val(i));
+        ghurni_mixer_set_master_gain(mix, fz_val(i + 3));
+        ghurni_mixer_set_channel_gain(mix, fz_int(i), fz_val(i + 5));
+        ghurni_mixer_set_channel_pan(mix, fz_int(i), fz_val(i + 7));
+        ghurni_mixer_set_channel_muted(mix, fz_int(i), fz_int(i + 1));
+        i = i + 1;
+    }
+    var mono = vec_new();
+    i = 0;
+    while (i < 128) { vec_push(mono, 0); i = i + 1; }
+    ghurni_mixer_process_block(mix, mono);
+    fz_check(1, "mixer survived process_block after a parameter sweep");
+
+    # Stereo with mismatched buffers, both orders, plus zero-length.
+    var lft = vec_new();
+    var rgt = vec_new();
+    i = 0;
+    while (i < 256) { vec_push(lft, 0); i = i + 1; }
+    i = 0;
+    while (i < 100) { vec_push(rgt, 0); i = i + 1; }
+    ghurni_mixer_process_block_stereo(mix, lft, rgt);
+    ghurni_mixer_process_block_stereo(mix, rgt, lft);
+    var empty = vec_new();
+    ghurni_mixer_process_block_stereo(mix, empty, rgt);
+    ghurni_mixer_process_block(mix, empty);
+    fz_check(1, "mixer survived mismatched and zero-length stereo buffers");
+
+    # ---------------------------------------------------------------
+    # 8. EVENTS -- kind and payload both out of range.
+    # ---------------------------------------------------------------
+    var ev_eng = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    i = 0;
+    while (i < 40) {
+        ghurni_engine_trigger_event(ev_eng, ghurni_event_new(fz_int(i), fz_int(i + 3), fz_int(i + 7)));
+        fz_check(vec_len(GhEngine_misfire_flags(ev_eng)) == 4,
+          "an out-of-range event resized the misfire vec");
+        i = i + 1;
+    }
+    fz_render(GH_KIND_ENGINE, ev_eng, 200, "engine rendered non-finite after junk events");
+
+    # ---------------------------------------------------------------
+    # 9. ENUM NAME MAPPING -- ids far outside the domain must not over-run.
+    # ---------------------------------------------------------------
+    i = 0;
+    while (i < 40) {
+        var id2 = fz_int(i);
+        fz_check(strlen(ghurni_enginetype_name(id2)) <= 16, "enginetype_name over-long");
+        fz_check(strlen(ghurni_gearmaterial_name(id2)) <= 16, "gearmaterial_name over-long");
+        fz_check(strlen(ghurni_motortype_name(id2)) <= 16, "motortype_name over-long");
+        fz_check(strlen(ghurni_clocktype_name(id2)) <= 20, "clocktype_name over-long");
+        fz_check(strlen(ghurni_inductiontype_name(id2)) <= 16, "inductiontype_name over-long");
+        fz_check(strlen(ghurni_event_name(id2)) <= 20, "event_name over-long");
+        fz_check(strlen(ghurni_err_name(id2)) <= 24, "err_name over-long");
+        i = i + 1;
+    }
+
+    fmt_int(fz_checks);
+    println(" checks");
+    if (fz_fail == 0) {
+        println("fuzz: ok");
+        return 0;
+    }
+    println("fuzz: FAILURES above");
+    return 1;
+}
+
+var r = main();
+syscall(60, r);

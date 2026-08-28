@@ -159,6 +159,11 @@ fn ghurni_differential_process_block(self, out) {
         vec_set(out, j, ghurni_dcblocker_process(db, vec_get(out, j)));
         j = j + 1;
     }
+    # VESTIGIAL: advanced every block, read by nothing in this module. Its only
+    # readers in the oracle were the non-naad fallback arms, which ADR-004 drops.
+    # Kept so the struct stays field-compatible with the oracle and with its nine
+    # siblings, where the counter IS live (engine/gear/motor/turbine/clock/belt/
+    # chain all derive phase from it). Do not remove without checking all ten.
     GhDifferential_set_sample_position(self, GhDifferential_sample_position(self) + n);
     return 0;
 }

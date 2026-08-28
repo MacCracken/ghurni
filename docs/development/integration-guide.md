@@ -137,7 +137,17 @@ ghurni_mixer_process_block_stereo(mixer, left, right);
 Each channel keeps a scratch buffer sized to the block length and reuses it, so
 a fixed-block-size callback allocates once per channel, not once per block. Keep
 the block size stable to keep it that way. For stereo, `left` and `right` must
-be distinct vecs; the shorter of the two bounds the work.
+be distinct vecs; the shorter of the two bounds the work, and the tail of the
+longer one is left untouched rather than zeroed.
+
+> ⚠ **The `(GH_KIND_*, pointer)` pair must match.** The tag declares which struct
+> the pointer addresses. `add_channel` range-checks the tag and rejects error
+> codes, null, and small integers — but it **cannot** verify that a pointer is of
+> the type the tag claims. Registering a gear under `GH_KIND_ENGINE` makes the
+> dispatcher read engine fields off a smaller allocation, which is undefined
+> behaviour. This is inherent to the design: Rust's `Box<dyn Synthesizer>`
+> carried its own vtable and a raw `i64` does not. Always pass the tag that goes
+> with the constructor you called.
 
 ## Presets
 

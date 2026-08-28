@@ -46,12 +46,45 @@ jobs:
         # tests/*.tcyr — the whole behavioural-parity suite.
         run: cyrius test
 
-      - name: Build examples
-        # Each docs/examples/*.cyr is a standalone runnable program; building
-        # them keeps the demos from bit-rotting against the API.
+      - name: Bundle is in sync with src/
+        # dist/ghurni.cyr is what CONSUMERS compile -- src/ and the bundle
+        # drifting apart is invisible locally and breaks everyone downstream.
+        # --check verifies without writing.
+        run: cyrius distlib --check
+
+      - name: Audit (fmt + lint + docs + tests + bench)
+        # Exits 0 as of 2.0.2. This is the gate that keeps it there.
+        run: cyrius audit
+
+      - name: Policy check
+        run: cyrius deny src/main.cyr
+
+      - name: Fuzz
+        # fuzz/ghurni.fcyr -- ~1600 adversarial checks over the public boundary.
+        # NOTE `cyrius fuzz` exits 0 when it finds NO harnesses, so this step
+        # would pass vacuously if fuzz/ ever disappeared. The guard below makes
+        # the absence itself a failure.
+        run: |
+          test -n "$(ls fuzz/*.fcyr 2>/dev/null)" || {
+            echo "no fuzz harness found in fuzz/ -- cyrius fuzz would pass vacuously"; exit 1; }
+          cyrius fuzz
+
+      - name: Coverage ratchet
+        # A FLOOR, not a target. Coverage is not a correctness proof -- 2.0.1
+        # shipped a 76.9x-wrong constant through a fully green suite. This only
+        # stops coverage sliding backwards.
+        run: cyrius coverage --min 45
+
+      - name: Build and RUN examples
+        # Each docs/examples/*.cyr is a standalone runnable program. Building
+        # keeps the demos from bit-rotting against the API; RUNNING them is what
+        # catches a demo that compiles and then faults, which a build-only step
+        # let through.
         run: |
           for ex in docs/examples/*.cyr; do
             name="$(basename "$ex" .cyr)"
             echo "building $ex"
             cyrius build "$ex" "build/ex_$name"
+            echo "running  $ex"
+            "./build/ex_$name"
           done

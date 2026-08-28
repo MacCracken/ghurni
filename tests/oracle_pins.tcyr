@@ -1,0 +1,573 @@
+# oracle_pins.tcyr -- 2.0.3 "Pin the Oracle".
+#
+# Every assertion here pins a value or contract that, until now, ONLY
+# `rust-old/` proved. The oracle is deleted in 2.0.4; after that these
+# assertions ARE the specification, so each expected value below was read out of
+# the corresponding `rust-old/src/*.rs` line cited beside it, NOT observed from
+# what ghurni currently prints. A value transcribed from current output would
+# freeze whatever is wrong today as "correct" -- the exact failure mode that let
+# GHURNI_DB_SCALE ship 76.9x wrong through a green suite.
+#
+# These are structural / numeric assertions on purpose. `audio_all_finite` and
+# `audio_has_energy` hold for almost any value and pin almost nothing; nothing
+# in this file leans on them alone.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+
+var SR = f64_from(44100);
+
+# ================================================================
+test_group("gear material properties (rust-old/src/gear.rs:33-40)");
+# properties() -> (resonance_hz, decay_s, brightness). Inline literals in
+# ghurni_gear_new, so they are read back through the accessors.
+var g_steel = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+assert_eq(GhGear_resonance(g_steel), f64_from(3500), "Steel resonance 3500");
+assert_eq(GhGear_decay(g_steel), 0.08, "Steel decay 0.08");
+assert_eq(GhGear_brightness(g_steel), 0.9, "Steel brightness 0.9");
+var g_iron = ghurni_gear_new(32, GH_GEAR_CAST_IRON, SR);
+assert_eq(GhGear_resonance(g_iron), f64_from(2000), "CastIron resonance 2000");
+assert_eq(GhGear_decay(g_iron), 0.04, "CastIron decay 0.04");
+assert_eq(GhGear_brightness(g_iron), 0.5, "CastIron brightness 0.5");
+var g_brass = ghurni_gear_new(32, GH_GEAR_BRASS, SR);
+assert_eq(GhGear_resonance(g_brass), f64_from(2800), "Brass resonance 2800");
+assert_eq(GhGear_decay(g_brass), 0.06, "Brass decay 0.06");
+assert_eq(GhGear_brightness(g_brass), 0.7, "Brass brightness 0.7");
+var g_nylon = ghurni_gear_new(32, GH_GEAR_NYLON, SR);
+assert_eq(GhGear_resonance(g_nylon), f64_from(1000), "Nylon resonance 1000");
+assert_eq(GhGear_decay(g_nylon), 0.01, "Nylon decay 0.01");
+assert_eq(GhGear_brightness(g_nylon), 0.2, "Nylon brightness 0.2");
+# teeth.max(4) -- lower bound only, matching the oracle (gear.rs:72,
+# documented "Number of teeth (4+)"). NOT a both-ends clamp: every sibling
+# constructor clamps both, but adding an upper bound here would DIVERGE.
+assert_eq(GhGear_teeth(ghurni_gear_new(1, GH_GEAR_STEEL, SR)), 4, "teeth clamps up to 4");
+assert_eq(GhGear_teeth(ghurni_gear_new(0 - 5, GH_GEAR_STEEL, SR)), 4, "negative teeth clamps to 4");
+assert_eq(GhGear_teeth(ghurni_gear_new(100000, GH_GEAR_STEEL, SR)), 100000, "huge teeth NOT clamped (oracle parity)");
+# mesh_frequency = (rpm/60) * teeth (gear.rs). 32 teeth @ 1500 rpm = 800 Hz exactly.
+assert_eq(ghurni_gear_mesh_frequency(g_steel, f64_from(1500)), f64_from(800), "32 teeth @1500 rpm = 800 Hz");
+
+# ================================================================
+test_group("motor properties (rust-old/src/motor.rs:61-64, 153-156)");
+assert_eq(ghurni_motor_noise_cutoff(GH_MOTOR_DC_BRUSHED), f64_from(4000), "DcBrushed cutoff 4000");
+assert_eq(ghurni_motor_noise_cutoff(GH_MOTOR_AC_INDUCTION), f64_from(2000), "AcInduction cutoff 2000");
+assert_eq(ghurni_motor_noise_cutoff(GH_MOTOR_BRUSHLESS), f64_from(6000), "Brushless cutoff 6000");
+assert_eq(ghurni_motor_noise_cutoff(GH_MOTOR_SERVO), f64_from(3000), "Servo cutoff 3000");
+assert_eq(ghurni_motor_noise_level(GH_MOTOR_DC_BRUSHED), 0.15, "DcBrushed noise 0.15");
+assert_eq(ghurni_motor_noise_level(GH_MOTOR_AC_INDUCTION), 0.05, "AcInduction noise 0.05");
+assert_eq(ghurni_motor_noise_level(GH_MOTOR_BRUSHLESS), 0.02, "Brushless noise 0.02");
+assert_eq(ghurni_motor_noise_level(GH_MOTOR_SERVO), 0.08, "Servo noise 0.08");
+# em_frequency = (rpm/60) * poles. 8 poles @ 1500 rpm = 200 Hz exactly.
+var mo = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR);
+assert_eq(ghurni_motor_em_frequency(mo, f64_from(1500)), f64_from(200), "8 poles @1500 rpm = 200 Hz");
+assert_eq(ghurni_motor_em_frequency(mo, 0), 0, "0 rpm = 0 Hz");
+
+# ================================================================
+test_group("clock properties (rust-old/src/clock.rs:53-56, 61-64)");
+assert_eq(ghurni_clock_tick_rate_for(GH_CLOCK_WRISTWATCH), f64_from(8), "Wristwatch 8 Hz");
+assert_eq(ghurni_clock_tick_rate_for(GH_CLOCK_WALL_CLOCK), f64_from(2), "WallClock 2 Hz");
+assert_eq(ghurni_clock_tick_rate_for(GH_CLOCK_GRANDFATHER_CLOCK), f64_from(1), "Grandfather 1 Hz");
+assert_eq(ghurni_clock_tick_rate_for(GH_CLOCK_POCKET_WATCH), f64_from(5), "PocketWatch 5 Hz");
+assert_eq(ghurni_clock_resonance_for(GH_CLOCK_WRISTWATCH), f64_from(6000), "Wristwatch res 6000");
+assert_eq(ghurni_clock_resonance_for(GH_CLOCK_WALL_CLOCK), f64_from(2000), "WallClock res 2000");
+assert_eq(ghurni_clock_resonance_for(GH_CLOCK_GRANDFATHER_CLOCK), f64_from(800), "Grandfather res 800");
+assert_eq(ghurni_clock_resonance_for(GH_CLOCK_POCKET_WATCH), f64_from(4500), "PocketWatch res 4500");
+assert_eq(ghurni_clock_decay_for(GH_CLOCK_WRISTWATCH), 0.003, "Wristwatch decay 0.003");
+assert_eq(ghurni_clock_decay_for(GH_CLOCK_WALL_CLOCK), 0.01, "WallClock decay 0.01");
+assert_eq(ghurni_clock_decay_for(GH_CLOCK_GRANDFATHER_CLOCK), 0.03, "Grandfather decay 0.03");
+assert_eq(ghurni_clock_decay_for(GH_CLOCK_POCKET_WATCH), 0.005, "PocketWatch decay 0.005");
+assert_eq(ghurni_clock_amp_for(GH_CLOCK_WRISTWATCH), 0.15, "Wristwatch amp 0.15");
+assert_eq(ghurni_clock_amp_for(GH_CLOCK_WALL_CLOCK), 0.4, "WallClock amp 0.4");
+assert_eq(ghurni_clock_amp_for(GH_CLOCK_GRANDFATHER_CLOCK), 0.6, "Grandfather amp 0.6");
+assert_eq(ghurni_clock_amp_for(GH_CLOCK_POCKET_WATCH), 0.25, "PocketWatch amp 0.25");
+
+# ================================================================
+test_group("engine resonances + firing order (rust-old/src/engine.rs:89-101)");
+# exhaust: Gasoline 150+cyl*20, Diesel 80+cyl*15, TwoStroke 200+cyl*30, Hybrid 300
+# intake:  Gasoline 400+cyl*30, Diesel 250+cyl*20, TwoStroke 500+cyl*40, Hybrid 600
+var e_gas = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+assert_eq(GhEngine_exhaust_resonance(e_gas), f64_from(310), "Gasoline 8cyl exhaust = 150+160");
+assert_eq(GhEngine_intake_resonance(e_gas), f64_from(640), "Gasoline 8cyl intake = 400+240");
+var e_dsl = ghurni_engine_new(GH_ENGINE_DIESEL, 6, SR);
+assert_eq(GhEngine_exhaust_resonance(e_dsl), f64_from(170), "Diesel 6cyl exhaust = 80+90");
+assert_eq(GhEngine_intake_resonance(e_dsl), f64_from(370), "Diesel 6cyl intake = 250+120");
+var e_2s = ghurni_engine_new(GH_ENGINE_TWO_STROKE, 1, SR);
+assert_eq(GhEngine_exhaust_resonance(e_2s), f64_from(230), "TwoStroke 1cyl exhaust = 200+30");
+assert_eq(GhEngine_intake_resonance(e_2s), f64_from(540), "TwoStroke 1cyl intake = 500+40");
+var e_hyb = ghurni_engine_new(GH_ENGINE_HYBRID, 4, SR);
+assert_eq(GhEngine_exhaust_resonance(e_hyb), f64_from(300), "Hybrid exhaust 300 (cylinder-independent)");
+assert_eq(GhEngine_intake_resonance(e_hyb), f64_from(600), "Hybrid intake 600 (cylinder-independent)");
+# cylinders.clamp(1, 16)
+assert_eq(GhEngine_cylinders(ghurni_engine_new(GH_ENGINE_GASOLINE, 0, SR)), 1, "cylinders clamp up to 1");
+assert_eq(GhEngine_cylinders(ghurni_engine_new(GH_ENGINE_GASOLINE, 99, SR)), 16, "cylinders clamp down to 16");
+# Even firing: 4-stroke cycle 720 deg, offsets[i] = i * 720/cyl.
+var off4 = GhEngine_firing_offsets(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR));
+assert_eq(vec_len(off4), 4, "4 cylinders -> 4 offsets");
+assert_eq(vec_get(off4, 0), 0, "offset[0] = 0");
+assert_eq(vec_get(off4, 1), f64_from(180), "offset[1] = 180 (720/4)");
+assert_eq(vec_get(off4, 2), f64_from(360), "offset[2] = 360");
+assert_eq(vec_get(off4, 3), f64_from(540), "offset[3] = 540");
+# 2-stroke cycle is 360 deg, so the same 4 cylinders space at 90.
+var off2 = GhEngine_firing_offsets(ghurni_engine_new(GH_ENGINE_TWO_STROKE, 4, SR));
+assert_eq(vec_get(off2, 1), f64_from(90), "two-stroke offset[1] = 90 (360/4)");
+assert_eq(vec_get(off2, 3), f64_from(270), "two-stroke offset[3] = 270");
+# firing_frequency: 4-stroke fires cylinders*rpm/120; 4cyl @3000 = 100 Hz exactly.
+var e4 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+assert_eq(ghurni_engine_firing_frequency(e4, f64_from(3000)), f64_from(100), "4cyl 4-stroke @3000 = 100 Hz");
+
+# ================================================================
+test_group("engine event durations (rust-old/src/engine.rs:188-204, 318)");
+# backfire = sample_rate * 0.1 ; knock = sample_rate * 0.02 ; decel pop = *0.3
+var e_ev = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_trigger_event(e_ev, ghurni_event_backfire());
+assert_eq(GhEngine_backfire_remaining(e_ev), 4410, "backfire = 0.1 s = 4410 samples");
+ghurni_engine_trigger_event(e_ev, ghurni_event_knock(2));
+assert_eq(vec_get(GhEngine_knock_remaining(e_ev), 2), 882, "knock = 0.02 s = 882 samples");
+assert_eq(vec_get(GhEngine_knock_remaining(e_ev), 0), 0, "knock is per-cylinder, not global");
+ghurni_engine_trigger_event(e_ev, ghurni_event_misfire(1));
+assert_eq(vec_get(GhEngine_misfire_flags(e_ev), 1), 1, "misfire flags the named cylinder");
+assert_eq(vec_get(GhEngine_misfire_flags(e_ev), 0), 0, "misfire is per-cylinder");
+# Out-of-range cylinder is ignored, not an abort (ports .get_mut()/if let Some).
+ghurni_engine_trigger_event(e_ev, ghurni_event_knock(99));
+ghurni_engine_trigger_event(e_ev, ghurni_event_misfire(0 - 1));
+assert_eq(vec_len(GhEngine_knock_remaining(e_ev)), 4, "out-of-range event cylinder ignored safely");
+# Decel pop: prev_load > 0.5, new load < 0.15, rpm > 3000 (engine.rs:318).
+var e_dp = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+ghurni_engine_set_rpm(e_dp, f64_from(4000));
+ghurni_engine_set_load(e_dp, 0.8);
+assert_eq(GhEngine_decel_pop_remaining(e_dp), 0, "no pop before the load drop");
+ghurni_engine_set_load(e_dp, 0.1);
+assert_eq(GhEngine_decel_pop_remaining(e_dp), 13230, "decel pop = 0.3 s = 13230 samples");
+# The triple must ALL hold: a drop at low rpm must not fire.
+var e_lo = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+ghurni_engine_set_rpm(e_lo, f64_from(1000));
+ghurni_engine_set_load(e_lo, 0.8);
+ghurni_engine_set_load(e_lo, 0.1);
+assert_eq(GhEngine_decel_pop_remaining(e_lo), 0, "no decel pop below 3000 rpm");
+
+# ================================================================
+test_group("differential ring/pinion asymmetry (rust-old/src/differential.rs:90-99)");
+# ratio() = ring/pinion, but mesh_frequency() uses PINION teeth -- the
+# driveshaft turns the pinion. A ring/pinion swap is otherwise silent.
+var dif = ghurni_differential_new(41, 11, SR);
+assert_eq(GhDifferential_ring_teeth(dif), 41, "ring teeth stored");
+assert_eq(GhDifferential_pinion_teeth(dif), 11, "pinion teeth stored");
+# 41/11 = 3.727272... ; assert the ordering rather than a repeating decimal.
+assert_gt(ghurni_differential_ratio(dif), f64_from(3), "ratio = ring/pinion > 3");
+assert_lt(ghurni_differential_ratio(dif), f64_from(4), "ratio = ring/pinion < 4");
+# mesh = (rpm/60) * pinion. 6000 rpm, 11 pinion teeth = 1100 Hz EXACTLY.
+# With ring (41) it would be 4100 -- so this number alone catches a swap.
+assert_eq(ghurni_differential_mesh_frequency(dif, f64_from(6000)), f64_from(1100), "mesh uses PINION: 6000/60*11 = 1100 Hz");
+assert_neq(ghurni_differential_mesh_frequency(dif, f64_from(6000)), f64_from(4100), "mesh is NOT ring teeth");
+# Clamps: ring 20..80, pinion 4..30.
+assert_eq(GhDifferential_ring_teeth(ghurni_differential_new(1, 11, SR)), 20, "ring clamps up to 20");
+assert_eq(GhDifferential_ring_teeth(ghurni_differential_new(999, 11, SR)), 80, "ring clamps down to 80");
+assert_eq(GhDifferential_pinion_teeth(ghurni_differential_new(41, 1, SR)), 4, "pinion clamps up to 4");
+assert_eq(GhDifferential_pinion_teeth(ghurni_differential_new(41, 999, SR)), 30, "pinion clamps down to 30");
+
+# ================================================================
+test_group("forced induction: auto-BOV trigger triple (rust-old/src/forced_induction.rs:122)");
+# if prev_load > 0.5 && load < 0.2 && spool_rpm.current() > 5000 -> trigger_bov()
+# Spool must be SPUN UP first: set_load gates on spool_rpm.current(), which only
+# moves once a block has been rendered, so a cold instance can never fire.
+var fi = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.1, SR);
+ghurni_forced_induction_set_rpm(fi, f64_from(6000));
+ghurni_forced_induction_set_load(fi, 0.9);
+assert_eq(GhForcedInduction_bov_active(fi), 0, "BOV idle before any render");
+var spin = vec_new();
+var si = 0;
+while (si < 44100) { vec_push(spin, 0); si = si + 1; }
+ghurni_forced_induction_process_block(fi, spin);
+assert_gt(ghurni_smooth_current(GhForcedInduction_spool_rpm(fi)), f64_from(5000), "spool is above the 5000 gate");
+ghurni_forced_induction_set_load(fi, 0.1);
+assert_eq(GhForcedInduction_bov_active(fi), 1, "BOV fires on a sharp drop at high spool");
+assert_eq(GhForcedInduction_bov_remaining(fi), 6615, "BOV burst = 0.15 s = 6615 samples");
+# Each leg of the triple is load-bearing: a SHALLOW drop must not fire.
+var fi2 = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.1, SR);
+ghurni_forced_induction_set_rpm(fi2, f64_from(6000));
+ghurni_forced_induction_set_load(fi2, 0.9);
+var spin2 = vec_new();
+var s2 = 0;
+while (s2 < 44100) { vec_push(spin2, 0); s2 = s2 + 1; }
+ghurni_forced_induction_process_block(fi2, spin2);
+ghurni_forced_induction_set_load(fi2, 0.3);
+assert_eq(GhForcedInduction_bov_active(fi2), 0, "no BOV when the new load is >= 0.2");
+# ...and a drop from an already-low load must not fire.
+var fi3 = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.1, SR);
+ghurni_forced_induction_set_rpm(fi3, f64_from(6000));
+ghurni_forced_induction_set_load(fi3, 0.4);
+var spin3 = vec_new();
+var s3 = 0;
+while (s3 < 44100) { vec_push(spin3, 0); s3 = s3 + 1; }
+ghurni_forced_induction_process_block(fi3, spin3);
+ghurni_forced_induction_set_load(fi3, 0.1);
+assert_eq(GhForcedInduction_bov_active(fi3), 0, "no BOV when prev_load <= 0.5");
+# ...and the SPOOL gate itself is load-bearing. target_spool = rpm * ratio *
+# load, so 1000 rpm x 2.0 x 0.9 = 1800 -- a big load drop from a high prev_load,
+# but below the 5000 gate. Without this case, lowering the gate to 500 passes.
+var fi4 = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.1, SR);
+ghurni_forced_induction_set_rpm(fi4, f64_from(1000));
+ghurni_forced_induction_set_load(fi4, 0.9);
+var spin4 = vec_new();
+var s4 = 0;
+while (s4 < 44100) { vec_push(spin4, 0); s4 = s4 + 1; }
+ghurni_forced_induction_process_block(fi4, spin4);
+var spool4 = ghurni_smooth_current(GhForcedInduction_spool_rpm(fi4));
+assert_gt(spool4, f64_from(1000), "fixture spool really did spin up (not a vacuous check)");
+assert_lt(spool4, f64_from(5000), "fixture spool sits BELOW the 5000 gate");
+ghurni_forced_induction_set_load(fi4, 0.1);
+assert_eq(GhForcedInduction_bov_active(fi4), 0, "no BOV below the 5000 spool gate");
+
+# ================================================================
+test_group("chain drive: silent below 1 Hz, and the RNG does not advance");
+# rust-old/src/chain_drive.rs:98-101 `continue`s below 1 Hz engagement, skipping
+# BOTH next_sample() draws -- so a chain's noise sequence is a function of its
+# whole RPM history, not just elapsed samples.
+var ch = ghurni_chain_drive_new(110, 16, SR);
+var quiet = ghurni_chain_drive_synthesize(ch, 0, 0.1);
+assert_eq(vec_len(quiet), 4410, "0 rpm still returns a full buffer");
+var all_zero = 1;
+var qi = 0;
+while (qi < vec_len(quiet)) {
+    if (vec_get(quiet, qi) != 0) { all_zero = 0; qi = vec_len(quiet); }
+    qi = qi + 1;
+}
+assert_eq(all_zero, 1, "0 rpm is EXACTLY silent, not merely quiet");
+# The non-advancing RNG, isolated. Rendering a silent block must draw NO noise,
+# so a chain that has idled is at the SAME point in its stream as one that never
+# ran. Comparing rendered audio would NOT show this -- sample_position advances
+# during the idle either way, which shifts engagement phase and makes the two
+# buffers differ for an unrelated reason. Pull from the generators directly.
+var ch_a = ghurni_chain_drive_new(110, 16, SR);
+var ch_b = ghurni_chain_drive_new(110, 16, SR);
+var idle = ghurni_chain_drive_synthesize(ch_a, 0, 0.05);
+assert_eq(vec_len(idle), 2205, "idle block rendered");
+var na = GhChainDrive_noise_gen(ch_a);
+var nb = GhChainDrive_noise_gen(ch_b);
+var aligned = 1;
+var nonzero = 0;
+var di = 0;
+while (di < 32) {
+    var sa = noise_next_sample(na);
+    var sb = noise_next_sample(nb);
+    if (sa != sb) { aligned = 0; }
+    if (f64_abs(sb) != 0) { nonzero = 1; }
+    di = di + 1;
+}
+assert_eq(nonzero, 1, "reference noise stream is real signal (not a 0 == 0 compare)");
+assert_eq(aligned, 1, "2205 silent samples drew NO noise -- generators stay aligned");
+
+# Control: a RUNNING block DOES draw noise, so the same comparison then fails.
+var ch_c = ghurni_chain_drive_new(110, 16, SR);
+var ch_d = ghurni_chain_drive_new(110, 16, SR);
+var ran = ghurni_chain_drive_synthesize(ch_c, f64_from(3000), 0.05);
+assert_eq(vec_len(ran), 2205, "running block rendered");
+var nc = GhChainDrive_noise_gen(ch_c);
+var nd = GhChainDrive_noise_gen(ch_d);
+var drifted = 0;
+var dj = 0;
+while (dj < 32) {
+    if (noise_next_sample(nc) != noise_next_sample(nd)) { drifted = 1; }
+    dj = dj + 1;
+}
+assert_eq(drifted, 1, "control: a running block DOES advance the generator");
+
+# ================================================================
+test_group("mixer equal-power pan law (rust-old/src/mixer.rs:167-176)");
+# left = cos(angle), right = sin(angle), angle = (pan+1)/2 * PI/2.
+# pan = -1 -> angle 0    -> left 1.0, right 0.0  (hard left)
+# pan = +1 -> angle PI/2 -> left 0.0, right 1.0  (hard right)
+# pan =  0 -> angle PI/4 -> both cos(PI/4) = 0.7071 (the -3 dB centre)
+var mx = ghurni_mixer_new();
+var mg = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_mixer_add_channel(mx, "g", GH_KIND_GEAR, mg);
+ghurni_mixer_set_rpm(mx, f64_from(1500));
+var L = vec_new();
+var R = vec_new();
+var pi2 = 0;
+while (pi2 < 512) { vec_push(L, 0); vec_push(R, 0); pi2 = pi2 + 1; }
+
+fn chan_energy(v) {
+    var n = vec_len(v);
+    var s = 0;
+    var i = 0;
+    while (i < n) { var x = vec_get(v, i); s = f64_add(s, f64_mul(x, x)); i = i + 1; }
+    return s;
+}
+
+ghurni_mixer_set_channel_pan(mx, 0, f64_neg(F64_ONE));
+ghurni_mixer_process_block_stereo(mx, L, R);
+var eL_left = chan_energy(L);
+var eR_left = chan_energy(R);
+assert_gt(eL_left, 0, "hard-left: left channel has signal (not a vacuous compare)");
+assert_gt(eL_left, eR_left, "pan -1 puts energy in LEFT (cos), not right");
+assert_lt(eR_left, f64_mul(eL_left, 0.000001), "pan -1 leaves right effectively silent");
+
+ghurni_mixer_set_channel_pan(mx, 0, F64_ONE);
+ghurni_mixer_process_block_stereo(mx, L, R);
+var eL_right = chan_energy(L);
+var eR_right = chan_energy(R);
+assert_gt(eR_right, eL_right, "pan +1 puts energy in RIGHT (sin)");
+assert_lt(eL_right, f64_mul(eR_right, 0.000001), "pan +1 leaves left effectively silent");
+
+# Centre: equal power, and each side at cos(PI/4) -- so per-side ENERGY is half
+# the hard-panned side's. That is the -3 dB centre convention.
+ghurni_mixer_set_channel_pan(mx, 0, 0);
+ghurni_mixer_process_block_stereo(mx, L, R);
+var eL_mid = chan_energy(L);
+var eR_mid = chan_energy(R);
+assert_gt(eL_mid, 0, "centre pan: real signal present");
+var mid_ratio = f64_div(eL_mid, eR_mid);
+assert_gt(mid_ratio, 0.999, "centre pan is equal-power (L/R ratio ~ 1)");
+assert_lt(mid_ratio, 1.001, "centre pan is equal-power (L/R ratio ~ 1)");
+
+# ================================================================
+test_group("process_block_stereo leaves the longer buffer's tail untouched");
+# rust-old/src/mixer.rs:144-150 zeroes only left[..len]/right[..len] and writes
+# only 0..len, where len = min(left, right). The tail keeps its prior contents.
+var mx2 = ghurni_mixer_new();
+ghurni_mixer_add_channel(mx2, "g", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+ghurni_mixer_set_rpm(mx2, f64_from(1500));
+var wide = vec_new();
+var narrow = vec_new();
+var wi = 0;
+while (wi < 512) { vec_push(wide, f64_from(7)); wi = wi + 1; }   # sentinel
+var ni = 0;
+while (ni < 256) { vec_push(narrow, 0); ni = ni + 1; }
+ghurni_mixer_process_block_stereo(mx2, wide, narrow);
+assert_eq(vec_get(wide, 511), f64_from(7), "tail sentinel survives at [511]");
+assert_eq(vec_get(wide, 256), f64_from(7), "tail sentinel survives at [256] (first past len)");
+assert_neq(vec_get(wide, 0), f64_from(7), "head WAS written (sentinel overwritten)");
+
+# ================================================================
+test_group("transmission: empty ratios is accepted, current_ratio falls back to 1.0");
+# rust-old/src/transmission.rs:48 never validates `ratios`; :99-104 falls back.
+var empty = vec_new();
+var tr_e = ghurni_transmission_new(empty, 24, SR);
+assert_eq(ghurni_is_err(tr_e), 0, "empty ratios vec is accepted (oracle parity)");
+assert_eq(vec_len(GhTransmission_ratios(tr_e)), 0, "stored ratios stay empty");
+assert_eq(ghurni_transmission_current_ratio(tr_e), F64_ONE, "current_ratio falls back to 1.0");
+# shift_to on an empty box cannot move the gear.
+ghurni_transmission_shift_to(tr_e, 0);
+assert_eq(GhTransmission_current_gear(tr_e), 0, "shift_to(0) on empty ratios is a no-op");
+
+# ================================================================
+test_group("all 12 presets: stored parameters (rust-old/src/presets.rs)");
+# Nothing pinned a single preset value before 2.0.3 -- only 4 were called at
+# all, and only for has-energy. A typo in any number below was invisible.
+var p_v8 = ghurni_preset_v8_muscle_car(SR);
+assert_eq(GhEngine_engine_type(p_v8), GH_ENGINE_GASOLINE, "v8_muscle_car is Gasoline");
+assert_eq(GhEngine_cylinders(p_v8), 8, "v8_muscle_car has 8 cylinders");
+# Cross-plane firing order: uneven intervals are what create the burble, so the
+# exact sequence matters -- an even 0/90/180/... split would sound wrong.
+var v8o = GhEngine_firing_offsets(p_v8);
+assert_eq(vec_len(v8o), 8, "v8 firing order has 8 entries");
+assert_eq(vec_get(v8o, 0), 0, "v8 order[0] = 0");
+assert_eq(vec_get(v8o, 1), f64_from(90), "v8 order[1] = 90");
+assert_eq(vec_get(v8o, 2), f64_from(270), "v8 order[2] = 270");
+assert_eq(vec_get(v8o, 3), f64_from(180), "v8 order[3] = 180");
+assert_eq(vec_get(v8o, 4), f64_from(540), "v8 order[4] = 540");
+assert_eq(vec_get(v8o, 5), f64_from(630), "v8 order[5] = 630");
+assert_eq(vec_get(v8o, 6), f64_from(450), "v8 order[6] = 450");
+assert_eq(vec_get(v8o, 7), f64_from(360), "v8 order[7] = 360");
+assert_eq(GhEngine_rpm(p_v8), f64_from(800), "v8 idles at 800 rpm");
+assert_eq(GhEngine_load(p_v8), 0.1, "v8 load 0.1");
+
+var p_i4 = ghurni_preset_inline4_economy(SR);
+assert_eq(GhEngine_engine_type(p_i4), GH_ENGINE_GASOLINE, "inline4 is Gasoline");
+assert_eq(GhEngine_cylinders(p_i4), 4, "inline4 has 4 cylinders");
+
+var p_dt = ghurni_preset_diesel_truck(SR);
+assert_eq(GhEngine_engine_type(p_dt), GH_ENGINE_DIESEL, "diesel_truck is Diesel");
+assert_eq(GhEngine_cylinders(p_dt), 6, "diesel_truck has 6 cylinders");
+assert_eq(GhEngine_rpm(p_dt), f64_from(700), "diesel_truck idles at 700 rpm");
+assert_eq(GhEngine_load(p_dt), 0.2, "diesel_truck load 0.2");
+
+var p_ms = ghurni_preset_motorcycle_single(SR);
+assert_eq(GhEngine_engine_type(p_ms), GH_ENGINE_TWO_STROKE, "motorcycle_single is TwoStroke");
+assert_eq(GhEngine_cylinders(p_ms), 1, "motorcycle_single has 1 cylinder");
+
+var p_ev = ghurni_preset_electric_vehicle(SR);
+assert_eq(GhMotor_motor_type(p_ev), GH_MOTOR_BRUSHLESS, "electric_vehicle is Brushless");
+assert_eq(GhMotor_poles(p_ev), 8, "electric_vehicle has 8 poles");
+
+var p_tc = ghurni_preset_turbocharger(SR);
+assert_eq(GhForcedInduction_induction_type(p_tc), GH_INDUCTION_TURBO, "turbocharger is Turbo");
+assert_eq(GhForcedInduction_drive_ratio(p_tc), 2.5, "turbocharger drive_ratio 2.5");
+assert_eq(GhForcedInduction_spool_inertia(p_tc), F64_ONE, "turbocharger spool_inertia 1.0");
+
+var p_sc = ghurni_preset_supercharger(SR);
+assert_eq(GhForcedInduction_induction_type(p_sc), GH_INDUCTION_SUPERCHARGER, "supercharger is Supercharger");
+assert_eq(GhForcedInduction_drive_ratio(p_sc), 1.5, "supercharger drive_ratio 1.5");
+# The preset passes 0.01, but Supercharger OVERRIDES spool_inertia to 0.01
+# unconditionally (forced_induction.rs:70, "Near-instant response") -- so the
+# argument is inert. Pinned so the inertness is visible, not accidental.
+assert_eq(GhForcedInduction_spool_inertia(p_sc), 0.01, "supercharger spool_inertia forced to 0.01");
+
+var p_m5 = ghurni_preset_manual_5speed(SR);
+var r5 = GhTransmission_ratios(p_m5);
+assert_eq(vec_len(r5), 5, "manual_5speed has 5 ratios");
+assert_eq(vec_get(r5, 0), 3.5, "5speed ratio[0] 3.5");
+assert_eq(vec_get(r5, 1), 2.1, "5speed ratio[1] 2.1");
+assert_eq(vec_get(r5, 2), 1.4, "5speed ratio[2] 1.4");
+assert_eq(vec_get(r5, 3), F64_ONE, "5speed ratio[3] 1.0");
+assert_eq(vec_get(r5, 4), 0.8, "5speed ratio[4] 0.8");
+assert_eq(GhTransmission_output_teeth(p_m5), 24, "5speed output_teeth 24");
+
+var p_m6 = ghurni_preset_manual_6speed(SR);
+var r6 = GhTransmission_ratios(p_m6);
+assert_eq(vec_len(r6), 6, "manual_6speed has 6 ratios");
+assert_eq(vec_get(r6, 0), 3.8, "6speed ratio[0] 3.8");
+assert_eq(vec_get(r6, 1), 2.3, "6speed ratio[1] 2.3");
+assert_eq(vec_get(r6, 2), 1.6, "6speed ratio[2] 1.6");
+assert_eq(vec_get(r6, 3), 1.2, "6speed ratio[3] 1.2");
+assert_eq(vec_get(r6, 4), 0.95, "6speed ratio[4] 0.95");
+assert_eq(vec_get(r6, 5), 0.78, "6speed ratio[5] 0.78");
+assert_eq(GhTransmission_output_teeth(p_m6), 28, "6speed output_teeth 28");
+
+var p_sg = ghurni_preset_steel_spur_gear(40, SR);
+assert_eq(GhGear_material(p_sg), GH_GEAR_STEEL, "steel_spur_gear is Steel");
+assert_eq(GhGear_teeth(p_sg), 40, "steel_spur_gear passes teeth through");
+
+var p_it = ghurni_preset_industrial_turbine(SR);
+assert_eq(GhTurbine_blades(p_it), 24, "industrial_turbine has 24 blades");
+assert_eq(GhTurbine_duct_resonance(p_it), f64_from(600), "industrial_turbine duct 600 Hz");
+
+var p_pr = ghurni_preset_propeller(SR);
+assert_eq(GhTurbine_blades(p_pr), 3, "propeller has 3 blades");
+assert_eq(GhTurbine_duct_resonance(p_pr), 0, "propeller is OPEN (duct 0)");
+
+# ================================================================
+test_group("smoother contract: smooth_time_s is tau, not a settling time");
+# rust-old/src/smooth.rs:20 documents it as "Time constant in seconds (63% of
+# the way to target)". coeff = exp(-1/(t*sr)), so after exactly t*sr samples the
+# value has covered 1 - 1/e = 63.2% of the distance -- NOT arrived.
+var sm = ghurni_smooth_new(0, F64_ONE, SR);      # tau = 1 s
+ghurni_smooth_set_target(sm, F64_ONE);
+var steps = 0;
+while (steps < 44100) { ghurni_smooth_next_value(sm); steps = steps + 1; }
+var after_tau = ghurni_smooth_current(sm);
+assert_gt(after_tau, 0.63, "after one tau, ~63% of the way (lower bound)");
+assert_lt(after_tau, 0.633, "after one tau, ~63% of the way (upper bound)");
+assert_eq(ghurni_smooth_is_settled(sm), 0, "one tau is NOT settled");
+# t <= 0 or sr <= 0 -> coeff 0 -> snaps instantly.
+var sm0 = ghurni_smooth_new(0, 0, SR);
+ghurni_smooth_set_target(sm0, F64_ONE);
+assert_eq(ghurni_smooth_next_value(sm0), F64_ONE, "zero smooth time snaps instantly");
+assert_eq(ghurni_smooth_is_settled(sm0), 1, "snapped smoother reports settled");
+assert_eq(ghurni_smooth_target(sm0), F64_ONE, "target() reads back");
+
+# ================================================================
+test_group("setters silently no-op out of range (oracle parity, not a defect)");
+# rust-old/src/mixer.rs:74,80 use `if let Some(ch) = self.channels.get_mut(index)`
+# and engine.rs:163 uses `if offsets.len() == self.cylinders`. All three IGNORE a
+# bad argument and return nothing -- no error, no panic. That is the contract the
+# port reproduces, and it is the shape 2.0.2 hunted (a call that reports success
+# while doing nothing), so it is pinned here deliberately rather than "fixed".
+var nm = ghurni_mixer_new();
+var ng = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+var nidx = ghurni_mixer_add_channel(nm, "g", GH_KIND_GEAR, ng);
+assert_eq(nidx, 0, "one channel at index 0");
+var nch = vec_get(GhMixer_channels(nm), 0);
+ghurni_mixer_set_channel_gain(nm, 0, 0.25);
+assert_eq(GhMixerChannel_gain(nch), 0.25, "in-range gain is applied");
+ghurni_mixer_set_channel_gain(nm, 99, 0.9);
+assert_eq(GhMixerChannel_gain(nch), 0.25, "out-of-range index is a silent no-op");
+ghurni_mixer_set_channel_gain(nm, 0 - 1, 0.9);
+assert_eq(GhMixerChannel_gain(nch), 0.25, "negative index is a silent no-op");
+# Gain is clamped at 0 from below (gain.max(0.0)), not rejected.
+ghurni_mixer_set_channel_gain(nm, 0, f64_neg(F64_ONE));
+assert_eq(GhMixerChannel_gain(nch), 0, "negative gain clamps to 0, not an error");
+# Pan clamps to [-1, 1].
+ghurni_mixer_set_channel_pan(nm, 0, f64_from(5));
+assert_eq(GhMixerChannel_pan(nch), F64_ONE, "pan clamps down to +1");
+ghurni_mixer_set_channel_pan(nm, 0, f64_from(0 - 5));
+assert_eq(GhMixerChannel_pan(nch), f64_neg(F64_ONE), "pan clamps up to -1");
+# set_firing_order ignores a length mismatch entirely.
+var fo_eng = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+var wrong = vec_new();
+vec_push(wrong, 0); vec_push(wrong, f64_from(180));
+ghurni_engine_set_firing_order(fo_eng, wrong);
+assert_eq(vec_len(GhEngine_firing_offsets(fo_eng)), 4, "wrong-length firing order ignored");
+assert_eq(vec_get(GhEngine_firing_offsets(fo_eng), 1), f64_from(180), "the even-firing default survives");
+
+# ================================================================
+test_group("GhSmoothedParam serde roundtrip");
+# The sibling POD structs (GhDcBlocker in foundations.tcyr, GhEvent there too)
+# had their derived roundtrip tested; this one did not.
+var sp = ghurni_smooth_new(0.25, 0.05, SR);
+ghurni_smooth_set_target(sp, 0.75);
+ghurni_smooth_next_value(sp);
+var spb = str_builder_new();
+GhSmoothedParam_to_json(sp, spb);
+var spjs = str_data(str_builder_build(spb));
+var sp2 = GhSmoothedParam_from_json_str(spjs);
+assert_eq(GhSmoothedParam_current(sp2), GhSmoothedParam_current(sp), "current roundtrips");
+assert_eq(GhSmoothedParam_target(sp2), GhSmoothedParam_target(sp), "target roundtrips");
+assert_eq(GhSmoothedParam_coeff(sp2), GhSmoothedParam_coeff(sp), "coeff roundtrips");
+# f64 fields are stored as i64 BIT PATTERNS precisely so this is lossless.
+assert_neq(GhSmoothedParam_coeff(sp), 0, "coeff is a real value (not a vacuous 0 == 0)");
+
+# ================================================================
+test_group("rest-state CHARACTERISATION -- records today's behaviour, not the goal");
+# ⚠ THIS GROUP DOCUMENTS A KNOWN DEFECT. Seven of ten synths emit audible output
+# at 0 RPM, and two are as loud stopped as running -- which contradicts the
+# library's whole thesis that RPM drives everything. The causes are structural
+# and inherited from the oracle: motor's amplitude path has no RPM term at all,
+# and belt_drive's squeal_amp = (1 - tension) * 0.3 has none either.
+#
+# Fixing it changes rendered audio, so it is Arc 1 / 2.1.0 behind ADR-005. Until
+# then this group PINS the wrong behaviour so that the fix cannot land silently:
+# when 2.1.0 introduces the loudness law, these assertions MUST be rewritten as
+# the invariant (rest < running for every synth). A failure here after that point
+# is the fix working, not a regression.
+fn rest_rms(v) {
+    var n = vec_len(v);
+    if (n == 0) { return 0; }
+    var acc = 0;
+    var i = 0;
+    while (i < n) { var x = vec_get(v, i); acc = f64_add(acc, f64_mul(x, x)); i = i + 1; }
+    return f64_sqrt(f64_div(acc, f64_from(n)));
+}
+# chain_drive and forced_induction ALREADY behave correctly -- exactly silent at
+# rest. These two assertions are the invariant, and must keep holding.
+var rest_ch = rest_rms(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), 0, 0.1));
+assert_eq(rest_ch, 0, "chain_drive is EXACTLY silent at 0 rpm (correct today)");
+var rest_fi = rest_rms(ghurni_forced_induction_synthesize(
+    ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), 0, 0.5, 0.1));
+assert_eq(rest_fi, 0, "forced_induction is EXACTLY silent at 0 rpm (correct today)");
+# motor: identical stopped and running. The defect, stated as an assertion.
+var m_rest = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), 0, 0.5, 0.1));
+var m_run  = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), f64_from(1500), 0.5, 0.1));
+assert_gt(m_rest, 0, "KNOWN DEFECT: motor is audible at 0 rpm");
+assert_eq(m_rest, m_run, "KNOWN DEFECT: motor at rest is IDENTICAL to running");
+# belt_drive: louder stopped than running.
+var b_rest = rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), 0, 0.1));
+var b_run  = rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(2000), 0.1));
+assert_gt(b_rest, 0, "KNOWN DEFECT: belt_drive is audible at 0 rpm");
+assert_gt(b_rest, b_run, "KNOWN DEFECT: belt_drive is LOUDER stopped than running");
+# The remaining five are audible at rest but quieter than running.
+var g_rest = rest_rms(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), 0, 0.1));
+var g_run  = rest_rms(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(1500), 0.1));
+assert_gt(g_rest, 0, "KNOWN DEFECT: gear is audible at 0 rpm");
+assert_lt(g_rest, g_run, "gear is at least quieter at rest than running");
+
+var rc = assert_summary();
+syscall(60, rc);

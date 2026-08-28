@@ -43,10 +43,23 @@ siblings (naad, prani). Bump to **2.0.0** on full parity.
 5. **Serde parity where it is meaningful.** Public enums map to `GH_<ENUM>_*`
    integers with `name`/`from_name` helpers that use serde's externally-tagged
    variant names — so the enum roundtrip tests port directly. POD structs
-   (DcBlocker, SmoothedParam, MechanicalEvent) get `#derive(Serialize)`. The
-   synth structs hold opaque naad backend pointers; the Rust already `#[serde(skip)]`ped
-   the live backend + scratch fields, so deep serialization of a synth carried no
-   meaningful state and is dropped.
+   (DcBlocker, SmoothedParam, MechanicalEvent) get `#derive(Serialize)`. Deep
+   serialization of the synth structs is **dropped** — they hold opaque naad
+   backend pointers, which cannot be serialized and would have to be rebuilt on
+   load regardless.
+
+   ⚠ **Correction (2.0.3).** An earlier revision of this item justified the drop
+   with "the Rust already `#[serde(skip)]`ped the live backend + scratch fields,
+   so deep serialization carried no meaningful state". That is **false**, and it
+   understated what was given up. `MixerChannel` skipped only `synth` and
+   `scratch` (`rust-old/src/mixer.rs:24,27`) — `name`, `gain`, `pan` and `muted`
+   all serialized, and `MechanicalMixer` serialized `channels` + `master_gain`,
+   so a Rust consumer could persist a whole mixer configuration as a reloadable
+   template. Transmission, Differential and ForcedInduction round-tripped their
+   live DSP state too. Dropping all of this is a real capability cut, taken
+   deliberately because rebuilding naad objects on load is the harder half and
+   no consumer has asked for it — not a no-op. If a consumer does ask, the
+   config-only half (names, gains, pans, mutes, ratios) is the tractable part.
 
 ## Notes for future edits
 
