@@ -1,12 +1,15 @@
 # oracle_pins.tcyr -- 2.0.3 "Pin the Oracle".
 #
-# Every assertion here pins a value or contract that, until now, ONLY
-# `rust-old/` proved. The oracle is deleted in 2.0.4; after that these
-# assertions ARE the specification, so each expected value below was read out of
-# the corresponding `rust-old/src/*.rs` line cited beside it, NOT observed from
-# what ghurni currently prints. A value transcribed from current output would
-# freeze whatever is wrong today as "correct" -- the exact failure mode that let
-# GHURNI_DB_SCALE ship 76.9x wrong through a green suite.
+# Every assertion here pins a value or contract that ONLY the Rust oracle used
+# to prove. That oracle was RETIRED in 2.0.4, so these assertions are now the
+# specification -- there is nothing else left to check them against.
+#
+# Each expected value below was read out of the `rust-old/src/*.rs` line cited
+# beside it, NOT observed from what ghurni prints. Those paths still resolve in
+# git history (`git show 2.0.3:rust-old/src/gear.rs`) and are kept deliberately
+# as provenance. A value transcribed from current output would freeze whatever
+# is wrong today as "correct" -- the exact failure mode that let GHURNI_DB_SCALE
+# ship 76.9x wrong through a green suite.
 #
 # These are structural / numeric assertions on purpose. `audio_all_finite` and
 # `audio_has_energy` hold for almost any value and pin almost nothing; nothing

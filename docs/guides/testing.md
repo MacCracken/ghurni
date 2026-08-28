@@ -28,6 +28,9 @@ Each `tests/*.tcyr` file includes the `src/*.cyr` modules it needs directly
 | `mixer` | mono / stereo / mute, tag dispatch, process-block continuity, presets |
 | `smoke_all` | full-unit integration: every synth + mixer + preset produce finite audio |
 | `hardening` | the P-1 regression suite — every defect fixed in 2.0.2 |
+| `oracle_pins` | every constant and contract the retired Rust oracle used to prove, each citing its source line |
+| `goldens` | rendered-audio checksums — the gate that makes "a patch may not change audio" enforceable |
+| `spectral` | FFT peak assertions that audio lands where the RPM physics says it should |
 
 ## Writing Assertions That Are Worth Having
 
@@ -45,9 +48,12 @@ So:
   100 Hz, not "approximately". Pick fixtures that make values exact: sample
   rates and RPMs that give whole-number periods, dyadic coefficients, short
   tables.
-- **Derive the expected value from `rust-old/`, never from what ghurni prints.**
-  A value transcribed from current output freezes whatever bug is there today
-  as "correct" — the worst possible outcome.
+- **Derive the expected value from first principles or from the oracle, never
+  from what ghurni prints.** A value transcribed from current output freezes
+  whatever bug is there today as "correct" — the worst possible outcome. The
+  Rust oracle was retired in 2.0.4 but is still readable in git history
+  (`git show 2.0.3:rust-old/src/gear.rs`), and `tests/oracle_pins.tcyr` already
+  carries the values it proved, each citing its source line.
 - **Prefer structural facts over audio predicates**: error codes, buffer
   lengths, gear indices, "this call no longer aborts the process", "these two
   noise streams differ". They fail loudly and for one reason.
@@ -99,9 +105,10 @@ progress.
 cyrius bench
 ```
 
-`benches/ghurni.bcyr` covers the per-sample primitives (DC blocker, smoother),
-one-shot synthesis for engine and gear, the **streaming** 4-channel mixer path a
-real audio callback uses, and belt-drive's block loop.
+`benches/ghurni.bcyr` has 14 entries: the per-sample primitives (DC blocker,
+smoother), one-shot synthesis for all the major synths, the **streaming**
+4-channel mixer path a real audio callback uses, belt-drive's block loop, and a
+64 / 512 / 4096 block-size sweep.
 
 Never claim a performance improvement without a measurement, and interleave the
 A/B runs — run-to-run variance on the per-sample benchmarks is comfortably

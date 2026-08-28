@@ -5,9 +5,10 @@
 
 ## Version
 
-**2.0.3** — full-parity Cyrius port, hardened and pinned. Dependency set:
+**2.0.4** — full-parity Cyrius port, hardened, pinned, oracle retired. Dependency set:
 cyrius 6.5.35 · naad 2.2.1 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
-(1.0.0 was the final Rust crate, preserved at `rust-old/`.)
+(1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
+and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 
 ## Port status: COMPLETE
 
@@ -114,7 +115,7 @@ transliteration could not:
 ## Examples (`docs/examples/*.cyr`, 5 runnable programs)
 
 `simple_engine`, `vehicle_scene`, `mixer_demo`, `error_handling`, `logging` —
-each ports the matching `rust-old/examples/*.rs`, includes the dep bundles +
+each ports the matching example from the retired oracle, includes the dep bundles +
 `dist/ghurni.cyr`, and builds/runs standalone:
 
 ```sh
@@ -133,13 +134,17 @@ consistency and ships a source tarball + SHA256SUMS.
 in every release tarball. `.gitignore` covers them as of 2.0.3, but untracking
 needs `git rm -r --cached build/`.
 
-## Retiring `rust-old/`
+## `rust-old/` — RETIRED in 2.0.4
 
-Checklist and status: [`rust-old-retirement.md`](rust-old-retirement.md).
-**Zero open items as of 2.0.3** — every value and contract that lived only in
-the oracle is now pinned by an assertion or recorded in a source comment. The
-deletion itself is 2.0.4 ("Delete the Oracle"), kept as its own release so it is
-a revertable commit rather than noise inside a feature arc.
+The oracle is gone from the tree. Record: [`rust-old-retirement.md`](rust-old-retirement.md).
+Everything it proved is pinned by `tests/oracle_pins.tcyr` (187 assertions),
+`tests/goldens.tcyr` and `tests/spectral.tcyr`. Recover it with
+`git show 2.0.3:rust-old/src/<mod>.rs`, or from tag `1.0.0` where the same crate
+lives at `src/*.rs`.
+
+**The correctness bar moved with it.** It is no longer "matches what the Rust
+naad-backend path did" — it is the frozen suite above. A moved golden is not a
+patch release.
 
 ## Known follow-ups
 

@@ -4,8 +4,8 @@
 
 **Superseded by [ADR-004](adr-004-cyrius-port.md)** (2026-07-04).
 
-Accepted for the Rust crate (1.x). The decision below describes
-[`rust-old/`](../../rust-old/), the parity oracle — **not** the shipping Cyrius
+Accepted for the Rust crate (1.x). The decision below describes the Rust oracle
+(retired in 2.0.4; recoverable at tag `2.0.3`) — **not** the shipping Cyrius
 library. In ghurni 2.x, naad is the *only* backend: there is no feature flag, no
 fallback path, and no dual implementation. Read this ADR as history.
 

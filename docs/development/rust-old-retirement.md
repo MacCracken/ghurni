@@ -1,14 +1,39 @@
-# Retiring `rust-old/`
+# Retiring `rust-old/` — DONE (2.0.4)
 
-`rust-old/` is the Rust 1.0.0 crate, kept as the **parity oracle** for the
-Cyrius port ([ADR-004](../architecture/adr-004-cyrius-port.md)). This document
-is the checklist for deleting it.
+`rust-old/` was the Rust 1.0.0 crate, kept as the **parity oracle** for the
+Cyrius port ([ADR-004](../architecture/adr-004-cyrius-port.md)). It was
+**deleted in 2.0.4**. This document is the record of what that took and where
+the oracle went.
 
-**Status after 2.0.3: NEARLY CLEAR.** Every value and contract that lived only
-in the oracle is now pinned by an assertion or recorded in a source comment —
-`tests/oracle_pins.tcyr` (166 assertions), `tests/spectral.tcyr` and
-`tests/goldens.tcyr`. One documentation item remains, below. The deletion itself
-is Arc 0b / 2.0.4.
+## Where it is now
+
+| | |
+|---|---|
+| As `rust-old/` | tags `2.0.0` … `2.0.3` — `git show 2.0.3:rust-old/src/engine.rs` |
+| As `src/*.rs` | tag `1.0.0` (the original crate layout, 20 `.rs` files) |
+| Relocation commit | `c9a0a02` "port to cyrius" |
+
+33 files, 256 KB, 3,934 lines total (3,054 of them `src/`). Citations of the
+form `rust-old/src/gear.rs:33` throughout the source and tests are kept
+deliberately — they still resolve against those tags.
+
+## What replaced it
+
+The correctness bar is no longer "matches what the Rust naad-backend path did".
+It is the suite landed in 2.0.3:
+
+| Suite | Role |
+|-------|------|
+| `tests/oracle_pins.tcyr` | 187 assertions — every constant and contract the oracle proved, each citing its source line |
+| `tests/goldens.tcyr` | rendered-audio checksums — a moved golden is not a patch release |
+| `tests/spectral.tcyr` | FFT peaks land where the RPM physics says |
+
+Deleting the directory left all 450 assertions green and **every golden
+unchanged**, which is the proof that the removal was purely documentary.
+
+**Status: COMPLETE.** Every value and contract that lived only in the oracle is
+pinned by an assertion or recorded in a source comment. The checklist below is
+kept as the audit trail.
 
 ## What the sweep verified
 

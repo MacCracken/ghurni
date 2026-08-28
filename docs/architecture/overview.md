@@ -37,11 +37,13 @@ ghurni/
 │
 ├── dist/ghurni.cyr            the consumer bundle (cyrius distlib)
 ├── lib/                       resolved dependency bundles (cyrius deps)
-└── rust-old/                  the Rust 1.0.0 crate — parity oracle, never edited
 ```
 
-`rust-old/src/` holds the 20 original `.rs` files. Two of them — `math.rs` and
-`rng.rs` — are deliberately **not** ported; see below.
+(The Rust 1.0.0 crate that served as the parity oracle lived at `rust-old/`
+until 2.0.4; it is recoverable at tag `2.0.3`.)
+
+The oracle held 20 `.rs` files. Two of them — `math.rs` and `rng.rs` — were
+deliberately **not** ported; see below.
 
 ## Synthesizer Pattern
 

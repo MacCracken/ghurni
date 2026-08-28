@@ -132,24 +132,29 @@ that makes the oracle deletable and the audio arcs safe.
 
 ---
 
-## Arc 0b — `2.0.4` "Delete the Oracle"
+## Arc 0b — `2.0.4` "Delete the Oracle"  ✅ SHIPPED
+
+> Released 2026-08-28. 33 files / 3,934 lines removed; 118 references across 39
+> files reframed as historical citations. All 450 assertions green and **every
+> golden unchanged**, proving the removal was purely documentary. The oracle is
+> recoverable at tag `2.0.3`.
 
 **Theme: retire `rust-old/`.** Its own release so the deletion is a revertable
 commit rather than noise inside a feature arc.
 
 - [x] Everything in [`rust-old-retirement.md`](rust-old-retirement.md) is checked. *(zero open items as of 2.0.3)*
-- [ ] `git rm -r rust-old/`; update the 61 references across 34 files.
-- [ ] **Rewrite CLAUDE.md's correctness bar.** It currently reads "matches what
+- [x] `git rm -r rust-old/`; update the 61 references across 34 files.
+- [x] **Rewrite CLAUDE.md's correctness bar.** It currently reads "matches what
       the Rust naad-backend path did". That stops being checkable the moment the
       directory goes; it becomes "matches the frozen goldens in `tests/`" — which
       is only true if Arc 0 actually landed them. **This is why Arc 0 comes first.**
-- [ ] Note in ADR-004 which tag the oracle is recoverable from.
+- [x] Note in ADR-004 which tag the oracle is recoverable from.
 
-> **Sequencing constraint.** Both audio arcs below are blocked on this one. While
-> `rust-old/` exists, the stated correctness bar is "match the oracle", so a
-> deliberate divergence has to argue against the project's own rule every time.
-> Delete it first and the bar becomes the goldens, which is the bar you actually
-> want for acoustic work.
+> **Sequencing constraint — now satisfied.** Both audio arcs below were blocked
+> on this one: while `rust-old/` existed the stated correctness bar was "match
+> the oracle", so a deliberate divergence had to argue against the project's own
+> rule every time. The bar is now the goldens, which is the bar acoustic work
+> actually wants. **Arc 1 is unblocked.**
 
 ---
 

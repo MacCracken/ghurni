@@ -6,6 +6,15 @@
 its sibling libraries (naad, prani, svara, …). The Rust crate (1.0.0) is
 preserved at `rust-old/` as the parity oracle.
 
+**Oracle retired in 2.0.4.** It had served its purpose: everything it proved is
+now pinned by `tests/oracle_pins.tcyr`, `tests/goldens.tcyr` and
+`tests/spectral.tcyr` (see `docs/development/rust-old-retirement.md`). It remains
+recoverable from git — `git show 2.0.3:rust-old/src/engine.rs` for the relocated
+copy present in tags `2.0.0`–`2.0.3`, or tag `1.0.0` where the same crate lives
+at `src/*.rs`. The relocation commit is `c9a0a02`. Citations of the form
+`rust-old/src/gear.rs:33` throughout the source and tests still resolve against
+those tags and are kept deliberately as provenance.
+
 ## Decision
 
 Port the **naad-backend path only**, to f64, with integer error codes and
@@ -67,4 +76,5 @@ siblings (naad, prani). Bump to **2.0.0** on full parity.
   breaks. Document fields in a comment block above the struct.
 - All ghurni symbols are `ghurni_` / `GHURNI_` / `Gh`-prefixed so the distlib
   bundle coexists with naad's flat namespace.
-- Cross-check every change against `rust-old/`; diverge only with a new ADR.
+- The correctness bar is now `tests/` (goldens + oracle_pins + spectral), not the
+  retired oracle; diverge only with a new ADR.

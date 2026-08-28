@@ -13,8 +13,9 @@
 - The cyrius toolchain, at the version pinned in `cyrius.cyml [package].cyrius`
   (currently **6.5.35**). CI installs exactly that pin — never hardcode a
   version anywhere else.
-- Nothing else. ghurni has no Rust build; [`rust-old/`](rust-old/) is the
-  preserved 1.0.0 crate kept only as the parity oracle, and is **never edited**.
+- Nothing else. ghurni has no Rust build. The 1.0.0 Rust crate that served as
+  the parity oracle was retired in 2.0.4; read it with
+  `git show 2.0.3:rust-old/src/<mod>.rs` if you need it.
 
 ```sh
 cyrius deps                                # resolve dependencies into lib/
@@ -115,10 +116,16 @@ in a straight transliteration:
 
 ## Parity
 
-The correctness bar is "matches what the Rust naad-backend path did". Read the
-corresponding `rust-old/src/*.rs` before changing behaviour, and diverge only
-with a new ADR in [`docs/architecture/`](docs/architecture/). Deliberate
-divergences already recorded live in
+The correctness bar used to be "matches what the Rust naad-backend path did",
+checked by reading the oracle. Since 2.0.4 the oracle is retired and the bar is
+the suite that replaced it: `tests/goldens.tcyr` (rendered-audio checksums),
+`tests/oracle_pins.tcyr` (every constant the oracle proved, each citing its
+originating `rust-old/src/*.rs:line`) and `tests/spectral.tcyr` (audio lands
+where the RPM physics says). **A moved golden is not a patch release.**
+
+If you need the oracle itself, it is in git history:
+`git show 2.0.3:rust-old/src/engine.rs`. Diverge only with a new ADR in
+[`docs/architecture/`](docs/architecture/); divergences already recorded live in
 [docs/development/state.md](docs/development/state.md).
 
 If a change touches a synthesis path but is meant to preserve behaviour, prove

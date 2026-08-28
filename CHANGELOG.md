@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.4] - 2026-08-28
+
+**Arc 0b — "Delete the Oracle."** `rust-old/`, the Rust 1.0.0 crate that served
+as ghurni's parity oracle since the port, is removed from the tree.
+
+**No API change, no audio change.** Every one of the 450 assertions stayed green
+and **every golden checksum was unchanged** across the deletion — which is the
+proof that the removal was purely documentary. Nothing built against the
+directory; the coupling was 118 references in comments and docs.
+
+### Removed
+
+- `rust-old/` — 33 files, 3,934 lines (3,054 of them `src/`), 256 KB.
+
+### Where the oracle went
+
+It is not lost, and the citations that point at it still resolve:
+
+| | |
+|---|---|
+| As `rust-old/` | tags `2.0.0` … `2.0.3` — `git show 2.0.3:rust-old/src/engine.rs` |
+| As `src/*.rs` | tag `1.0.0`, the original crate layout |
+| Relocation commit | `c9a0a02` |
+
+Line citations of the form `rust-old/src/gear.rs:33` are **kept deliberately**
+throughout `src/`, `tests/` and the docs. They are provenance — they record
+where a pinned value came from — and they resolve against the tags above. What
+changed is the framing: nothing now claims the directory is present.
+
+### Changed — the correctness bar moved
+
+This is the substance of the release, not the deletion itself. Until now
+`CLAUDE.md` read *"Cross-check against `rust-old/` — the correctness bar is
+'matches what the Rust naad-backend path did'"*. That stopped being checkable
+the moment the directory went, so the bar is now the suite that 2.0.3 landed
+precisely to replace it:
+
+- **`tests/goldens.tcyr`** — rendered-audio checksums. **If a golden moves, it is
+  not a patch release.** Work out *why* before touching the value; never "fix" a
+  golden to make CI pass.
+- **`tests/oracle_pins.tcyr`** (187 assertions) — every constant and contract the
+  oracle proved, each citing its originating source line.
+- **`tests/spectral.tcyr`** — rendered audio sits where the RPM physics says.
+
+Deliberate audio changes still require an ADR and still belong in a MINOR.
+
+> **This unblocks Arc 1 (`2.1.0` "Rest State").** While the oracle existed, every
+> deliberate divergence had to argue against the project's own stated rule. The
+> bar is now the goldens — which is the bar acoustic work actually wants.
+
+### Documentation
+
+Reframed everywhere the directory was described as present, rather than merely
+cited: `CLAUDE.md` (identity, correctness bar, DO-NOT list, doc index),
+`README.md`, `CONTRIBUTING.md` (prerequisites and the Parity section),
+`docs/architecture/overview.md` (module tree), `adr-001`, `adr-004` (which now
+records the recovery tags), `docs/development/state.md`, and
+`docs/guides/testing.md` — whose suite table was also still missing the three
+suites 2.0.3 added.
+
+`docs/development/rust-old-retirement.md` is now a completed record rather than a
+checklist: where the oracle went, what replaced it, and the audit trail.
+
+`.gitignore` drops the now-meaningless `rust-old/target/` rule.
+
 ## [2.0.3] - 2026-08-27
 
 **Arc 0 — "Pin the Oracle."** The deck-clearing patch that makes `rust-old/`

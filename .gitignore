@@ -15,8 +15,8 @@
 .vscode/
 .claude/
 
-# Rust-era leftovers, kept because rust-old/ is still in the tree until 2.0.4.
-rust-old/target/
+# Rust-era leftovers. The rust-old/ oracle was deleted in 2.0.4; these stay only
+# so a stray `cargo` run in a recovered working copy cannot dirty the tree.
 Cargo.lock
 **/*.rs.bk
 *.pdb

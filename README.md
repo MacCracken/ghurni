@@ -4,7 +4,9 @@
 
 Procedural synthesis of engines, gears, motors, turbines, clocks, transmissions, differentials, forced induction, and belt/chain drives. Every sound is driven by rotational physics — RPM determines firing frequency, tooth mesh rate, blade pass frequency, and escapement timing. Built on [naad](https://github.com/MacCracken/naad) for audio synthesis primitives.
 
-> ghurni 2.x is the Cyrius port. The original Rust crate (1.0.0) is preserved at [`rust-old/`](rust-old/) and remains the parity oracle — see [ADR-004](docs/architecture/adr-004-cyrius-port.md).
+> ghurni 2.x is the Cyrius port of the original Rust crate (1.0.0). That crate
+> served as the parity oracle and was retired in 2.0.4 — it is recoverable from
+> git at tag `2.0.3`. See [ADR-004](docs/architecture/adr-004-cyrius-port.md).
 
 ## Features
 
