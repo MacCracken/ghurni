@@ -5,8 +5,9 @@
 
 ## Version
 
-**2.3.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
-(ADR-005), acoustic depth (ADR-006) and load tilt + diesel clatter (ADR-007). Dependency set:
+**2.4.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
+(ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007) and a
+control surface that no longer lies (ADR-008). Dependency set:
 cyrius 6.5.35 · naad 2.2.1 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
@@ -18,7 +19,7 @@ and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 non-naad fallback path, which ADR-004 drops. All 44 Rust integration tests are
 reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green.
 
-## Modules (`src/*.cyr`, 19 modules, 3,137 lines)
+## Modules (`src/*.cyr`, 19 modules, 3,938 lines)
 
 | Layer | Modules |
 |-------|---------|
@@ -27,9 +28,9 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (3,593 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (3,925 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 10 suites, 556 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 10 suites, 600 assertions, 0 failures)
 
 | Suite | Covers |
 |-------|--------|
@@ -40,7 +41,7 @@ Bundle: `dist/ghurni.cyr` (3,593 lines, `cyrius distlib`).
 | `mixer` | mono/stereo/mute, trait dispatch, process-block continuity, presets |
 | `smoke_all` | full-unit integration: every synth + mixer + preset produce finite audio |
 | `hardening` | the 2.0.2 P-1 regression suite — every defect it fixed, each assertion mutation-checked |
-| `oracle_pins` | 2.0.3 — every value that lived only in `rust-old/`, derived from the oracle's source |
+| `oracle_pins` | 2.0.3 — every value that lived only in `rust-old/`, derived from the oracle's source; extended each release since with the behaviour that release made real |
 | `goldens` | 2.0.3 — rendered-audio checksums; the gate that makes "a patch may not change audio" enforceable |
 | `spectral` | 2.0.3 — FFT peak assertions that audio sits where the RPM physics says it should |
 
@@ -49,7 +50,7 @@ Bundle: `dist/ghurni.cyr` (3,593 lines, `cyrius distlib`).
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
-`cyrius coverage`: 116/171 functions referenced (67%) — a floor, not a proof.
+`cyrius coverage`: 134/185 functions referenced (72%) — a floor, not a proof.
 Fuzz: `fuzz/ghurni.fcyr`, 1631 adversarial checks (`cyrius fuzz`).
 
 ## Deliberate divergences from `rust-old/`
@@ -138,7 +139,7 @@ needs `git rm -r --cached build/`.
 ## `rust-old/` — RETIRED in 2.0.4
 
 The oracle is gone from the tree. Record: [`rust-old-retirement.md`](rust-old-retirement.md).
-Everything it proved is pinned by `tests/oracle_pins.tcyr` (187 assertions),
+Everything it proved is pinned by `tests/oracle_pins.tcyr` (297 assertions),
 `tests/goldens.tcyr` and `tests/spectral.tcyr`. Recover it with
 `git show 2.0.3:rust-old/src/<mod>.rs`, or from tag `1.0.0` where the same crate
 lives at `src/*.rs`.
@@ -164,27 +165,35 @@ patch release.
   project's own generated bundle, not a `[deps]`-resolved one, and there is no
   trust-list mechanism in the manifest. `cyrius deny` and `cyrius audit` both
   exit 0. CI does not run `vet`.
-- **No fuzz harness.** `cyrius fuzz` runs `fuzz/*.fcyr`; ghurni has none yet.
-- **CI does not run the quality gates** it now could: `cyrius audit` exits 0 as
-  of 2.0.2, and `cyrius deny` passes.
+- ~~**No fuzz harness.**~~ Landed in 2.0.3: `fuzz/ghurni.fcyr`, 1631 checks.
+- ~~**CI does not run the quality gates.**~~ It does, as of 2.0.3:
+  `test` · `distlib --check` · `audit` · `deny` · `fuzz` · `coverage --min`.
+  The fuzz step guards against `cyrius fuzz`'s vacuous exit-0 when it finds no
+  harness at all.
 
-## Characterised, NOT fixed: resonant-RPM combustion amplitude
+## FIXED in 2.1.0: resonant-RPM combustion amplitude
 
-The engine's combustion pulse peak depends on where the sample lattice falls
-relative to crank angle 0. `src/engine.cyr` is an expression-for-expression
-transliteration of `rust-old/src/engine.rs:265-266`, but the oracle computes it
+*Kept as a record — this was the port's longest-lived characterised defect, and
+the reasoning is why the goldens exist.*
+
+The engine's combustion pulse peak depended on where the sample lattice fell
+relative to crank angle 0. `src/engine.cyr` was an expression-for-expression
+transliteration of `rust-old/src/engine.rs:265-266`, but the oracle computed it
 in f32, whose ULP at ~45000 degrees is coarse enough to snap the phase lattice
-back onto the cycle. In f64 that accidental snapping is gone.
+back onto the cycle. In f64 that accidental snapping was gone.
 
 At RPMs where samples-per-cycle is an integer (`5292000/rpm` is an integer at
-44.1 kHz: 2250, 3000, 4200, 6000, 7000, ...) the port lands consistently just
-past crank 0 every cycle and the thump loses up to two thirds of its amplitude
+44.1 kHz: 2250, 3000, 4200, 6000, 7000, ...) the port landed consistently just
+past crank 0 every cycle and the thump lost up to two thirds of its amplitude
 (measured: 2-stroke 1-cyl @6000 rpm, peak 0.176 vs the oracle's 0.517). At the
-other ~92% of RPMs f64 matches or beats f32.
+other ~92% of RPMs f64 matched or beat f32.
 
-**Not repaired in 2.0.2**, because the fix is to change the pulse computation —
-an audio change that diverges from the oracle by construction and therefore
-needs its own ADR. Filed in [roadmap.md](roadmap.md) under Robustness.
+It was deliberately **not** repaired in 2.0.2, because the fix changes the pulse
+computation — an audio change that diverges from the oracle by construction, and
+so it needed an ADR and a minor. It got both:
+[ADR-005](../architecture/adr-005-rpm-loudness-law.md) integrates the envelope
+across each sample rather than point-sampling it, which is energy-conserving and
+therefore lattice-invariant. A 1000→9000 rpm sweep is now smooth with no notches.
 
 ## Float-literal hardening
 

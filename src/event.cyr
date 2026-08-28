@@ -90,3 +90,20 @@ fn ghurni_event_name(kind) {
     if (kind == GH_EVENT_SHUTDOWN)        { return "Shutdown"; }
     return "Unknown";
 }
+
+# Inverse of ghurni_event_name. Returns -1 for an unknown name. Completes the
+# `_name`/`_from_name` pair CLAUDE.md requires of every public enum -- the
+# oracle derived Deserialize on MechanicalEvent and round-tripped it, but the
+# port carried only the forward half until 2.4.0.
+#must_use
+fn ghurni_event_from_name(s) {
+    if (streq(s, "Backfire") == 1)      { return GH_EVENT_BACKFIRE; }
+    if (streq(s, "Misfire") == 1)       { return GH_EVENT_MISFIRE; }
+    if (streq(s, "Knock") == 1)         { return GH_EVENT_KNOCK; }
+    if (streq(s, "Stall") == 1)         { return GH_EVENT_STALL; }
+    if (streq(s, "RevLimiterHit") == 1) { return GH_EVENT_REV_LIMITER_HIT; }
+    if (streq(s, "GearShift") == 1)     { return GH_EVENT_GEAR_SHIFT; }
+    if (streq(s, "Startup") == 1)       { return GH_EVENT_STARTUP; }
+    if (streq(s, "Shutdown") == 1)      { return GH_EVENT_SHUTDOWN; }
+    return (0 - 1);
+}

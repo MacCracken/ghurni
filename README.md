@@ -10,15 +10,19 @@ Procedural synthesis of engines, gears, motors, turbines, clocks, transmissions,
 
 ## Features
 
-- **Engine** — 4 types (Gasoline, Diesel, TwoStroke, Hybrid), combustion impulses, exhaust + intake resonance, 1–16 cylinders, custom firing order, backfire / misfire / knock / decel-pop events
+- **Engine** — 4 types (Gasoline, Diesel, TwoStroke, Hybrid — Hybrid is a true electric drive, Diesel has its own injection clatter), combustion impulses, exhaust + intake resonance, 1–16 cylinders, custom firing order, and the full event set: startup / shutdown / stall / rev-limiter / backfire / misfire / knock / decel-pop
 - **Gear** — 4 materials (Steel, CastIron, Brass, Nylon), tooth mesh frequency, resonant ringing, material-specific decay and brightness
 - **Motor** — 4 types (DcBrushed, AcInduction, Brushless, Servo), electromagnetic hum harmonics, commutator/bearing noise, pole-count-driven frequency
 - **Turbine** — configurable blade count, blade pass frequency, whoosh noise, optional duct resonance
 - **Clock** — 4 types (Wristwatch, WallClock, GrandfatherClock, PocketWatch), escapement tick, resonant decay
-- **Drivetrain** — Transmission (gear mesh + synchro whine on shift), Differential (hypoid whine + housing resonance), ChainDrive (link engagement rattle), BeltDrive (friction squeal + flap)
+- **Drivetrain** — Transmission (gear mesh + synchro whine on shift), Differential (hypoid whine + housing resonance, drive/coast flank, ring-revolution warble), ChainDrive (link engagement rattle + per-lap wobble), BeltDrive (friction squeal + flap). All three take load.
 - **ForcedInduction** — turbocharger (spool lag) and supercharger, with blow-off-valve burst
 - **Mixer** — multi-component mixing with per-channel gain, pan (equal-power law), and mute; mono and stereo
 - **Presets** — 12 shipped factory configurations
+- **Physically-grounded controls** — RPM drives loudness by one shared law
+  ([ADR-005](docs/architecture/adr-005-rpm-loudness-law.md)); load drives both
+  level *and* brightness ([ADR-007](docs/architecture/adr-007-load-tilt-and-diesel.md)).
+  Every parameter clamps, and non-finite input never reaches your audio.
 
 ## Quick Start
 

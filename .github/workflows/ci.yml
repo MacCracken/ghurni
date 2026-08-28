@@ -73,7 +73,7 @@ jobs:
         # A FLOOR, not a target. Coverage is not a correctness proof -- 2.0.1
         # shipped a 76.9x-wrong constant through a fully green suite. This only
         # stops coverage sliding backwards.
-        run: cyrius coverage --min 45
+        run: cyrius coverage --min 65
 
       - name: Build and RUN examples
         # Each docs/examples/*.cyr is a standalone runnable program. Building

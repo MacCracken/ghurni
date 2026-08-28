@@ -57,7 +57,7 @@ fn ghurni_gearmaterial_from_name(s) {
 # NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
 # field roles are documented here instead:
 #   teeth(int 4+) material(int GH_GEAR_*) resonance(f64 Hz) decay(f64 s)
-#   brightness(f64) sample_rate(f64) rpm(f64) sample_position(int)
+#   brightness(f64) sample_rate(f64) rpm(f64) load(f64 0..1) sample_position(int)
 #   dc_blocker(ptr GhDcBlocker) mesh_osc(ptr naad Oscillator)
 #   noise_gen(ptr naad NoiseGenerator) resonance_filter(ptr naad BiquadFilter)
 # ================================================================
@@ -70,6 +70,7 @@ struct GhGear {
     brightness;
     sample_rate;
     rpm;
+    load;
     sample_position;
     dc_blocker;
     mesh_osc;
@@ -130,6 +131,7 @@ fn ghurni_gear_new(teeth, material, sample_rate) {
     GhGear_set_brightness(self, brightness);
     GhGear_set_sample_rate(self, sample_rate);
     GhGear_set_rpm(self, f64_from(1000));
+    GhGear_set_load(self, 0);
     GhGear_set_sample_position(self, 0);
     GhGear_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
     GhGear_set_mesh_osc(self, mesh_osc);
@@ -199,7 +201,9 @@ fn ghurni_gear_process_block_naad(self, out) {
     var decay = GhGear_decay(self);
     var brightness = GhGear_brightness(self);
     var base_pos = GhGear_sample_position(self);
-    var amp = 0.3;
+    var gload = GhGear_load(self);
+    var amp = f64_mul(0.3, f64_add(F64_ONE, f64_mul(0.5, gload)));
+    var gtilt = ghurni_load_tilt(gload);
 
     var n = vec_len(out);
     var i = 0;
@@ -215,7 +219,7 @@ fn ghurni_gear_process_block_naad(self, out) {
         var ring_excitation = f64_mul(noise_next_sample(noise), ring_env);
         var ring = f64_mul(f64_mul(filter_biquad_process_sample(resonance_filter, ring_excitation), amp), brightness);
 
-        var noise_s = f64_mul(f64_mul(noise_next_sample(noise), amp), 0.05);
+        var noise_s = f64_mul(f64_mul(f64_mul(noise_next_sample(noise), amp), 0.05), gtilt);
 
         var gr_sum = f64_add(mesh, f64_add(ring, noise_s));
         vec_set(out, i, f64_mul(gr_sum, rpm_gain));
@@ -225,6 +229,23 @@ fn ghurni_gear_process_block_naad(self, out) {
 }
 
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+# LOAD (2.4.0). A drivetrain under strain is louder and grittier than one
+# freewheeling, but gear, transmission and differential accepted no load input at
+# all -- the only three synths whose whole purpose is transmitting torque.
+#
+# Both terms are EXACTLY 1.0 at load 0, which is the default, so an unloaded
+# synth renders bit-identically to 2.3.0 and the goldens do not move. Same
+# bounded-review property ADR-005 used for the reference RPM and ADR-007 for the
+# load tilt.
+fn ghurni_gear_set_load(self, load) {
+    GhGear_set_load(self, ghurni_finite_clamp(load, 0, F64_ONE));
+    return 0;
+}
+
+# load() -- the current load, 0..1.
+#must_use
+fn ghurni_gear_load(self) { return GhGear_load(self); }
+
 #must_use
 fn ghurni_gear_rpm(self) { return GhGear_rpm(self); }
 #must_use

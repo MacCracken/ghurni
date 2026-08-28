@@ -144,9 +144,35 @@ fn ghurni_clock_new(clock_type, sample_rate) {
     return self;
 }
 
-# set_rpm(rpm) -- NO-OP. Clock tick rate is fixed by type, not RPM-driven.
+# set_rpm(rpm) -- NO-OP. A clock's beat is set by its escapement, not by a
+# driven shaft, so the trait-shaped setter deliberately does nothing. Use
+# ghurni_clock_set_tick_rate to change the beat.
 fn ghurni_clock_set_rpm(self, rpm) {
     return 0;
+}
+
+# set_tick_rate(ticks_per_second) -- the clock's ONLY speed control (2.4.0).
+#
+# Until now a clock's beat was fixed at construction by its type and could not be
+# changed at all: set_rpm is a no-op and nothing else touched tick_rate. That
+# made every escapement in the library a constant, so a consumer could not slow a
+# clock down, wind one up, or drive a mechanism at an arbitrary beat.
+#
+# Clamped to 0.1..50 Hz: below that the tick period exceeds a sane buffer and the
+# beat is inaudible; above it the ticks merge into a tone. Non-finite collapses
+# to the floor, per ghurni_finite_clamp.
+#
+# Changing the rate mid-stream moves the beat grid, because phase is derived from
+# the absolute sample position -- set it between blocks.
+fn ghurni_clock_set_tick_rate(self, ticks_per_second) {
+    GhClock_set_tick_rate(self, ghurni_finite_clamp(ticks_per_second, 0.1, f64_from(50)));
+    return 0;
+}
+
+# tick_rate() -- the current beat in ticks per second.
+#must_use
+fn ghurni_clock_tick_rate(self) {
+    return GhClock_tick_rate(self);
 }
 
 # synthesize(duration) -> vec<f64> or GH_ERR_*.

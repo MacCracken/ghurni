@@ -44,6 +44,7 @@ struct GhTransmission {
     current_gear;
     sample_rate;
     rpm;
+    load;
     shift_remaining;
     shift_duration_samples;
     sample_position;
@@ -89,6 +90,7 @@ fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
     GhTransmission_set_current_gear(self, 0);
     GhTransmission_set_sample_rate(self, sample_rate);
     GhTransmission_set_rpm(self, 0);
+    GhTransmission_set_load(self, 0);
     GhTransmission_set_shift_remaining(self, 0);
     GhTransmission_set_shift_duration_samples(self, shift_duration_samples);
     GhTransmission_set_sample_position(self, 0);
@@ -156,6 +158,9 @@ fn ghurni_transmission_process_block(self, out) {
     # sets -- not `smooth_rpm`, which tracks OUTPUT rpm (rpm / current_ratio) and
     # would make loudness depend on the selected gear. That would be a different
     # behaviour, and not one this ADR is introducing.
+    var tx_load = GhTransmission_load(self);
+    var tx_amp = f64_add(F64_ONE, f64_mul(0.5, tx_load));
+    var tx_tilt = ghurni_load_tilt(tx_load);
     var tx_gain = ghurni_rpm_gain(GhTransmission_rpm(self), GHURNI_REF_RPM_TRANSMISSION);
     var out_rpm = ghurni_transmission_output_rpm(self);
     var mesh_rpm = GhTransmission_mesh_rpm(self);
@@ -176,7 +181,7 @@ fn ghurni_transmission_process_block(self, out) {
 
         # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
         additive_set_fundamental(mesh_osc, f64_clamp(mesh_freq, F64_ONE, f64_div(nyquist, f64_from(3))));
-        var mesh = f64_mul(additive_next_sample(mesh_osc), 0.15);
+        var mesh = f64_mul(f64_mul(additive_next_sample(mesh_osc), 0.15), tx_amp);
 
         # synchro whine during a shift: decaying band-passed noise envelope
         var synchro = 0;
@@ -215,6 +220,35 @@ fn ghurni_transmission_process_block(self, out) {
 }
 
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+# LOAD (2.4.0). A drivetrain under strain is louder and grittier than one
+# freewheeling. Both terms are EXACTLY 1.0 at load 0, the default, so an unloaded
+# synth renders bit-identically to 2.3.0 and the goldens do not move.
+fn ghurni_transmission_set_load(self, load) {
+    GhTransmission_set_load(self, ghurni_finite_clamp(load, 0, F64_ONE));
+    return 0;
+}
+
+# load() -- the current load, 0..1.
+#must_use
+fn ghurni_transmission_load(self) { return GhTransmission_load(self); }
+
+# trigger_event(event) -- the transmission's event surface (2.4.0).
+#
+# GH_EVENT_GEAR_SHIFT was one of the five MechanicalEvent kinds accepted and
+# silently discarded: only `engine` had a trigger_event, and a gear shift is not
+# the engine's business. The payload is (from, to) with 0 meaning NEUTRAL on the
+# `from` side (rust-old/src/event.rs:28), so `to` is arg1.
+#
+# An out-of-range target is ignored rather than rejected, matching
+# ghurni_transmission_shift_to's own contract -- the oracle's `if let Some` shape.
+fn ghurni_transmission_trigger_event(self, event) {
+    if (GhEvent_kind(event) == GH_EVENT_GEAR_SHIFT) {
+        ghurni_transmission_shift_to(self, GhEvent_arg1(event));
+    }
+    return 0;
+}
+
 #must_use
 fn ghurni_transmission_rpm(self) { return GhTransmission_rpm(self); }
 #must_use

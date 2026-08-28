@@ -5,6 +5,96 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-08-28
+
+**Arc 3 — "Events & Control."** The previous three releases changed how ghurni
+*sounds*. This one is about what it lets you *do* — specifically, about API that
+was advertised and did nothing. Recorded in
+[ADR-008](docs/architecture/adr-008-events-and-control.md).
+
+✅ **Rendered audio is unchanged.** Every golden checksum holds. That was a design
+constraint, not luck: each addition either is new API or defaults to a no-op.
+
+### Fixed — five of the eight `MechanicalEvent` kinds did nothing
+
+`STALL`, `REV_LIMITER_HIT`, `GEAR_SHIFT`, `STARTUP` and `SHUTDOWN` were accepted
+and silently discarded. Constructors shipped for every one of them, so you could
+build and fire an event that provably had no effect. The Rust oracle ignored them
+too — but the oracle retired in 2.0.4.
+
+- `STALL` — RPM collapses and combustion sputters out **gated by noise** over
+  0.6 s. The irregularity is the point; a smooth fade reads as a fade-out.
+- `SHUTDOWN` — the same collapse, smooth, over 1.6 s, so it reads as deliberate.
+- `STARTUP` — RPM climbs to the idle floor with a starter whir over the top for
+  1.1 s while combustion ramps in.
+- `REV_LIMITER_HIT` — combustion **chopped** at 18 Hz for 0.35 s. A limiter
+  bounces an engine; it does not mute it.
+- `GEAR_SHIFT` — routed to the new `ghurni_transmission_trigger_event`, because a
+  shift is not the engine's business. It had nowhere to land before.
+
+The three RPM sequences drive through the existing `smooth_rpm` smoother rather
+than a bespoke envelope, so the ramp is click-free by construction.
+
+### Added — load on the three drivetrain synths
+
+`gear`, `transmission` and `differential` — the three synths whose entire purpose
+is transmitting torque — accepted no load input at all.
+
+- `ghurni_gear_set_load` / `ghurni_gear_load`
+- `ghurni_transmission_set_load` / `ghurni_transmission_load`
+- `ghurni_differential_set_load` / `ghurni_differential_load`
+
+Clamped 0..1 through `ghurni_finite_clamp`; load raises the tonal amplitude and
+applies the ADR-007 broadband tilt. **Both terms are exactly 1.0 at the default
+load of 0**, so an unloaded synth is bit-identical to 2.3.0.
+
+### Added — differential drive/coast
+
+`ghurni_differential_set_coasting` / `_coasting`. A hypoid gearset meshes on the
+opposite tooth flank on overrun, and that flank is cut differently — which is why
+a worn diff often whines in one direction only. Deferred out of Arc 2 because it
+needs a torque *direction*, which `load` (0..1) cannot express; a separate flag
+keeps `load`'s meaning intact.
+
+### Added — clock speed control
+
+`ghurni_clock_set_tick_rate` / `ghurni_clock_tick_rate`, clamped 0.1..50 Hz. A
+clock's beat was fixed at construction and could not be changed at all. `set_rpm`
+remains a deliberate no-op: an escapement is not a driven shaft.
+
+### Added — the missing `name` / `from_name` halves
+
+`GH_KIND_*` had **neither** (`traits.cyr` had no functions at all);
+`MechanicalEvent` had only the forward half. CLAUDE.md requires the pair on every
+public enum — 2.0.2 fixed `GhurniError` for the same reason.
+
+- `ghurni_kind_name` / `ghurni_kind_from_name`
+- `ghurni_event_from_name`
+
+Both return `-1` for an unknown name, and that sentinel is safe to pass straight
+into the API: `ghurni_mixer_add_channel` range-checks its tag, which the tests
+assert.
+
+### Tests
+
+600 assertions across 10 suites, up from 556 — the new events changing the render
+(and *no* event leaving it byte-identical), the load clamps including NaN, the
+coast flank being quieter than the drive flank, the tick-rate clamps, and both
+round-trips.
+
+### Corrected — two roadmap items were stale when written
+
+`ghurni_differential_ratio` is not dead API; `tests/oracle_pins.tcyr` has called
+it since 2.0.3. And `sample_position` is vestigial in **two** synths, not three —
+`differential` became a live reader in 2.3.0.
+
+### Deferred
+
+**Per-component stems** is the one Arc 3 item not shipped. It needs a shape
+decision across all ten synths at once, and it pairs with the source-body
+convolution question ADR-007 left open — so both become **Arc 3b (`2.5.0`,
+"Output Path")** and the breadth arc moves to `2.6.0`.
+
 ## [2.3.0] - 2026-08-28
 
 **Arc 2b — "Depth II."** The rest of Arc 2, split out of 2.2.0 so each piece

@@ -50,6 +50,17 @@ var GHURNI_DIESEL_CLATTER_DELAY = 0.12;   # fraction of the combustion window
 var GHURNI_DIESEL_CLATTER_DECAY = 8.0;    # relative to the main pulse decay
 var GHURNI_DIESEL_CLATTER_AMP   = 0.55;
 
+# Event sequence durations, in seconds (2.4.0). Five of the eight declared
+# MechanicalEvent kinds were accepted and SILENTLY DISCARDED until now -- the
+# oracle ignored them too (`_ => {}`), but the oracle retired in 2.0.4 and the
+# API still advertised them, constructors and all.
+var GHURNI_STALL_SECONDS    = 0.6;
+var GHURNI_REV_LIMIT_SECONDS = 0.35;
+var GHURNI_STARTUP_SECONDS  = 1.1;
+var GHURNI_SHUTDOWN_SECONDS = 1.6;
+# Fuel-cut chop rate while the limiter is bouncing, in Hz.
+var GHURNI_REV_LIMIT_CHOP_HZ = 18.0;
+
 # Externally-tagged serde variant name (parity with serde_json).
 #must_use
 fn ghurni_enginetype_name(t) {
@@ -100,6 +111,10 @@ struct GhEngine {
     knock_remaining;
     decel_pop_remaining;
     backfire_remaining;
+    stall_remaining;
+    rev_limit_remaining;
+    startup_remaining;
+    shutdown_remaining;
     smooth_rpm;
     smooth_load;
     dc_blocker;
@@ -163,13 +178,12 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
     # combustion path and merely used different resonance constants -- so the one
     # engine type documented "electric-with-whine" was the one thing it was not.
     # It now gets a 2-partial EM whine instead of combustion impulses.
-    var whine = 0;
-    if (engine_type == GH_ENGINE_HYBRID) {
-        whine = additive_new(f64_from(100), 2, sample_rate);
-        if (ghurni_is_err(whine) == 1) { return ghurni_map_naad_error(whine); }
-        additive_set_partial(whine, 0, F64_ONE, F64_ONE);
-        additive_set_partial(whine, 1, f64_from(2), 0.35);
-    }
+    # Built for EVERY type as of 2.4.0: the STARTUP starter-motor whir uses the
+    # same synth. It stays silent unless the engine is a hybrid or starting.
+    var whine = additive_new(f64_from(100), 2, sample_rate);
+    if (ghurni_is_err(whine) == 1) { return ghurni_map_naad_error(whine); }
+    additive_set_partial(whine, 0, F64_ONE, F64_ONE);
+    additive_set_partial(whine, 1, f64_from(2), 0.35);
 
     var self = alloc(sizeof(GhEngine));
     GhEngine_set_engine_type(self, engine_type);
@@ -192,6 +206,10 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
 
     GhEngine_set_decel_pop_remaining(self, 0);
     GhEngine_set_backfire_remaining(self, 0);
+    GhEngine_set_stall_remaining(self, 0);
+    GhEngine_set_rev_limit_remaining(self, 0);
+    GhEngine_set_startup_remaining(self, 0);
+    GhEngine_set_shutdown_remaining(self, 0);
     GhEngine_set_smooth_rpm(self, ghurni_smooth_new(f64_from(800), 0.05, sample_rate));
     GhEngine_set_smooth_load(self, ghurni_smooth_new(0, 0.02, sample_rate));
     GhEngine_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
@@ -248,7 +266,34 @@ fn ghurni_engine_trigger_event(self, event) {
         if ((cyl2 >= 0) && (cyl2 < vec_len(kr))) {
             vec_set(kr, cyl2, f64_to(f64_mul(GhEngine_sample_rate(self), 0.02)));
         }
+    } elif (kind == GH_EVENT_STALL) {
+        # The engine dies: RPM collapses and combustion sputters out. Reusing
+        # the existing smoother for the collapse means the decay is already
+        # click-free and already the right shape -- set_rpm's own path.
+        var sr_st = GhEngine_sample_rate(self);
+        GhEngine_set_stall_remaining(self, f64_to(f64_mul(sr_st, GHURNI_STALL_SECONDS)));
+        ghurni_smooth_set_target(GhEngine_smooth_rpm(self), 0);
+    } elif (kind == GH_EVENT_SHUTDOWN) {
+        # Ordered stop: the same collapse as a stall but slower and without the
+        # sputter, so it reads as deliberate rather than a failure.
+        var sr_sd = GhEngine_sample_rate(self);
+        GhEngine_set_shutdown_remaining(self, f64_to(f64_mul(sr_sd, GHURNI_SHUTDOWN_SECONDS)));
+        ghurni_smooth_set_target(GhEngine_smooth_rpm(self), 0);
+    } elif (kind == GH_EVENT_STARTUP) {
+        # Cranking, then catch. The smoother ramps from wherever it is up to the
+        # engine's idle floor while a starter whir sits over the top.
+        var sr_su = GhEngine_sample_rate(self);
+        GhEngine_set_startup_remaining(self, f64_to(f64_mul(sr_su, GHURNI_STARTUP_SECONDS)));
+        ghurni_smooth_set_target(GhEngine_smooth_rpm(self), f64_from(100));
+    } elif (kind == GH_EVENT_REV_LIMITER_HIT) {
+        # Fuel cut. A limiter does not mute the engine, it CHOPS it -- the
+        # characteristic bouncing off the rev limit -- so this gates combustion
+        # on and off rather than fading it.
+        var sr_rl = GhEngine_sample_rate(self);
+        GhEngine_set_rev_limit_remaining(self, f64_to(f64_mul(sr_rl, GHURNI_REV_LIMIT_SECONDS)));
     }
+    # GH_EVENT_GEAR_SHIFT is deliberately not handled here: a shift belongs to
+    # the transmission, which has its own trigger_event as of 2.4.0.
     return 0;
 }
 
@@ -340,6 +385,17 @@ fn ghurni_engine_process_block_naad(self, out) {
     # combustion loop simply does not run for HYBRID.
     var n_fire = num_cyl;
     if (is_hybrid == 1) { n_fire = 0; }
+    # Event sequences (2.4.0). All four counters are zero unless an event is
+    # running, and every term below collapses to a no-op then -- which is why
+    # this release does not move a single golden.
+    var stall_rem = GhEngine_stall_remaining(self);
+    var revlim_rem = GhEngine_rev_limit_remaining(self);
+    var startup_rem = GhEngine_startup_remaining(self);
+    var shutdown_rem = GhEngine_shutdown_remaining(self);
+    var stall_total = f64_mul(sr, GHURNI_STALL_SECONDS);
+    var startup_total = f64_mul(sr, GHURNI_STARTUP_SECONDS);
+    var shutdown_total = f64_mul(sr, GHURNI_SHUTDOWN_SECONDS);
+    var chop_period = f64_div(sr, GHURNI_REV_LIMIT_CHOP_HZ);
     var nyq_e = f64_mul(sr, 0.49);
     # Skip the per-cylinder knock scan entirely while nothing is armed -- the
     # common case for every sample of ordinary engine audio. Rust pays the same
@@ -503,13 +559,52 @@ fn ghurni_engine_process_block_naad(self, out) {
         var mech_raw = f64_mul(f64_mul(noise_next_sample(noise), roughness), base_amp);
         var mech = f64_mul(f64_mul(mech_raw, 0.1), ghurni_load_tilt_k(load, GHURNI_LOAD_TILT_ENGINE));
 
-        var events = f64_add(knock_sum, f64_add(decel, backfire));
+        # --- REV LIMITER: chop combustion on and off, do not fade it ---
+        if (revlim_rem > 0) {
+            revlim_rem = revlim_rem - 1;
+            var chop = ghurni_fmod(f64_from(revlim_rem), chop_period);
+            if (f64_lt(chop, f64_mul(chop_period, 0.5)) == 1) {
+                combustion_sum = 0;
+            }
+        }
+        # --- STALL: combustion sputters out, gated by noise so it reads as a
+        # failure rather than a fade ---
+        var starter = 0;
+        if (stall_rem > 0) {
+            stall_rem = stall_rem - 1;
+            var sfrac = f64_div(f64_from(stall_rem), stall_total);
+            var gate = f64_add(0.5, f64_mul(0.5, noise_next_sample(noise)));
+            combustion_sum = f64_mul(f64_mul(combustion_sum, sfrac), gate);
+        }
+        # --- SHUTDOWN: the same collapse, smooth and deliberate ---
+        if (shutdown_rem > 0) {
+            shutdown_rem = shutdown_rem - 1;
+            var dfrac = f64_div(f64_from(shutdown_rem), shutdown_total);
+            combustion_sum = f64_mul(combustion_sum, dfrac);
+        }
+        # --- STARTUP: starter whir over the top, combustion ramping IN ---
+        if (startup_rem > 0) {
+            startup_rem = startup_rem - 1;
+            var ufrac = f64_div(f64_from(startup_rem), startup_total);
+            combustion_sum = f64_mul(combustion_sum, f64_sub(F64_ONE, ufrac));
+            additive_set_fundamental(whine_synth, f64_from(220));
+            starter = f64_mul(f64_mul(additive_next_sample(whine_synth), ufrac), 0.18);
+        }
+
+        var events = f64_add(starter, f64_add(knock_sum, f64_add(decel, backfire)));
         var s = f64_add(combustion_sum, f64_add(exhaust, f64_add(intake, f64_add(mech, events))));
         # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
         # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
         vec_set(out, i, f64_mul(s, ghurni_rpm_gain(rpm, GHURNI_REF_RPM_ENGINE)));
         i = i + 1;
     }
+
+    # Persist the event counters: they are decremented per sample inside the
+    # loop, so without this every block would restart each sequence.
+    GhEngine_set_stall_remaining(self, stall_rem);
+    GhEngine_set_rev_limit_remaining(self, revlim_rem);
+    GhEngine_set_startup_remaining(self, startup_rem);
+    GhEngine_set_shutdown_remaining(self, shutdown_rem);
     return 0;
 }
 

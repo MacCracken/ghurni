@@ -39,6 +39,8 @@ struct GhDifferential {
     pinion_teeth;
     sample_rate;
     rpm;
+    load;
+    coasting;
     sample_position;
     smooth_rpm;
     dc_blocker;
@@ -88,6 +90,8 @@ fn ghurni_differential_new(ring_teeth, pinion_teeth, sample_rate) {
     GhDifferential_set_pinion_teeth(self, pinion);
     GhDifferential_set_sample_rate(self, sample_rate);
     GhDifferential_set_rpm(self, 0);
+    GhDifferential_set_load(self, 0);
+    GhDifferential_set_coasting(self, 0);
     GhDifferential_set_sample_position(self, 0);
     GhDifferential_set_smooth_rpm(self, ghurni_smooth_new(0, 0.05, sample_rate));
     GhDifferential_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
@@ -145,6 +149,15 @@ fn ghurni_differential_process_block(self, out) {
     # sample_position is READ here as of 2.3.0 -- the ring-revolution modulation
     # below needs absolute time. It was vestigial (written, never read) until now.
     var base_pos_d = GhDifferential_sample_position(self);
+    var df_load = GhDifferential_load(self);
+    var df_amp = f64_add(F64_ONE, f64_mul(0.5, df_load));
+    var df_tilt = ghurni_load_tilt(df_load);
+    # Coast flank: quieter whine, grittier bed. 1.0 / 1.0 under power, so the
+    # default (driving) path is unchanged.
+    if (GhDifferential_coasting(self) == 1) {
+        df_amp = f64_mul(df_amp, 0.55);
+        df_tilt = f64_mul(df_tilt, 1.6);
+    }
 
     var n = vec_len(out);
     var i = 0;
@@ -166,13 +179,13 @@ fn ghurni_differential_process_block(self, out) {
         var abs_pos_d = f64_from(base_pos_d + i);
         var ring_phase = ghurni_fmod(f64_mul(f64_div(ring_rev, sr_d), abs_pos_d), F64_ONE);
         var ring_mod = f64_add(0.88, f64_mul(0.12, f64_cos(f64_mul(F64_TAU, ring_phase))));
-        var whine = f64_mul(f64_mul(additive_next_sample(whine_osc), 0.2), ring_mod);
+        var whine = f64_mul(f64_mul(f64_mul(additive_next_sample(whine_osc), 0.2), ring_mod), df_amp);
 
         # High-Q housing resonance excited by mesh.
         var excitation = f64_mul(noise_next_sample(noise), 0.1);
         var ring = f64_mul(filter_biquad_process_sample(resonance_filter, excitation), 0.15);
 
-        var noise_sample = f64_mul(noise_next_sample(noise), 0.02);
+        var noise_sample = f64_mul(f64_mul(noise_next_sample(noise), 0.02), df_tilt);
         # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
         # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
         var df_sum = f64_add(whine, f64_add(ring, noise_sample));
@@ -193,6 +206,38 @@ fn ghurni_differential_process_block(self, out) {
 }
 
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+#must_use
+# LOAD (2.4.0). A drivetrain under strain is louder and grittier than one
+# freewheeling. Both terms are EXACTLY 1.0 at load 0, the default, so an unloaded
+# synth renders bit-identically to 2.3.0 and the goldens do not move.
+fn ghurni_differential_set_load(self, load) {
+    GhDifferential_set_load(self, ghurni_finite_clamp(load, 0, F64_ONE));
+    return 0;
+}
+
+# load() -- the current load, 0..1.
+#must_use
+fn ghurni_differential_load(self) { return GhDifferential_load(self); }
+
+# set_coasting(coasting) -- 1 while the wheels drive the engine (overrun),
+# 0 under power. DRIVE/COAST ASYMMETRY (2.4.0): a hypoid gearset meshes on the
+# opposite tooth flank on overrun, and the coast flank is cut differently from
+# the drive flank -- which is why a worn diff often whines in one direction only.
+# Coasting drops the whine and raises the broadband share.
+#
+# This needed a torque DIRECTION, which the API had no way to express: `load` is
+# 0..1 and cannot be negative. A separate flag keeps load's meaning intact.
+fn ghurni_differential_set_coasting(self, coasting) {
+    var c = 0;
+    if (coasting != 0) { c = 1; }
+    GhDifferential_set_coasting(self, c);
+    return 0;
+}
+
+# coasting() -- 1 if on overrun, 0 under power.
+#must_use
+fn ghurni_differential_coasting(self) { return GhDifferential_coasting(self); }
+
 #must_use
 fn ghurni_differential_rpm(self) { return GhDifferential_rpm(self); }
 #must_use

@@ -86,15 +86,77 @@ samples in place and never resizes it.
 next block instead of clicking. Read the smoothed value back with
 `ghurni_smooth_current`, and test for arrival with `ghurni_smooth_is_settled`.
 
+**Load** is 0..1 and drives both level and brightness — a machine working harder
+is louder *and* brighter ([ADR-007](../architecture/adr-007-load-tilt-and-diesel.md)).
+Six synths take it: `engine`, `motor`, `forced_induction`, and — as of 2.4.0 —
+`gear`, `transmission` and `differential`. **The default is 0, where the tilt is
+exactly 1.0**, so a synth you never load renders exactly as it did before 2.4.0.
+
+Out-of-range and non-finite values are clamped, never propagated:
+
+```cyrius
+ghurni_gear_set_load(gear, f64_from(5));    # -> 1.0
+ghurni_gear_set_load(gear, f64_div(0, 0));  # NaN -> 0.0, never NaN in your audio
+```
+
+Two controls are not RPM or load:
+
+```cyrius
+# A differential meshes on the opposite tooth flank on overrun, and that flank
+# is cut differently -- which is why a worn diff often whines one way only.
+ghurni_differential_set_coasting(diff, 1);   # 0 = driving (default), non-zero = coasting
+
+# A clock's beat is set by its escapement, so `set_rpm` on a clock is a no-op by
+# design. Use the tick rate instead (clamped 0.1..50 Hz).
+ghurni_clock_set_tick_rate(clock, f64_from(4));
+```
+
 ## Event Triggers
 
-Discrete events are queued and consumed by the next `process_block`:
+Discrete events are queued and consumed by the next `process_block`. All eight
+kinds do something as of 2.4.0 — before that, five were accepted and silently
+discarded ([ADR-008](../architecture/adr-008-events-and-control.md)).
+
+Seven go to the engine:
 
 ```cyrius
 ghurni_engine_trigger_event(engine, ghurni_event_backfire());
 ghurni_engine_trigger_event(engine, ghurni_event_misfire(0));   # cylinder 0
 ghurni_engine_trigger_event(engine, ghurni_event_knock(2));     # cylinder 2
+ghurni_engine_trigger_event(engine, ghurni_event_startup());          # ~1.1 s
+ghurni_engine_trigger_event(engine, ghurni_event_shutdown());         # ~1.6 s
+ghurni_engine_trigger_event(engine, ghurni_event_stall());            # ~0.6 s
+ghurni_engine_trigger_event(engine, ghurni_event_rev_limiter_hit());  # ~0.35 s
 ```
+
+`STARTUP`, `SHUTDOWN` and `STALL` move the engine's RPM through its **existing
+smoother**, so they compose with your own `set_rpm` calls rather than fighting
+them — whichever you issue last wins, and the transition is click-free either
+way. `REV_LIMITER_HIT` chops combustion at 18 Hz without touching RPM, so it
+layers over whatever the engine is doing.
+
+`GEAR_SHIFT` belongs to the **transmission**, not the engine — a shift is not the
+engine's business:
+
+```cyrius
+# payload is (from, to); 0 on the `from` side means neutral
+ghurni_transmission_trigger_event(tx, ghurni_event_gear_shift(1, 2));
+```
+
+An out-of-range target gear is ignored, matching `ghurni_transmission_shift_to`.
+
+Events round-trip by name in both directions, which is what you want for a
+save file or a level script:
+
+```cyrius
+var e = ghurni_event_from_name("RevLimiterHit");   # -> GH_EVENT_REV_LIMITER_HIT
+var n = ghurni_event_name(GH_EVENT_STALL);         # -> "Stall"
+```
+
+`ghurni_event_from_name` returns `-1` for an unknown name — check it before use.
+`ghurni_kind_name` / `ghurni_kind_from_name` do the same for `GH_KIND_*`, and the
+`-1` there is safe to hand straight to `ghurni_mixer_add_channel`, which
+range-checks its tag and returns an error rather than dispatching on garbage.
 
 ## Custom Firing Order
 

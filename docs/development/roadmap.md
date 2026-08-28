@@ -268,37 +268,87 @@ is about the machines already modelled sounding more like themselves.
 
 ---
 
-## Arc 3 — `2.4.0` "Events & Control"
+## Arc 3 — `2.4.0` "Events & Control"  ✅ SHIPPED
+
+> Released 2026-08-28. 600 assertions (was 556), **goldens unchanged** — every
+> item here is additive or defaults to a no-op. See [ADR-008](../architecture/adr-008-events-and-control.md).
 
 **Theme: the control surface stops lying.**
 
-- [ ] **Five of the eight declared `GH_EVENT_*` kinds are accepted and silently
+- [x] **Five of the eight declared `GH_EVENT_*` kinds are accepted and silently
       discarded** — `STALL`, `REV_LIMITER_HIT`, `GEAR_SHIFT`, `STARTUP`,
       `SHUTDOWN`. Constructors exist for all of them
       (`ghurni_event_stall`, `ghurni_event_rev_limiter_hit`, …); only `engine` has
       a `trigger_event` at all, and it implements three. The oracle ignored them
       too, so this is an inherited product gap, not a port defect — but the
       oracle's cover disappears in 2.0.4.
-- [ ] **Engine start / stop chain** — the sound consumers reach for first and the
-      one `STARTUP`/`SHUTDOWN` imply.
-- [ ] **Clock has no speed control at all** — its tick rate cannot be set.
-- [ ] **Gear, transmission and differential accept no load input**, though load is
-      what makes a drivetrain audible under strain.
-- [ ] `GH_EVENT_*` and `GH_KIND_*` still violate the `name`/`from_name` rule that
-      2.0.2 fixed for `GhurniError`.
-- [ ] `ghurni_differential_ratio` is dead API; `sample_position` is vestigial in
-      three synths.
-- [ ] **Per-component stems** — every synth sums exhaust + intake + mechanical
-      into one mono buffer; rendering them separately is a real API gap. Moved
-      here from Arc 2 in 2.2.0: it is a control-surface change, not a timbral one.
-- [ ] **Differential drive/coast asymmetry** — needs a torque-direction input the
-      API does not have. Moved here from Arc 2 for the same reason.
+      *All eight now do something. `GEAR_SHIFT` went to a new
+      `ghurni_transmission_trigger_event`, since a shift is not the engine's
+      business.*
+- [x] **Engine start / stop chain** — the sound consumers reach for first and the
+      one `STARTUP`/`SHUTDOWN` imply. *Both drive the collapse or climb through
+      the existing `smooth_rpm` smoother, so the ramp is click-free by
+      construction. `STALL` sputters out gated by noise; `SHUTDOWN` is smooth and
+      slower, so one reads as a failure and the other as deliberate.*
+- [x] **Clock has no speed control at all** — its tick rate cannot be set.
+      *`ghurni_clock_set_tick_rate` / `_tick_rate`, clamped 0.1..50 Hz. `set_rpm`
+      stays a deliberate no-op — an escapement is not a driven shaft.*
+- [x] **Gear, transmission and differential accept no load input**, though load is
+      what makes a drivetrain audible under strain. *All three take load now, with
+      the ADR-007 tilt. Default load 0, where both terms are exactly 1.0 — which
+      is why the goldens hold.*
+- [x] `GH_EVENT_*` and `GH_KIND_*` still violate the `name`/`from_name` rule that
+      2.0.2 fixed for `GhurniError`. *`GH_KIND_*` had neither half;
+      `MechanicalEvent` had only the forward one. Both complete.*
+- [x] **Differential drive/coast asymmetry** — needs a torque-direction input the
+      API does not have. Moved here from Arc 2 for the same reason. *Solved with a
+      separate `set_coasting` flag rather than by letting `load` go negative,
+      which would have changed what `load` means.*
+- [x] ~~`ghurni_differential_ratio` is dead API; `sample_position` is vestigial in
+      three synths.~~ **Both were already stale when written.** `_ratio` has been
+      called by `tests/oracle_pins.tcyr` since 2.0.3; `sample_position` is
+      vestigial in **two** synths, not three — `differential` became a live reader
+      in 2.3.0 with ring-revolution modulation. Only `transmission` and
+      `forced_induction` still write it without reading it, and both are one line
+      each. Folded into `2.4.x`.
+- [ ] **Per-component stems** → **moved to Arc 3b (`2.5.0`)**, with the
+      convolution question it pairs with. It is the one Arc 3 item not shipped:
+      the split is not the same across all ten synths (a clock has no intake) and
+      it grows the public surface by a third, so it needs a shape decision rather
+      than a per-synth improvisation.
 
-**Patch line `2.4.x`** — event-timing tuning; consumer-reported control gaps.
+**Patch line `2.4.x`** — event-timing tuning; consumer-reported control gaps;
+retire the two remaining vestigial `sample_position` writes.
 
 ---
 
-## Arc 4 — `2.5.0` "New Mechanisms"
+## Arc 3b — `2.5.0` "Output Path"
+
+**Theme: how a synth's sound leaves it.** Both items were deferred out of earlier
+arcs for the same reason — each changes the *shape* of the output rather than its
+content, and each needs a decision that applies across all ten synths at once.
+
+- [ ] **Per-component stems** — every synth sums exhaust + intake + mechanical
+      into one mono buffer; rendering them separately is a real API gap. Moved
+      here from Arc 3 in 2.4.0 (and to Arc 3 from Arc 2 in 2.2.0). The open
+      question is the shape: a `process_block_stems` per synth multiplies the
+      public surface by a third, and the component split differs per synth — so
+      decide the naming and the "what counts as a stem" rule *first*, in an ADR.
+- [ ] **Source-body separation** — ghurni already models exhaust resonance with a
+      bandpass. The real question, corrected in ADR-007, is not "add convolution"
+      (naad already ships a full engine: `naad_convolution_from_ir`,
+      `_process_sample`, `_process_block`) but **whether to replace the bandpass
+      with it**. Two mechanisms for one job is the thing to avoid; that is an
+      architectural change and needs its own ADR.
+
+These belong together: a stem *is* a pre-body signal, so deciding the stem
+boundary and deciding where the body filter sits are the same decision.
+
+**Patch line `2.5.x`** — stem-level tuning; IR asset curation if convolution wins.
+
+---
+
+## Arc 4 — `2.6.0` "New Mechanisms"
 
 **Theme: breadth.** Deliberately last: a new synth built before Arc 1's loudness
 law and Arc 0's fuzz harness would inherit both problems on day one.
@@ -330,7 +380,7 @@ Ranked by what a consumer hits first. The old roadmap's five are re-scoped:
 - [ ] Weapon actions / rotary cannon — large genre, zero coverage. Check the
       garjan boundary first (the *impact* is theirs; the *action* is ours).
 
-**Patch line `2.5.x`** — per-synth tuning for the new mechanisms.
+**Patch line `2.6.x`** — per-synth tuning for the new mechanisms.
 
 ---
 

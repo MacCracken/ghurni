@@ -767,5 +767,152 @@ assert_eq(buf_differs(d_a, d_a2), 0, "identical tooth counts stay bit-identical"
 assert_eq(all_finite_buf(d_a), 1, "ring-modulated differential is finite");
 assert_gt(rest_rms(d_a), 0.001, "ring-modulated differential still has energy");
 
+# ================================================================
+test_group("all 8 MechanicalEvent kinds now DO something (ADR-008)");
+# Five of the eight were accepted and silently discarded -- constructors and
+# all. The oracle ignored them too (`_ => {}`), but the oracle retired in 2.0.4
+# and the API still advertised them.
+fn ev_block(e) {
+    var b = vec_new();
+    var i = 0;
+    while (i < 44100) { vec_push(b, 0); i = i + 1; }
+    ghurni_engine_process_block(e, b);
+    return b;
+}
+fn ev_fresh() {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    ghurni_engine_set_load(e, 0.6);
+    return e;
+}
+var ev_base = ev_block(ev_fresh());
+assert_gt(rest_rms(ev_base), 0.01, "baseline engine is loud (not a vacuous compare)");
+
+var e_stall = ev_fresh();
+ghurni_engine_trigger_event(e_stall, ghurni_event_stall());
+var b_stall = ev_block(e_stall);
+assert_eq(buf_differs(ev_base, b_stall), 1, "STALL changes the render");
+assert_lt(rest_rms(b_stall), f64_mul(rest_rms(ev_base), 0.2), "STALL kills the engine");
+
+var e_rev = ev_fresh();
+ghurni_engine_trigger_event(e_rev, ghurni_event_rev_limiter_hit());
+var b_rev = ev_block(e_rev);
+assert_eq(buf_differs(ev_base, b_rev), 1, "REV_LIMITER_HIT changes the render");
+# A limiter CHOPS rather than mutes: still loud, but not identical.
+assert_gt(rest_rms(b_rev), f64_mul(rest_rms(ev_base), 0.5), "rev limiter chops, it does not mute");
+
+var e_up = ev_fresh();
+ghurni_engine_trigger_event(e_up, ghurni_event_startup());
+var b_up = ev_block(e_up);
+assert_eq(buf_differs(ev_base, b_up), 1, "STARTUP changes the render");
+
+var e_dn = ev_fresh();
+ghurni_engine_trigger_event(e_dn, ghurni_event_shutdown());
+var b_dn = ev_block(e_dn);
+assert_eq(buf_differs(ev_base, b_dn), 1, "SHUTDOWN changes the render");
+assert_lt(rest_rms(b_dn), f64_mul(rest_rms(ev_base), 0.2), "SHUTDOWN winds the engine down");
+
+# GEAR_SHIFT belongs to the TRANSMISSION, not the engine.
+var ev_ratios = vec_new();
+vec_push(ev_ratios, f64_from(3)); vec_push(ev_ratios, f64_from(2)); vec_push(ev_ratios, F64_ONE);
+var ev_tx = ghurni_transmission_new(ev_ratios, 24, SR);
+assert_eq(GhTransmission_current_gear(ev_tx), 0, "transmission starts in gear 0");
+ghurni_transmission_trigger_event(ev_tx, ghurni_event_gear_shift(0, 2));
+assert_eq(GhTransmission_current_gear(ev_tx), 2, "GEAR_SHIFT selects the `to` gear (arg1)");
+# Out of range is ignored, matching shift_to's own contract.
+ghurni_transmission_trigger_event(ev_tx, ghurni_event_gear_shift(2, 99));
+assert_eq(GhTransmission_current_gear(ev_tx), 2, "out-of-range shift is ignored, not an abort");
+# No event at all leaves the engine exactly as it was -- this is why 2.4.0 moves
+# no goldens despite adding four event sequences.
+var b_none = ev_block(ev_fresh());
+assert_eq(buf_differs(ev_base, b_none), 0, "no event -> byte-identical to the untouched path");
+
+# ================================================================
+test_group("drivetrain load input, and drive/coast (ADR-008)");
+# gear, transmission and differential accepted no load at all -- the only three
+# synths whose whole purpose is transmitting torque. Default load is 0 and both
+# load terms are exactly 1.0 there, so the unloaded path is unchanged.
+assert_eq(ghurni_gear_load(ghurni_gear_new(32, GH_GEAR_STEEL, SR)), 0, "gear load defaults to 0");
+var ld_g0 = ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(1500), 0.2);
+var g_loaded = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_gear_set_load(g_loaded, 0.9);
+assert_eq(ghurni_gear_load(g_loaded), 0.9, "gear load reads back");
+var ld_g1 = ghurni_gear_synthesize(g_loaded, f64_from(1500), 0.2);
+assert_eq(buf_differs(ld_g0, ld_g1), 1, "a loaded gear sounds different");
+assert_gt(rest_rms(ld_g1), rest_rms(ld_g0), "a loaded gear is LOUDER");
+# Clamps and NaN.
+ghurni_gear_set_load(g_loaded, f64_from(5));
+assert_eq(ghurni_gear_load(g_loaded), F64_ONE, "gear load clamps to 1");
+ghurni_gear_set_load(g_loaded, f64_div(0, 0));
+assert_eq(ghurni_gear_load(g_loaded), 0, "NaN load collapses to 0, never propagates");
+
+var tx_l = ghurni_transmission_new(vec_new(), 24, SR);
+assert_eq(ghurni_transmission_load(tx_l), 0, "transmission load defaults to 0");
+var df_l = ghurni_differential_new(41, 11, SR);
+assert_eq(ghurni_differential_load(df_l), 0, "differential load defaults to 0");
+assert_eq(ghurni_differential_coasting(df_l), 0, "differential defaults to DRIVING, not coasting");
+
+# Drive/coast: the hypoid meshes on the opposite flank on overrun.
+var df_drive = ghurni_differential_new(41, 11, SR);
+ghurni_differential_set_load(df_drive, 0.8);
+var b_drive = ghurni_differential_synthesize(df_drive, f64_from(3000), 0.2);
+var df_coast = ghurni_differential_new(41, 11, SR);
+ghurni_differential_set_load(df_coast, 0.8);
+ghurni_differential_set_coasting(df_coast, 1);
+assert_eq(ghurni_differential_coasting(df_coast), 1, "coasting flag reads back");
+var b_coast = ghurni_differential_synthesize(df_coast, f64_from(3000), 0.2);
+assert_eq(buf_differs(b_drive, b_coast), 1, "drive and coast sound different");
+assert_lt(rest_rms(b_coast), rest_rms(b_drive), "the coast flank is quieter than the drive flank");
+# Any non-zero is treated as coasting.
+ghurni_differential_set_coasting(df_coast, 7);
+assert_eq(ghurni_differential_coasting(df_coast), 1, "any non-zero means coasting");
+
+# ================================================================
+test_group("clock speed control (ADR-008)");
+# A clock's beat was fixed at construction and could not be changed at all:
+# set_rpm is a no-op and nothing else touched tick_rate.
+var ck_c = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+assert_eq(ghurni_clock_tick_rate(ck_c), f64_from(2), "WallClock starts at its 2 Hz type default");
+ghurni_clock_set_tick_rate(ck_c, f64_from(8));
+assert_eq(ghurni_clock_tick_rate(ck_c), f64_from(8), "tick rate is settable");
+ghurni_clock_set_tick_rate(ck_c, f64_from(999));
+assert_eq(ghurni_clock_tick_rate(ck_c), f64_from(50), "clamps to 50 Hz");
+ghurni_clock_set_tick_rate(ck_c, 0);
+assert_eq(ghurni_clock_tick_rate(ck_c), 0.1, "clamps to 0.1 Hz");
+ghurni_clock_set_tick_rate(ck_c, f64_div(0, 0));
+assert_eq(ghurni_clock_tick_rate(ck_c), 0.1, "NaN collapses to the floor");
+# set_rpm remains a deliberate no-op.
+var ck_r = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+ghurni_clock_set_rpm(ck_r, f64_from(9999));
+assert_eq(ghurni_clock_tick_rate(ck_r), f64_from(2), "set_rpm does NOT change the beat");
+# A faster clock really does tick more often.
+var ck_slow = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+var ck_fast = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+ghurni_clock_set_tick_rate(ck_fast, f64_from(8));
+var s_slow = ghurni_clock_synthesize(ck_slow, F64_ONE);
+var s_fast = ghurni_clock_synthesize(ck_fast, F64_ONE);
+assert_eq(buf_differs(s_slow, s_fast), 1, "8 Hz and 2 Hz clocks render differently");
+
+# ================================================================
+test_group("every public enum has name/from_name (ADR-008)");
+# GH_KIND_* had NEITHER; MechanicalEvent had only the forward half. 2.0.2 fixed
+# GhurniError for the same reason.
+assert_streq(ghurni_kind_name(GH_KIND_ENGINE), "Engine", "kind_name Engine");
+assert_streq(ghurni_kind_name(GH_KIND_CHAIN_DRIVE), "ChainDrive", "kind_name ChainDrive");
+assert_streq(ghurni_kind_name(99), "Unknown", "kind_name out of range");
+assert_eq(ghurni_kind_from_name("Engine"), GH_KIND_ENGINE, "kind_from_name Engine");
+assert_eq(ghurni_kind_from_name("ForcedInduction"), GH_KIND_FORCED_INDUCTION, "kind_from_name ForcedInduction");
+assert_eq(ghurni_kind_from_name("nonsense"), 0 - 1, "unknown kind name -> -1");
+assert_eq(ghurni_kind_from_name(ghurni_kind_name(GH_KIND_TURBINE)), GH_KIND_TURBINE, "kind roundtrip");
+assert_eq(ghurni_event_from_name("Backfire"), GH_EVENT_BACKFIRE, "event_from_name Backfire");
+assert_eq(ghurni_event_from_name("RevLimiterHit"), GH_EVENT_REV_LIMITER_HIT, "event_from_name RevLimiterHit");
+assert_eq(ghurni_event_from_name("nonsense"), 0 - 1, "unknown event name -> -1");
+assert_eq(ghurni_event_from_name(ghurni_event_name(GH_EVENT_SHUTDOWN)), GH_EVENT_SHUTDOWN, "event roundtrip");
+# The -1 sentinel is safe to feed straight to the mixer, which range-checks it.
+var kn_mix = ghurni_mixer_new();
+var kn_gear = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+assert_eq(ghurni_is_err(ghurni_mixer_add_channel(kn_mix, "x", ghurni_kind_from_name("nope"), kn_gear)), 1,
+  "the -1 sentinel is rejected by add_channel, not accepted as a tag");
+
 var rc = assert_summary();
 syscall(60, rc);

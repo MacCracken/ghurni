@@ -26,3 +26,39 @@ var GH_KIND_DIFFERENTIAL     = 6;
 var GH_KIND_FORCED_INDUCTION = 7;
 var GH_KIND_BELT_DRIVE       = 8;
 var GH_KIND_CHAIN_DRIVE      = 9;
+
+# Externally-tagged name for a GH_KIND_* dispatch tag, and its inverse.
+# CLAUDE.md requires every public enum to carry the `ghurni_<enum>_name` /
+# `_from_name` pair (serde parity). GH_KIND_* was the last enum without one --
+# 2.0.2 fixed GhurniError, 2.4.0 fixes this and MechanicalEvent.
+#must_use
+fn ghurni_kind_name(kind) {
+    if (kind == GH_KIND_ENGINE)             { return "Engine"; }
+    if (kind == GH_KIND_GEAR)               { return "Gear"; }
+    if (kind == GH_KIND_MOTOR)              { return "Motor"; }
+    if (kind == GH_KIND_TURBINE)            { return "Turbine"; }
+    if (kind == GH_KIND_CLOCK)              { return "Clock"; }
+    if (kind == GH_KIND_TRANSMISSION)       { return "Transmission"; }
+    if (kind == GH_KIND_DIFFERENTIAL)       { return "Differential"; }
+    if (kind == GH_KIND_FORCED_INDUCTION)   { return "ForcedInduction"; }
+    if (kind == GH_KIND_BELT_DRIVE)         { return "BeltDrive"; }
+    if (kind == GH_KIND_CHAIN_DRIVE)        { return "ChainDrive"; }
+    return "Unknown";
+}
+
+# Inverse of ghurni_kind_name. Returns -1 for an unknown name, which every
+# GH_KIND_*-taking function rejects (ghurni_mixer_add_channel range-checks it).
+#must_use
+fn ghurni_kind_from_name(s) {
+    if (streq(s, "Engine") == 1)          { return GH_KIND_ENGINE; }
+    if (streq(s, "Gear") == 1)            { return GH_KIND_GEAR; }
+    if (streq(s, "Motor") == 1)           { return GH_KIND_MOTOR; }
+    if (streq(s, "Turbine") == 1)         { return GH_KIND_TURBINE; }
+    if (streq(s, "Clock") == 1)           { return GH_KIND_CLOCK; }
+    if (streq(s, "Transmission") == 1)    { return GH_KIND_TRANSMISSION; }
+    if (streq(s, "Differential") == 1)    { return GH_KIND_DIFFERENTIAL; }
+    if (streq(s, "ForcedInduction") == 1) { return GH_KIND_FORCED_INDUCTION; }
+    if (streq(s, "BeltDrive") == 1)       { return GH_KIND_BELT_DRIVE; }
+    if (streq(s, "ChainDrive") == 1)      { return GH_KIND_CHAIN_DRIVE; }
+    return (0 - 1);
+}
