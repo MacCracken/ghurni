@@ -399,5 +399,192 @@ assert_eq(ghurni_fmod(f64_neg(f64_from(90)), f64_from(720)), f64_from(630), "fmo
 assert_eq(ghurni_fmod(f64_neg(f64_from(10)), f64_from(360)), f64_from(350), "fmod -10 mod 360 = 350, not -10");
 assert_eq(ghurni_fmod(f64_neg(f64_from(720)), f64_from(720)), 0, "fmod exact negative multiple = 0");
 
+# ================================================================
+test_group("streaming: process_block output is independent of block size");
+# The existing continuity test (tests/mixer.tcyr:128) compares total ENERGY
+# between a one-shot render and a chunked one. That is too weak to catch the
+# defect it is aimed at: anything that resets per-block state -- a filter delay
+# line cleared at a block boundary, a phase accumulator restarted, an LFO
+# re-seeded -- perturbs individual samples while leaving block energy almost
+# unchanged, so it passes. This pins the strong property instead: chunked
+# rendering must be BIT-IDENTICAL to a single call, for every synth.
+#
+# It matters beyond hygiene. Consumers stream at whatever block size their audio
+# callback hands them (dhvani, kiran), so a block-size dependence would make
+# ghurni render differently on different hosts while every existing test passed.
+fn bs_chunked(kind, synth, total, chunk) {
+    var outv = vec_new();
+    var z = 0;
+    while (z < total) { vec_push(outv, 0); z = z + 1; }
+    var off = 0;
+    while (off < total) {
+        var end = off + chunk;
+        if (end > total) { end = total; }
+        var clen = end - off;
+        var cbuf = vec_new();
+        var q = 0;
+        while (q < clen) { vec_push(cbuf, 0); q = q + 1; }
+        ghurni_synth_process_block(kind, synth, cbuf);
+        var m = 0;
+        while (m < clen) { vec_set(outv, off + m, vec_get(cbuf, m)); m = m + 1; }
+        off = end;
+    }
+    return outv;
+}
+fn bs_first_diff(a, b) {
+    var n = vec_len(a);
+    var i = 0;
+    while (i < n) {
+        if (vec_get(a, i) != vec_get(b, i)) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+# 4410 samples = 0.1 s, split 441 x10 -- a chunk size that divides the total but
+# is NOT a divisor of any synth's internal period, so a per-block reset lands
+# mid-cycle where it is audible rather than at a zero crossing.
+fn bs_check(kind, synth, label) {
+    var one = vec_new();
+    var z = 0;
+    while (z < 4410) { vec_push(one, 0); z = z + 1; }
+    ghurni_synth_process_block(kind, synth, one);
+    assert_eq(audio_has_energy(one), 1, label);
+    return one;
+}
+
+var bs_e1 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_set_rpm(bs_e1, f64_from(3000));
+ghurni_engine_set_load(bs_e1, 0.6);
+var bs_e2 = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_set_rpm(bs_e2, f64_from(3000));
+ghurni_engine_set_load(bs_e2, 0.6);
+var bs_a = bs_check(GH_KIND_ENGINE, bs_e1, "engine one-shot has energy (not a vacuous compare)");
+var bs_b = bs_chunked(GH_KIND_ENGINE, bs_e2, 4410, 441);
+assert_eq(bs_first_diff(bs_a, bs_b), 0 - 1, "engine: 441x10 is bit-identical to 4410x1");
+
+var bs_g1 = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_gear_set_rpm(bs_g1, f64_from(1500));
+var bs_g2 = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_gear_set_rpm(bs_g2, f64_from(1500));
+var bs_ga = bs_check(GH_KIND_GEAR, bs_g1, "gear one-shot has energy");
+assert_eq(bs_first_diff(bs_ga, bs_chunked(GH_KIND_GEAR, bs_g2, 4410, 441)), 0 - 1,
+  "gear: chunked is bit-identical");
+
+var bs_m1 = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR);
+ghurni_motor_set_rpm(bs_m1, f64_from(4000));
+var bs_m2 = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR);
+ghurni_motor_set_rpm(bs_m2, f64_from(4000));
+var bs_ma = bs_check(GH_KIND_MOTOR, bs_m1, "motor one-shot has energy");
+assert_eq(bs_first_diff(bs_ma, bs_chunked(GH_KIND_MOTOR, bs_m2, 4410, 441)), 0 - 1,
+  "motor: chunked is bit-identical");
+
+var bs_t1 = ghurni_turbine_new(24, f64_from(800), SR);
+ghurni_turbine_set_rpm(bs_t1, f64_from(8000));
+var bs_t2 = ghurni_turbine_new(24, f64_from(800), SR);
+ghurni_turbine_set_rpm(bs_t2, f64_from(8000));
+var bs_ta = bs_check(GH_KIND_TURBINE, bs_t1, "turbine one-shot has energy");
+assert_eq(bs_first_diff(bs_ta, bs_chunked(GH_KIND_TURBINE, bs_t2, 4410, 441)), 0 - 1,
+  "turbine: chunked is bit-identical");
+
+# The clock is the sharpest case: its body_filter is advanced ONLY inside the
+# tick window (clock.cyr:248,253), so a block boundary that lands mid-ring is
+# exactly where a reset would show.
+var bs_c1 = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+var bs_c2 = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+var bs_ca = bs_check(GH_KIND_CLOCK, bs_c1, "clock one-shot has energy");
+assert_eq(bs_first_diff(bs_ca, bs_chunked(GH_KIND_CLOCK, bs_c2, 4410, 441)), 0 - 1,
+  "clock: chunked is bit-identical");
+
+fn bs_ratios() {
+    var r = vec_new();
+    vec_push(r, f64_from(3)); vec_push(r, f64_from(2)); vec_push(r, F64_ONE);
+    return r;
+}
+var bs_x1 = ghurni_transmission_new(bs_ratios(), 24, SR);
+ghurni_transmission_set_rpm(bs_x1, f64_from(3000));
+var bs_x2 = ghurni_transmission_new(bs_ratios(), 24, SR);
+ghurni_transmission_set_rpm(bs_x2, f64_from(3000));
+var bs_xa = bs_check(GH_KIND_TRANSMISSION, bs_x1, "transmission one-shot has energy");
+assert_eq(bs_first_diff(bs_xa, bs_chunked(GH_KIND_TRANSMISSION, bs_x2, 4410, 441)), 0 - 1,
+  "transmission: chunked is bit-identical");
+
+var bs_d1 = ghurni_differential_new(41, 11, SR);
+ghurni_differential_set_rpm(bs_d1, f64_from(3000));
+var bs_d2 = ghurni_differential_new(41, 11, SR);
+ghurni_differential_set_rpm(bs_d2, f64_from(3000));
+var bs_da = bs_check(GH_KIND_DIFFERENTIAL, bs_d1, "differential one-shot has energy");
+assert_eq(bs_first_diff(bs_da, bs_chunked(GH_KIND_DIFFERENTIAL, bs_d2, 4410, 441)), 0 - 1,
+  "differential: chunked is bit-identical");
+
+var bs_f1 = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR);
+ghurni_forced_induction_set_rpm(bs_f1, f64_from(5000));
+ghurni_forced_induction_set_load(bs_f1, 0.8);
+var bs_f2 = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR);
+ghurni_forced_induction_set_rpm(bs_f2, f64_from(5000));
+ghurni_forced_induction_set_load(bs_f2, 0.8);
+var bs_fa = bs_check(GH_KIND_FORCED_INDUCTION, bs_f1, "forced_induction one-shot has energy");
+assert_eq(bs_first_diff(bs_fa, bs_chunked(GH_KIND_FORCED_INDUCTION, bs_f2, 4410, 441)), 0 - 1,
+  "forced_induction: chunked is bit-identical");
+
+var bs_b1 = ghurni_belt_drive_new(f64_from(150), 0.7, SR);
+ghurni_belt_drive_set_rpm(bs_b1, f64_from(2000));
+var bs_b2 = ghurni_belt_drive_new(f64_from(150), 0.7, SR);
+ghurni_belt_drive_set_rpm(bs_b2, f64_from(2000));
+var bs_ba = bs_check(GH_KIND_BELT_DRIVE, bs_b1, "belt_drive one-shot has energy");
+assert_eq(bs_first_diff(bs_ba, bs_chunked(GH_KIND_BELT_DRIVE, bs_b2, 4410, 441)), 0 - 1,
+  "belt_drive: chunked is bit-identical");
+
+var bs_n1 = ghurni_chain_drive_new(18, 110, SR);
+ghurni_chain_drive_set_rpm(bs_n1, f64_from(3000));
+var bs_n2 = ghurni_chain_drive_new(18, 110, SR);
+ghurni_chain_drive_set_rpm(bs_n2, f64_from(3000));
+var bs_na = bs_check(GH_KIND_CHAIN_DRIVE, bs_n1, "chain_drive one-shot has energy");
+assert_eq(bs_first_diff(bs_na, bs_chunked(GH_KIND_CHAIN_DRIVE, bs_n2, 4410, 441)), 0 - 1,
+  "chain_drive: chunked is bit-identical");
+
+# ================================================================
+test_group("the now-live intake/exhaust resonance setters reject hostile input");
+# 2.5.0 made GhEngine_set_intake_resonance live. That is a fix, but it also opens
+# a path that did not exist: both resonances are raw #derive(accessors) symbols
+# with NO ghurni_finite_clamp, and they now reach naad's filter_biquad_set_params
+# on every block. naad VALIDATES and returns NAAD_ERR_INVALID_PARAMETER for a
+# non-finite, zero or negative frequency, and the call sites ignore the return --
+# which is correct behaviour (the filter simply keeps its previous, valid
+# coefficients) but only if it really is what happens. Fixing a dead parameter
+# must not trade a silent no-op for a NaN in a consumer's audio.
+fn hr_zeros(n) {
+    var v = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(v, 0); i = i + 1; }
+    return v;
+}
+fn hr_finite_with(exh, intk) {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    ghurni_engine_set_load(e, 0.6);
+    GhEngine_set_exhaust_resonance(e, exh);
+    GhEngine_set_intake_resonance(e, intk);
+    var b = hr_zeros(2205);
+    ghurni_engine_process_block(e, b);
+    return audio_all_finite(b);
+}
+var hr_nan = f64_div(0, 0);
+assert_eq(hr_finite_with(hr_nan, f64_from(520)), 1, "NaN exhaust resonance -> audio stays finite");
+assert_eq(hr_finite_with(f64_from(230), hr_nan), 1, "NaN intake resonance -> audio stays finite");
+assert_eq(hr_finite_with(hr_nan, hr_nan), 1, "both NaN -> audio stays finite");
+assert_eq(hr_finite_with(0, 0), 1, "zero resonances -> audio stays finite");
+assert_eq(hr_finite_with(f64_neg(f64_from(400)), f64_neg(f64_from(400))), 1,
+  "negative resonances -> audio stays finite");
+assert_eq(hr_finite_with(f64_from(500000), f64_from(500000)), 1,
+  "far-above-nyquist resonances -> audio stays finite");
+# And the engine must still make sound afterwards, not fall silent.
+var hr_e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_set_rpm(hr_e, f64_from(3000));
+ghurni_engine_set_load(hr_e, 0.6);
+GhEngine_set_intake_resonance(hr_e, hr_nan);
+var hr_b = hr_zeros(2205);
+ghurni_engine_process_block(hr_e, hr_b);
+assert_eq(audio_has_energy(hr_b), 1, "a rejected resonance leaves the engine audible, not muted");
+
 var rc = assert_summary();
 syscall(60, rc);

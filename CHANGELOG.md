@@ -5,6 +5,118 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-08-28
+
+**Arc 3b — "Output Path."** The release that does not ship the feature it was
+scheduled to ship, and says why with numbers. Recorded in
+[ADR-009](docs/architecture/adr-009-no-stems-yet.md).
+
+✅ **Rendered audio is unchanged** at every golden, and **no public symbol was
+added**. A release whose headline is "we are not shipping the API" must not grow
+the API by accident.
+
+### Not shipped — per-component stems, deferred on measurement
+
+Four API designs were argued and all four fail. Taxonomies keyed on signal
+character structurally cannot separate exhaust from intake — `engine.cyr:527` and
+`:532` are the same operation on the same noise source. The taxonomy keyed on
+radiation path separates them correctly and then hands a consumer 3.6% and 1.3%
+of the signal with none of its periodicity.
+
+Measured, A/B on source with the RNG sequence preserved:
+
+| case | full | both apertures muted | Δ |
+|---|---|---|---|
+| gasoline 4cyl @3000 load 0.6 | 0.03849662 | 0.03757428 | **−0.211 dB** |
+| diesel 6cyl @1500 load 0.9 | 0.05177036 | 0.05118233 | **−0.099 dB** |
+
+Deleting *both* aperture paths outright moves the engine about a fifth of a
+decibel, against a ~1 dB JND. Worse, the firing-period periodicity that *is* the
+exhaust note sits in the unfiltered structural sum (+0.625) and not in the exhaust
+bed (−0.051) — so a consumer would wire occlusion to a buffer labelled EXHAUST,
+hear nothing while driving, then lose a whole backfire behind a wall.
+
+The obvious repair was prototyped and fails too: routing combustion through the
+exhaust body at 100% costs **−10.6 dB** and leaves that path *less* periodic than
+today's mono. A resonant biquad is a tone control; a pipe is a resonant delay.
+**The blocker was never the API shape** — ghurni does not model a radiation path.
+
+Re-pointed to **Arc 3c (`2.6.0`, "Radiation Paths")** with an acceptance criterion
+that is a number, pinned in the suite so it cannot be deferred a fifth time by
+inattention: the exhaust path must carry >25% of mean-square energy and a positive
+firing-period autocorrelation above today's mono (+0.597).
+
+### Decided — keep the bandpass, do not add convolution
+
+Closed, not deferred. [ADR-002](docs/architecture/adr-002-scope-boundaries.md)
+forbids reverb (dhvani's) and spatialization (goonj's), and naad's type is
+literally `ConvolutionReverb` — a room model, not a body model. Measured cost is
+21×–7161× a biquad, and `cyrius distlib` ships by concatenating `.cyr` **text**
+modules, so the format cannot carry a binary IR at all.
+
+### Fixed — `GhEngine_set_intake_resonance` was a dead store
+
+`engine.cyr:354` retunes the exhaust body from its field every block; the intake
+filter was built once in `_new` from a constructor *local* and never retuned.
+Cyrius has no visibility control, so that accessor is public API — a public engine
+parameter that provably did nothing. Measured before the fix: `intake_resonance =
+9999 Hz` changed **0 of 4410 samples**, while `exhaust_resonance` changed **4410
+of 4410**. Bit-identical by default: the field holds exactly the value the filter
+was built with, and naad's `filter_biquad_set_params` only recomputes coefficients.
+
+### Fixed — transmission's load tilt was computed and never used
+
+`transmission.cyr:163` computed `tx_tilt` and no line read it; the variable
+occurred exactly once in the file, while gear and differential both wire theirs.
+Transmission gained `set_load` in 2.4.0 and so got load's amplitude half with none
+of its spectral half — a pure fader, the exact behaviour ADR-007 exists to remove.
+The 2.4.0 entry's claim that all three drivetrain synths "apply the ADR-007
+broadband tilt" was true of two of them.
+
+Audio changes only at load > 0; the tilt is exactly 1.0 at the default load of 0,
+so the golden holds. That is why this is a MINOR and not a patch.
+
+### Tests
+
+643 assertions across 10 suites, up from 600.
+
+- **Every load-taking synth is now asserted to get brighter under load** — engine,
+  motor, forced_induction, gear, transmission, differential. Testing transmission
+  alone would have fixed the instance and left the class, and it is the absence of
+  exactly this check that let the defect sit through two releases.
+- **Block-size independence for all ten synths**, sample-by-sample. The previous
+  continuity test compared total *energy*, which is too weak to catch what it aims
+  at: injecting a per-block `filter_biquad_reset` into gear fails the new
+  assertion at sample 441 — the first block boundary — while the old test still
+  passed 13/13. Consumers stream at whatever block size their host supplies.
+- **A tripwire pinning the deferral**, in the spirit of 2.0.3's rest-state pins:
+  detuning both engine bodies to 60 Hz moves the level under 0.45 dB. The day the
+  engine gets a real duct, that fails and the stems question reopens on evidence.
+- Hostile input on the newly-live resonance setters (NaN, zero, negative,
+  far-above-nyquist) leaves audio finite *and* audible.
+
+### Corrected
+
+`sample_position` is **not** vestigial — ADR-008 already narrowed that claim from
+three synths to two, and two is still wrong. Nothing *inside* transmission or
+forced_induction reads it, but the accessors are public API returning
+samples-rendered; deleting the write would make a consumer read return 0 forever,
+and deleting the accessor would be a breaking change a MINOR may not make.
+Documented, not removed — the item is closed.
+
+Also corrected: the roadmap's "every synth sums exhaust + intake + mechanical"
+(false for nine of ten), ADR-006's "stems is an API change, not a timbral one"
+(exactly backwards), and ADR-008's "needs a shape decision across all ten synths"
+(the premise that generated four failed designs).
+
+### Queued
+
+`naad_convolution_process_block` was proven to **drop its tail** across block
+boundaries — 4-tap all-ones IR, one impulse: sample path `1,1,1,1`, block path
+`1, 1−1ULP, 0, 0`. The `_direct` fallback is correct; only the fast path is
+broken. ghurni calls no convolution symbol today, so nothing shipping is affected.
+Queued for a naad patch, then a `2.5.x` here to pull it.
+
 ## [2.4.0] - 2026-08-28
 
 **Arc 3 — "Events & Control."** The previous three releases changed how ghurni

@@ -370,5 +370,72 @@ assert_gt(c_diesel, c_petrol, "diesel is BRIGHTER than gasoline at the same rpm 
 # ...and by a margin that a mere resonance retune could not produce.
 assert_gt(f64_div(c_diesel, c_petrol), 1.05, "the diesel margin is substantial, not incidental");
 
+# ================================================================
+test_group("EVERY load-taking synth gets brighter under load (ADR-007/ADR-009)");
+# This is the check whose absence let a real defect sit through two releases.
+# ADR-007 says the load tilt is "applied to the broadband term only" -- but
+# transmission computed `tx_tilt` at transmission.cyr:163 and NO LINE READ IT.
+# The variable occurred exactly once in the file. transmission gained set_load in
+# 2.4.0 and so got load's amplitude half with none of its spectral half: a pure
+# fader, which is the exact behaviour ADR-007 was written to remove.
+#
+# Testing transmission alone would fix the instance and leave the class. Six
+# synths take load; all six are asserted here, so the next one to be wired up
+# wrong fails immediately rather than two releases later.
+fn spec_centroid_2blk(kind, synth) {
+    var w = spec_block();
+    ghurni_synth_process_block(kind, synth, w);
+    var b = spec_block();
+    ghurni_synth_process_block(kind, synth, b);
+    return spec_centroid(b);
+}
+fn tx_centroid_at(load) {
+    var r = vec_new();
+    vec_push(r, f64_from(3)); vec_push(r, f64_from(2)); vec_push(r, F64_ONE);
+    var t = ghurni_transmission_new(r, 24, SR);
+    ghurni_transmission_set_rpm(t, f64_from(3000));
+    ghurni_transmission_set_load(t, load);
+    return spec_centroid_2blk(GH_KIND_TRANSMISSION, t);
+}
+var txc_lo = tx_centroid_at(0.1);
+var txc_mid = tx_centroid_at(0.5);
+var txc_hi = tx_centroid_at(0.9);
+assert_gt(txc_lo, f64_from(500), "transmission centroid is a real measurement");
+assert_lt(txc_lo, txc_mid, "transmission: more load is BRIGHTER (0.1 -> 0.5)");
+assert_lt(txc_mid, txc_hi, "transmission: more load is BRIGHTER (0.5 -> 0.9)");
+
+fn gear_centroid_at(load) {
+    var g = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+    ghurni_gear_set_rpm(g, f64_from(1500));
+    ghurni_gear_set_load(g, load);
+    return spec_centroid_2blk(GH_KIND_GEAR, g);
+}
+var gc_lo = gear_centroid_at(0.1);
+var gc_hi = gear_centroid_at(0.9);
+assert_gt(gc_lo, f64_from(200), "gear centroid is a real measurement");
+assert_lt(gc_lo, gc_hi, "gear: more load is BRIGHTER");
+
+fn diff_centroid_at(load) {
+    var d = ghurni_differential_new(41, 11, SR);
+    ghurni_differential_set_rpm(d, f64_from(3000));
+    ghurni_differential_set_load(d, load);
+    return spec_centroid_2blk(GH_KIND_DIFFERENTIAL, d);
+}
+var dc_lo = diff_centroid_at(0.1);
+var dc_hi = diff_centroid_at(0.9);
+assert_gt(dc_lo, f64_from(200), "differential centroid is a real measurement");
+assert_lt(dc_lo, dc_hi, "differential: more load is BRIGHTER");
+
+fn fi_centroid_at(load) {
+    var f = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR);
+    ghurni_forced_induction_set_rpm(f, f64_from(5000));
+    ghurni_forced_induction_set_load(f, load);
+    return spec_centroid_2blk(GH_KIND_FORCED_INDUCTION, f);
+}
+var fc_lo = fi_centroid_at(0.1);
+var fc_hi = fi_centroid_at(0.9);
+assert_gt(fc_lo, f64_from(200), "forced_induction centroid is a real measurement");
+assert_lt(fc_lo, fc_hi, "forced_induction: more load is BRIGHTER");
+
 var rc = assert_summary();
 syscall(60, rc);

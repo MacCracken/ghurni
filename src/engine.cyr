@@ -359,6 +359,19 @@ fn ghurni_engine_process_block_naad(self, out) {
     var sr = GhEngine_sample_rate(self);
     var noise = GhEngine_noise_gen(self);
     var intake_filter = GhEngine_intake_filter(self);
+    # Retune the intake body from its FIELD, mirroring what line 354 already does
+    # for the exhaust. Until 2.5.0 only the exhaust was retuned: intake_filter was
+    # built once in _new from a constructor LOCAL, so GhEngine_set_intake_resonance
+    # wrote a field nothing ever read. Cyrius has no visibility control, so that
+    # accessor is public API -- a public parameter that provably did nothing
+    # (measured: intake_resonance = 9999 Hz changed 0 of 4410 samples, while
+    # exhaust_resonance changed 4410 of 4410). Same ADR-008 class as the five dead
+    # events. Bit-identical by default: the field holds exactly the value the
+    # filter was built with, the same f64_min nyquist clamp is reapplied, and
+    # naad's filter_biquad_set_params only recomputes coefficients -- it never
+    # touches the delay line (filter_biquad_reset is the separate call for that).
+    filter_biquad_set_params(intake_filter,
+      f64_min(GhEngine_intake_resonance(self), f64_mul(GhEngine_sample_rate(self), 0.49)), f64_from(2), 0);
     var smooth_rpm = GhEngine_smooth_rpm(self);
     var smooth_load = GhEngine_smooth_load(self);
     var firing = GhEngine_firing_offsets(self);

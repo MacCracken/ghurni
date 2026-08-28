@@ -322,33 +322,99 @@ retire the two remaining vestigial `sample_position` writes.
 
 ---
 
-## Arc 3b — `2.5.0` "Output Path"
+## Arc 3b — `2.5.0` "Output Path"  ✅ SHIPPED (as a deferral, with the measurement)
 
-**Theme: how a synth's sound leaves it.** Both items were deferred out of earlier
-arcs for the same reason — each changes the *shape* of the output rather than its
-content, and each needs a decision that applies across all ten synths at once.
+> Released 2026-08-28. 643 assertions (was 600), **goldens unchanged**, **zero new
+> public symbols**. See [ADR-009](../architecture/adr-009-no-stems-yet.md).
 
-- [ ] **Per-component stems** — every synth sums exhaust + intake + mechanical
-      into one mono buffer; rendering them separately is a real API gap. Moved
-      here from Arc 3 in 2.4.0 (and to Arc 3 from Arc 2 in 2.2.0). The open
-      question is the shape: a `process_block_stems` per synth multiplies the
-      public surface by a third, and the component split differs per synth — so
-      decide the naming and the "what counts as a stem" rule *first*, in an ADR.
-- [ ] **Source-body separation** — ghurni already models exhaust resonance with a
-      bandpass. The real question, corrected in ADR-007, is not "add convolution"
-      (naad already ships a full engine: `naad_convolution_from_ir`,
-      `_process_sample`, `_process_block`) but **whether to replace the bandpass
-      with it**. Two mechanisms for one job is the thing to avoid; that is an
-      architectural change and needs its own ADR.
+**Theme: how a synth's sound leaves it — and the finding that it does not leave
+by the route this arc assumed.**
 
-These belong together: a stem *is* a pre-body signal, so deciding the stem
-boundary and deciding where the body filter sits are the same decision.
+- [ ] **Per-component stems** → **deferred to Arc 3c (`2.6.0`), on measurement.**
+      Four API designs were argued (three by signal character, one by radiation
+      path) and all four fail. Character taxonomies structurally cannot separate
+      exhaust from intake — `engine.cyr:527` and `:532` are the same operation on
+      the same noise source. The radiation-path taxonomy separates them correctly
+      and then hands the consumer **3.6% and 1.3% of the signal with none of its
+      periodicity**. Deleting BOTH aperture terms outright moves the engine by
+      **−0.211 dB** (gasoline) / **−0.099 dB** (diesel), against a ~1 dB JND.
+      The obvious repair was prototyped and fails too: routing combustion through
+      the exhaust body at 100% costs **−10.6 dB** and makes the exhaust path *less*
+      periodic than today's mono. A resonant biquad is a tone control; a pipe is a
+      resonant delay. **The blocker was never the API shape.**
+- [x] **Source-body separation** — decided: **keep the bandpass, do not add
+      convolution.** [ADR-002](../architecture/adr-002-scope-boundaries.md)
+      forbids reverb (dhvani's) and spatialization (goonj's); naad's type is
+      literally `ConvolutionReverb`, a room model. Cost measured at 21x-7161x a
+      biquad, and `cyrius distlib` concatenates `.cyr` TEXT so the format cannot
+      carry a binary IR. Closed, not deferred.
+- [x] **Two real defects found on the way**, both bit-identical at every golden:
+      `GhEngine_set_intake_resonance` was a **dead store** (measured: 0 of 4410
+      samples changed, vs 4410 of 4410 for the live exhaust control), and
+      transmission's ADR-007 load tilt was **computed and never read** — so the
+      `set_load` shipped in 2.4.0 was a pure fader, the exact behaviour ADR-007
+      exists to remove.
+- [x] ~~`sample_position` is vestigial in two synths~~ — **wrong, and closed.**
+      ADR-008 already narrowed this from three. Nothing *inside* transmission or
+      forced_induction reads it, but Cyrius has no visibility control, so the
+      accessors are public API returning samples-rendered. Deleting the write
+      would make a consumer read return 0 forever; deleting the accessor would be
+      a breaking change a MINOR may not make. Documented, not removed.
 
-**Patch line `2.5.x`** — stem-level tuning; IR asset curation if convolution wins.
+**Patch line `2.5.x`** — **pull the fixed naad**.
+
+> **Queued dependency fix — naad convolution.** While settling the convolution
+> question for this arc, `naad_convolution_process_block` (the FFT path) was
+> proven to **discard its tail**: it writes only `[0, block_len)` from the IFFT
+> result and keeps no overlap-add state, so a ring is truncated at every block
+> boundary. Proof, 4-tap all-ones IR with one impulse — sample path `1,1,1,1`,
+> block path `1, 1-1ULP, 0, 0`. The `_direct` fallback is correct; only the fast
+> path is broken, and the FFT path never touches `position`/`input_buffer`, so
+> the two APIs cannot be interleaved on one object.
+>
+> naad's own suite misses it because
+> `tests/acoustics_convolution.tcyr::process_block_direct_matches_fft_path`
+> processes **one** block of 8 on a fresh object, and the tail only matters from
+> block two onward. The regression test must run at least two consecutive blocks.
+>
+> Sequence: ship 2.5.0 → fix naad + cut a naad patch → `2.5.x` here to pull it.
+> **ghurni calls no convolution symbol today**, so nothing shipping is affected;
+> this is a trap for whoever wires convolution up later, not a live bug.
 
 ---
 
-## Arc 4 — `2.6.0` "New Mechanisms"
+## Arc 3c — `2.6.0` "Radiation Paths"
+
+**Theme: give the engine somewhere for the sound to come out of.** This is the
+release ADR-009's measurement points at, and stems ship as a *consequence* of it
+rather than before it.
+
+The acceptance criterion is a number, pinned in `tests/oracle_pins.tcyr` so this
+cannot be deferred a fifth time by inattention:
+
+> the engine's exhaust path must carry **>25% of mean-square energy** AND a
+> **positive firing-period autocorrelation exceeding today's mono (+0.597)**.
+
+- [ ] **Model the exhaust as a resonant duct, not a bandpass.** A pipe closed at
+      one end resonates at odd harmonics of c/4L, and it must carry the
+      *combustion pulse train*, not a separate noise bed — that is what makes an
+      exhaust note an exhaust note. Candidate mechanisms: a resonant comb / delay
+      line with a reflection coefficient, or a small modal bank. Both are cheap
+      relative to convolution, which ADR-009 closed.
+- [ ] **Model the intake tract the same way** (Helmholtz plenum + runner), so the
+      two apertures are genuinely different rather than two bandpasses on one
+      noise source.
+- [ ] **Then per-component stems**, re-derived once the acceptance criterion is
+      met. ADR-009's radiation-path rule is the taxonomy to start from — it was
+      the correct definition applied to a model that could not feed it.
+- [ ] Re-check the ADR-005 loudness law against the new duct: a resonant pipe has
+      its own RPM-dependent gain and may double-count.
+
+**Patch line `2.6.x`** — duct tuning per engine type; golden refreshes.
+
+---
+
+## Arc 4 — `2.7.0` "New Mechanisms"
 
 **Theme: breadth.** Deliberately last: a new synth built before Arc 1's loudness
 law and Arc 0's fuzz harness would inherit both problems on day one.
@@ -380,7 +446,7 @@ Ranked by what a consumer hits first. The old roadmap's five are re-scoped:
 - [ ] Weapon actions / rotary cannon — large genre, zero coverage. Check the
       garjan boundary first (the *impact* is theirs; the *action* is ours).
 
-**Patch line `2.6.x`** — per-synth tuning for the new mechanisms.
+**Patch line `2.7.x`** — per-synth tuning for the new mechanisms.
 
 ---
 

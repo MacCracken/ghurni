@@ -194,7 +194,14 @@ fn ghurni_transmission_process_block(self, out) {
             synchro = filter_biquad_process_sample(synchro_filter, raw);
         }
 
-        var hiss = f64_mul(noise_next_sample(noise), 0.02);
+        # ADR-007 load tilt on the BROADBAND term. `tx_tilt` was computed in
+        # 2.4.0 and never read -- the variable occurred exactly once in this file
+        # -- so transmission got load's amplitude half (tx_amp, on the tonal mesh)
+        # with none of its spectral half. That is precisely the pure-fader
+        # behaviour ADR-007 exists to remove, and gear.cyr:222 and
+        # differential.cyr:188 both wire theirs. Exactly 1.0 at load 0, which is
+        # the default, so the golden does not move.
+        var hiss = f64_mul(f64_mul(noise_next_sample(noise), 0.02), tx_tilt);
         # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
         # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
         var tx_sum = f64_add(mesh, f64_add(synchro, hiss));
@@ -205,6 +212,12 @@ fn ghurni_transmission_process_block(self, out) {
         # Kept so the struct stays field-compatible with the oracle and with its nine
         # siblings, where the counter IS live (engine/gear/motor/turbine/clock/belt/
         # chain all derive phase from it). Do not remove without checking all ten.
+        # NOT vestigial, despite two roadmap generations saying so. Nothing INSIDE this
+        # module reads sample_position -- but Cyrius has no visibility control, so the
+        # #derive(accessors) pair is public API, and it returns a meaningful value: the
+        # number of samples this synth has rendered. Deleting the write would make a
+        # legitimate consumer read return 0 forever, and deleting the accessor would be a
+        # breaking change, which a MINOR may not make. Corrected in ADR-009.
         GhTransmission_set_sample_position(self, GhTransmission_sample_position(self) + 1);
         i = i + 1;
     }

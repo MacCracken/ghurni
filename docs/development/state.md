@@ -5,9 +5,10 @@
 
 ## Version
 
-**2.4.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
-(ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007) and a
-control surface that no longer lies (ADR-008). Dependency set:
+**2.5.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
+(ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007), a
+control surface that no longer lies (ADR-008), and stems deferred on measurement
+with convolution closed (ADR-009). Dependency set:
 cyrius 6.5.35 · naad 2.2.1 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
@@ -30,7 +31,7 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 
 Bundle: `dist/ghurni.cyr` (3,925 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 10 suites, 600 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 10 suites, 643 assertions, 0 failures)
 
 | Suite | Covers |
 |-------|--------|

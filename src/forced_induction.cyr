@@ -203,6 +203,12 @@ fn ghurni_forced_induction_process_block(self, out) {
     # Kept so the struct stays field-compatible with the oracle and with its nine
     # siblings, where the counter IS live (engine/gear/motor/turbine/clock/belt/
     # chain all derive phase from it). Do not remove without checking all ten.
+    # NOT vestigial, despite two roadmap generations saying so. Nothing INSIDE this
+    # module reads sample_position -- but Cyrius has no visibility control, so the
+    # #derive(accessors) pair is public API, and it returns a meaningful value: the
+    # number of samples this synth has rendered. Deleting the write would make a
+    # legitimate consumer read return 0 forever, and deleting the accessor would be a
+    # breaking change, which a MINOR may not make. Corrected in ADR-009.
     GhForcedInduction_set_sample_position(self, GhForcedInduction_sample_position(self) + n);
     return 0;
 }

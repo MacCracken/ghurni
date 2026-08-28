@@ -914,5 +914,108 @@ var kn_gear = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
 assert_eq(ghurni_is_err(ghurni_mixer_add_channel(kn_mix, "x", ghurni_kind_from_name("nope"), kn_gear)), 1,
   "the -1 sentinel is rejected by add_channel, not accepted as a tag");
 
+# ================================================================
+test_group("engine body filters: BOTH resonances are live (ADR-009)");
+# Until 2.5.0 only the exhaust body was retuned from its field each block
+# (engine.cyr:354). intake_filter was built once in _new from a constructor LOCAL
+# and never retuned, so GhEngine_set_intake_resonance wrote a field nothing read.
+# Cyrius has no visibility control, so that accessor is public API: a public
+# engine parameter that provably did nothing. MEASURED before the fix --
+# intake_resonance = 9999 Hz changed 0 of 4410 samples; exhaust_resonance changed
+# 4410 of 4410. Same class as ADR-008's five dead events.
+fn br_render(e, n) {
+    var b = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(b, 0); i = i + 1; }
+    ghurni_engine_process_block(e, b);
+    return b;
+}
+fn br_ndiff(a, b) {
+    var n = vec_len(a);
+    var i = 0;
+    var c = 0;
+    while (i < n) {
+        if (vec_get(a, i) != vec_get(b, i)) { c = c + 1; }
+        i = i + 1;
+    }
+    return c;
+}
+fn br_engine() {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    ghurni_engine_set_load(e, 0.6);
+    return e;
+}
+var br_base = br_render(br_engine(), 4410);
+# Determinism control FIRST -- without it "the render changed" proves nothing.
+assert_eq(br_ndiff(br_base, br_render(br_engine(), 4410)), 0,
+  "control: two identically-built engines render bit-identically");
+var br_i = br_engine();
+GhEngine_set_intake_resonance(br_i, f64_from(9999));
+assert_eq(br_ndiff(br_base, br_render(br_i, 4410)), 4410,
+  "intake_resonance is LIVE (was 0 of 4410 before 2.5.0)");
+var br_e = br_engine();
+GhEngine_set_exhaust_resonance(br_e, f64_from(9999));
+assert_eq(br_ndiff(br_base, br_render(br_e, 4410)), 4410,
+  "exhaust_resonance is LIVE (nothing rendered through it before 2.5.0)");
+# The nyquist clamp survives the retune: an absurd frequency must not blow up.
+fn br_all_finite(v) {
+    var n = vec_len(v);
+    var i = 0;
+    while (i < n) {
+        if (ghurni_is_finite(vec_get(v, i)) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+var br_ny = br_engine();
+GhEngine_set_intake_resonance(br_ny, f64_from(500000));
+assert_eq(br_all_finite(br_render(br_ny, 2205)), 1,
+  "intake_resonance far above nyquist still renders finite audio");
+
+# ================================================================
+test_group("PIN THE GAP: the engine's bodies are tone controls, not ducts (ADR-009)");
+# 2.5.0 deferred per-component stems because measurement said ghurni has nothing
+# to split: deleting the exhaust AND intake terms outright moves the engine by
+# -0.211 dB (gasoline 4cyl @3000 load 0.6) and -0.099 dB (diesel 6cyl @1500 load
+# 0.9), against a ~1 dB level JND. Those A/Bs need source instrumentation, so the
+# externally-observable proxy is pinned here instead: detuning BOTH bodies far
+# down barely changes the engine's level, because almost none of its energy goes
+# through them.
+#
+# WHAT THIS DOES AND DOES NOT PROVE. Detuning DOWN is the clean direction. Moving
+# the bodies UP raises the level (+2.6 dB at 9999 Hz) but that is a constant-Q
+# artifact -- a bandpass's bandwidth is f0/Q, so a higher centre simply passes
+# more of the white noise -- and is evidence of nothing. Only the downward
+# assertion is made.
+#
+# This is a TRIPWIRE, in the spirit of 2.0.3's rest-state pins, which deliberately
+# asserted the WRONG behaviour so 2.1.0 could not fix it quietly. The day the
+# engine gets a real duct that carries the combustion pulse, detuning it will move
+# the level a great deal and this assertion will fail -- at which point the stems
+# question reopens on evidence rather than on argument.
+fn br_rms(e, n) {
+    var b = br_render(e, n);
+    var acc = 0;
+    var j = 0;
+    while (j < n) {
+        var v = vec_get(b, j);
+        acc = f64_add(acc, f64_mul(v, v));
+        j = j + 1;
+    }
+    return f64_sqrt(f64_div(acc, f64_from(n)));
+}
+var br_rms_default = br_rms(br_engine(), 44100);
+assert_gt(br_rms_default, 0.02, "baseline engine is loud (not a vacuous compare)");
+var br_low = br_engine();
+GhEngine_set_exhaust_resonance(br_low, f64_from(60));
+GhEngine_set_intake_resonance(br_low, f64_from(60));
+var br_rms_low = br_rms(br_low, 44100);
+# measured ratio 0.98260 == -0.152 dB; 0.95 is -0.45 dB, a generous bracket.
+assert_gt(f64_div(br_rms_low, br_rms_default), 0.95,
+  "detuning BOTH bodies to 60 Hz moves the engine under 0.45 dB -- they are not ducts");
+assert_lt(f64_div(br_rms_low, br_rms_default), F64_ONE,
+  "...but it does move it, so this is a real measurement");
+
 var rc = assert_summary();
 syscall(60, rc);
