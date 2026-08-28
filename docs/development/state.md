@@ -5,8 +5,8 @@
 
 ## Version
 
-**2.2.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
-(ADR-005) and acoustic depth (ADR-006). Dependency set:
+**2.3.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
+(ADR-005), acoustic depth (ADR-006) and load tilt + diesel clatter (ADR-007). Dependency set:
 cyrius 6.5.35 · naad 2.2.1 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
@@ -27,9 +27,9 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (3,491 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (3,593 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 10 suites, 539 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 10 suites, 556 assertions, 0 failures)
 
 | Suite | Covers |
 |-------|--------|
@@ -49,7 +49,7 @@ Bundle: `dist/ghurni.cyr` (3,491 lines, `cyrius distlib`).
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
-`cyrius coverage`: 113/169 functions referenced (66%) — a floor, not a proof.
+`cyrius coverage`: 116/171 functions referenced (67%) — a floor, not a proof.
 Fuzz: `fuzz/ghurni.fcyr`, 1631 adversarial checks (`cyrius fuzz`).
 
 ## Deliberate divergences from `rust-old/`

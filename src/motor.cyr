@@ -202,12 +202,16 @@ fn ghurni_motor_process_block_naad(self, out) {
 
     var amp = f64_add(0.15, f64_mul(GhMotor_load(self), 0.2));
     var noise_level = ghurni_motor_noise_level(GhMotor_motor_type(self));
+    var load_tilt = ghurni_load_tilt(GhMotor_load(self));
 
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
         var hum = f64_mul(additive_next_sample(hum_synth), amp);
-        var raw_noise = f64_mul(f64_mul(noise_next_sample(noise), noise_level), amp);
+        # ADR-007 load tilt: `amp` scales the tonal hum AND the broadband noise
+        # equally, which is exactly why load never changed the spectrum. The
+        # noise bed gets the tilt; the hum does not.
+        var raw_noise = f64_mul(f64_mul(f64_mul(noise_next_sample(noise), noise_level), amp), load_tilt);
         var flt = filter_biquad_process_sample(noise_filter, raw_noise);
         vec_set(out, i, f64_mul(f64_add(hum, flt), rpm_gain));
         i = i + 1;

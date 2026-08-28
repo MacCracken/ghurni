@@ -5,6 +5,102 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-08-28
+
+**Arc 2b — "Depth II."** The rest of Arc 2, split out of 2.2.0 so each piece
+could be designed on its own terms. Recorded in
+[ADR-007](docs/architecture/adr-007-load-tilt-and-diesel.md).
+
+⚠ **This changes rendered audio.** Six goldens moved. The six synths that take no
+load are bit-identical to 2.2.0.
+
+### Changed — load tilts the spectrum instead of moving a fader
+
+Load was a pure gain control, and on the engine it went the *wrong way*:
+
+| | load 0.1 | load 0.5 | load 0.9 | RMS |
+|---|---|---|---|---|
+| motor | 2061.2 Hz | 2061.2 Hz | 2061.2 Hz | ×1.94 |
+| engine | 8882.5 Hz | 8800.1 Hz | **8689.5 Hz** | ×2.70 |
+
+The motor's spectral centroid was **identical to four figures** across the whole
+load range while its level nearly doubled — `amp` scaled the tonal hum and the
+broadband noise by the same factor, so the spectrum could not change shape. The
+engine got *duller* under load, because `base_amp` scales the low-frequency
+combustion thump too and the intake bed is scaled by `load` directly, growing
+~31× where the broadband bed grows ~6×.
+
+A shared `tilt(load, k) = 1 + k·load` now scales each synth's **broadband** term
+and not its tonal one — that asymmetry is the whole mechanism. After:
+
+| | load 0.1 | load 0.5 | load 0.9 |
+|---|---|---|---|
+| motor | 2077.7 Hz | 2157.3 Hz | **2252.8 Hz** |
+| engine | 8892.1 Hz | 8914.0 Hz | **9031.1 Hz** |
+
+Both monotonic, and RMS still rises — harder work is louder *and* brighter.
+
+The engine uses k = 3 rather than the default 1. Not tuning to hit a number:
+with k = 1 the centroid still *fell*, because its own LF terms grow so much
+faster. k = 3 is independently defensible — piston slap, valvetrain clatter and
+injector noise all rise steeply with cylinder pressure.
+
+**`tilt(0) = 1.0` exactly**, so an unloaded machine is bit-identical to 2.2.0 —
+the same bounded-review property ADR-005 used for the reference RPM.
+
+### Changed — diesel finally sounds like a diesel
+
+`Diesel` differed from `Gasoline` in exactly **three numbers** (two resonances
+and a roughness base) — a retuned petrol engine. Nothing modelled the sharp
+metallic clatter from near-instant pressure rise after injection delay, which is
+the thing that identifies a diesel from across a car park.
+
+It now has a second, sharper impulse riding behind the main combustion pulse,
+starting after an injection delay and decaying 8× faster. Measured at 2000 rpm /
+load 0.8: **diesel 9747.4 Hz centroid vs gasoline 8531.3 Hz** — a 14% margin, far
+more than a resonance retune could produce.
+
+Point-sampled deliberately, unlike the combustion pulse ADR-005 had to integrate:
+this is broadband noise shaped by an envelope, so lattice alignment cannot notch it.
+
+### Changed — the differential's teeth are individually audible
+
+Only the *ratio* mattered before: a 40/10 and an 80/20 axle — different hardware,
+same 4.0 ratio — rendered identically apart from their noise seed. The driveshaft
+turns the pinion, so the ring turns slower by the axle ratio and its runout
+modulates the whine once per **ring** revolution. That modulation is now
+modelled, and the two axles sound different.
+
+This also makes `sample_position` **live** in `differential.cyr`, where it had
+been vestigial — written every block, read by nothing — since the port. The
+comment saying so has been corrected.
+
+### Correction to ADR-006
+
+ADR-006 deferred source-body impulse responses as "needs a convolution path and
+IR assets; larger than the rest of this arc combined." **That estimate was
+wrong.** naad already ships a full convolution engine
+(`naad_convolution_from_ir` / `_process_block` / an FFT partition engine), so the
+path exists. The real obstacle is different: ghurni *already* models exhaust
+resonance with a bandpass filter, so convolution would be a second, redundant
+mechanism. The genuine question is whether to **replace** the bandpass — an
+architectural change that deserves its own ADR rather than being smuggled in.
+
+### Re-scoped
+
+**Turbine rotor slap and multi-spool → Arc 4 (breadth).** ADR-006 flagged the
+open question of whether these are a deeper turbine or new machines; the answer
+is new machines. Helicopter blade slap is an impulsive phenomenon with its own
+physics, and multi-spool is a jet architecture.
+
+### Testing
+
+`tests/spectral.tcyr` grows 29 → 41 assertions: centroid ordering by load for
+both motor and engine, `tilt(0) = 1.0` exactly, NaN load never propagating, and
+the diesel margin being *substantial* (>1.05×) rather than merely present.
+`tests/oracle_pins.tcyr` pins the 40/10-vs-80/20 differential distinction with a
+determinism control. 556 assertions across 10 suites, up from 539.
+
 ## [2.2.0] - 2026-08-28
 
 **Arc 2 — "Depth."** Breadth stays frozen; five of the ten synths were missing

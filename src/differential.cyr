@@ -141,6 +141,10 @@ fn ghurni_differential_process_block(self, out) {
     var whine_osc = GhDifferential_whine_osc(self);
     var noise = GhDifferential_noise_gen(self);
     var resonance_filter = GhDifferential_resonance_filter(self);
+    var sr_d = GhDifferential_sample_rate(self);
+    # sample_position is READ here as of 2.3.0 -- the ring-revolution modulation
+    # below needs absolute time. It was vestigial (written, never read) until now.
+    var base_pos_d = GhDifferential_sample_position(self);
 
     var n = vec_len(out);
     var i = 0;
@@ -150,7 +154,19 @@ fn ghurni_differential_process_block(self, out) {
 
         # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
         additive_set_fundamental(whine_osc, f64_clamp(mesh_freq, F64_ONE, f64_div(nyquist, f64_from(3))));
-        var whine = f64_mul(additive_next_sample(whine_osc), 0.2);
+        # RING-REVOLUTION MODULATION (ADR-007). The driveshaft turns the PINION,
+        # so the ring gear turns slower by the axle ratio: ring_rev_freq =
+        # (rpm/60) * pinion/ring. Ring-gear runout and eccentricity therefore
+        # modulate the whine once per RING revolution -- the slow warble a worn
+        # or badly-shimmed diff has, and the reason ring and pinion counts are
+        # both audible rather than only their ratio.
+        var ring_rev = f64_mul(f64_div(smooth, f64_from(60)),
+          f64_div(f64_from(GhDifferential_pinion_teeth(self)),
+            f64_from(GhDifferential_ring_teeth(self))));
+        var abs_pos_d = f64_from(base_pos_d + i);
+        var ring_phase = ghurni_fmod(f64_mul(f64_div(ring_rev, sr_d), abs_pos_d), F64_ONE);
+        var ring_mod = f64_add(0.88, f64_mul(0.12, f64_cos(f64_mul(F64_TAU, ring_phase))));
+        var whine = f64_mul(f64_mul(additive_next_sample(whine_osc), 0.2), ring_mod);
 
         # High-Q housing resonance excited by mesh.
         var excitation = f64_mul(noise_next_sample(noise), 0.1);
@@ -170,11 +186,8 @@ fn ghurni_differential_process_block(self, out) {
         vec_set(out, j, ghurni_dcblocker_process(db, vec_get(out, j)));
         j = j + 1;
     }
-    # VESTIGIAL: advanced every block, read by nothing in this module. Its only
-    # readers in the oracle were the non-naad fallback arms, which ADR-004 drops.
-    # Kept so the struct stays field-compatible with the oracle and with its nine
-    # siblings, where the counter IS live (engine/gear/motor/turbine/clock/belt/
-    # chain all derive phase from it). Do not remove without checking all ten.
+    # LIVE as of 2.3.0: the ring-revolution modulation reads this for absolute
+    # time. It was vestigial (written, never read) in every release before.
     GhDifferential_set_sample_position(self, GhDifferential_sample_position(self) + n);
     return 0;
 }

@@ -234,28 +234,37 @@ is about the machines already modelled sounding more like themselves.
 
 ---
 
-## Arc 2b — `2.3.0` "Depth II"  ⚠ audio-changing
+## Arc 2b — `2.3.0` "Depth II"  ✅ SHIPPED
 
-**Theme: the rest of Arc 2.** Split out deliberately — each of these is a design
-problem in its own right rather than a missing structural feature, and bundling
-them would have made 2.2.0 unreviewable. Reasons in [ADR-006](../architecture/adr-006-acoustic-depth.md).
+> Released 2026-08-28 behind [ADR-007](../architecture/adr-007-load-tilt-and-diesel.md).
+> Load now tilts the spectrum instead of moving a fader; diesel got its clatter;
+> the differential's tooth counts became individually audible. Six goldens moved;
+> the six synths that take no load are bit-identical to 2.2.0.
 
-- [ ] **Load produces no spectral tilt.** Load already drives roughness and gain,
-      so this is a refinement rather than an absence. Doing it properly means
-      deciding a filter-tracking law for every synth — its own ADR.
-- [ ] **Diesel is a retuned Gasoline** — no valvetrain, injector or timing-drive
-      content. Additive work of the same size as all of 2.2.0.
-- [ ] **Differential ring-revolution modulation.** Straightforward.
-- [ ] **Turbine rotor slap and multi-spool** — a helicopter and a jet may be
-      different *machines* rather than a deeper turbine. Check against breadth
-      (Arc 4) before building.
-- [ ] **Source-body impulse responses** (exhaust pipe, engine bay). Needs a
-      convolution path and IR assets; larger than the rest of this arc combined.
-      Not goonj's — ghurni already owns exhaust resonance as a constructor field.
+- [x] **Load produced no spectral tilt** — and on the engine it went the *wrong
+      way* (centroid fell 8882 → 8690 Hz as load rose). A shared
+      `tilt(load, k) = 1 + k·load` now scales each synth's broadband term and not
+      its tonal one. Measured: motor 2078 → 2253 Hz, engine 8892 → 9031 Hz,
+      both monotonic. `tilt(0) = 1.0` exactly, so unloaded audio is unchanged.
+- [x] **Diesel was a retuned Gasoline** — three constants apart. It now has
+      injection clatter: a sharper impulse behind the main pulse, decaying 8×
+      faster. Measured centroid 9747 Hz vs gasoline's 8531 Hz.
+- [x] **Differential ring-revolution modulation.** 40/10 and 80/20 axles — same
+      4.0 ratio, different hardware — no longer render identically. Also makes
+      `sample_position` live in that module, where it had been vestigial.
+- [ ] ~~Turbine rotor slap and multi-spool~~ → **moved to Arc 4 (breadth).**
+      Blade slap is an impulsive phenomenon with its own physics and multi-spool
+      is a jet architecture; both are closer to new machines than to a deeper
+      turbine. That was the open question in ADR-006 and this is the answer.
+- [ ] ~~Source-body impulse responses~~ → **own ADR, not yet scheduled.**
+      ⚠ ADR-006's cost estimate was **wrong**: naad already ships a full
+      convolution engine (`naad_convolution_from_ir` / `_process_block`), so the
+      path exists. The real obstacle is that ghurni *already* models exhaust
+      resonance with a bandpass, so convolution would be a second, redundant
+      mechanism. The genuine question is whether to **replace** the bandpass —
+      an architectural change deserving its own ADR.
 
-> **Moved OUT of this arc:** differential drive/coast asymmetry needs a
-> torque-direction input the API does not have, and **per-component stems** is an
-> API change, not a timbral one. Both belong with Arc 3's control-surface work.
+**Patch line `2.3.x`** — load-tilt strength tuning; golden refreshes.
 
 ---
 
@@ -315,6 +324,9 @@ Ranked by what a consumer hits first. The old roadmap's five are re-scoped:
       the one item that layering nearly solves already.
 - [ ] **Stepper motor** — a fifth motor family whose sound is categorically unlike
       the four that ship.
+- [ ] **Turbine rotor slap and multi-spool** — moved here from Arc 2b in 2.3.0.
+      Helicopter blade slap is impulsive and multi-spool is a jet architecture;
+      both are new machines rather than a deeper turbine.
 - [ ] Weapon actions / rotary cannon — large genre, zero coverage. Check the
       garjan boundary first (the *impact* is theirs; the *action* is ours).
 

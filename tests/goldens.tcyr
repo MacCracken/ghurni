@@ -17,6 +17,12 @@
 # first. If the move is intended, record the reason in the CHANGELOG entry for
 # the release that changes it.
 #
+# MOVED IN 2.3.0 (ADR-007). Six moved: the load SPECTRAL TILT touched every synth
+# that takes a load (engine x3 including hybrid, motor, turbo), and differential
+# gained ring-revolution modulation. Diesel moved twice over -- it also gained
+# injection clatter. gear, transmission, turbine, clock, belt and chain take no
+# load and were not touched, so they are bit-identical to 2.2.0.
+#
 # MOVED IN 2.2.0 (ADR-006). Five moved for the Depth changes: gear, transmission
 # and differential gained mesh HARMONICS (they were pure sines); turbo's whine
 # moved to blade-pass rate; chain gained its link-lap modulation. Two goldens
@@ -95,47 +101,47 @@ fn golden(v, want_len, want_ck, name) {
 # ================================================================
 test_group("golden: engine");
 golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), 0.6, 0.1),
-       4410, 0 - 5023229049051638223, "gasoline 4cyl @3000 load 0.6");
+  4410, 2631444480808559620, "gasoline 4cyl @3000 load 0.6");
 golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_DIESEL, 6, SR), f64_from(1500), 0.9, 0.1),
-       4410, 3711602253019168005, "diesel 6cyl @1500 load 0.9");
+  4410, 0 - 9103023349525747648, "diesel 6cyl @1500 load 0.9");
 # HYBRID had no golden before 2.2.0 -- the one engine type whose behaviour
 # changed most had nothing pinning it.
 golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_HYBRID, 4, SR), f64_from(3000), 0.7, 0.1),
-       4410, 0 - 3874679023956053667, "hybrid 4cyl @3000 load 0.7 (electric drive)");
+  4410, 6513342785621031237, "hybrid 4cyl @3000 load 0.7 (electric drive)");
 
 # ================================================================
 test_group("golden: rotating");
 golden(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(1500), 0.1),
-       4410, 0 - 7414103304742362022, "steel gear 32t @1500");
+  4410, 0 - 7414103304742362022, "steel gear 32t @1500");
 golden(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), f64_from(4000), 0.5, 0.1),
-       4410, 1213431900338395374, "brushless motor 8p @4000");
+  4410, 0 - 7925099783061075357, "brushless motor 8p @4000");
 golden(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), f64_from(8000), 0.1),
-       4410, 1523957458651737894, "ducted turbine 12b @8000");
+  4410, 1523957458651737894, "ducted turbine 12b @8000");
 # 3 s, not 0.5 s: a grandfather clock beats at 1 Hz, so the old half-second
 # window contained only beat 0 and never covered a TOCK at all. The tick/tock
 # asymmetry added in 2.2.0 was therefore invisible to this golden -- it did not
 # move when the behaviour changed, which is exactly the blind spot a golden
 # suite must not have.
 golden(ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_GRANDFATHER_CLOCK, SR), f64_from(3)),
-       132300, 0 - 5573599848128827731, "grandfather clock 3 s (tick AND tock)");
+  132300, 0 - 5573599848128827731, "grandfather clock 3 s (tick AND tock)");
 
 # ================================================================
 test_group("golden: drivetrain");
 golden(ghurni_differential_synthesize(ghurni_differential_new(41, 11, SR), f64_from(3000), 0.1),
-       4410, 0 - 5621472655076642297, "differential 41/11 @3000");
+  4410, 0 - 1535114557540666298, "differential 41/11 @3000");
 var g_ratios = vec_new();
 vec_push(g_ratios, 3.5); vec_push(g_ratios, 2.1); vec_push(g_ratios, 1.4);
 golden(ghurni_transmission_synthesize(ghurni_transmission_new(g_ratios, 24, SR), f64_from(3000), 0.1),
-       4410, 0 - 8614052655093267763, "transmission 3-speed @3000");
+  4410, 0 - 8614052655093267763, "transmission 3-speed @3000");
 golden(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), f64_from(5000), 0.8, 0.1),
-       4410, 5685509735611063402, "turbo ratio 2.0 @5000 load 0.8");
+  4410, 0 - 254912951968716337, "turbo ratio 2.0 @5000 load 0.8");
 
 # ================================================================
 test_group("golden: drives");
 golden(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(2000), 0.1),
-       4410, 4082743555079396767, "belt 120mm tension 0.6 @2000");
+  4410, 4082743555079396767, "belt 120mm tension 0.6 @2000");
 golden(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_from(3000), 0.1),
-       4410, 298399442787342447, "chain 110 links 16t @3000");
+  4410, 298399442787342447, "chain 110 links 16t @3000");
 
 # ================================================================
 test_group("golden: the checksum itself is sensitive");

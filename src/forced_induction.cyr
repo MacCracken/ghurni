@@ -218,6 +218,7 @@ fn ghurni_forced_induction_process_block_naad(self, out) {
         whine_order = f64_from(GHURNI_SUPERCHARGER_LOBES);
     }
 
+    var fi_load_tilt = ghurni_load_tilt(GhForcedInduction_load(self));
     var spool_rpm = GhForcedInduction_spool_rpm(self);
     var whine_osc = GhForcedInduction_whine_osc(self);
     var noise = GhForcedInduction_noise_gen(self);
@@ -235,7 +236,9 @@ fn ghurni_forced_induction_process_block_naad(self, out) {
         var whine = f64_mul(osc_next_sample(whine_osc), whine_amp);
 
         # compressor noise -- broadband hiss proportional to boost
-        var hiss = f64_mul(f64_mul(noise_next_sample(noise), whine_amp), 0.15);
+        # ADR-007 load tilt: compressor hiss is the broadband term, so boost is
+        # audible as brightness and not only as level.
+        var hiss = f64_mul(f64_mul(f64_mul(noise_next_sample(noise), whine_amp), 0.15), fi_load_tilt);
 
         # BOV burst
         var bov = 0;

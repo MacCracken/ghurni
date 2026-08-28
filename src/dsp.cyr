@@ -174,6 +174,52 @@ fn ghurni_sample_count(sample_rate, duration) {
 #
 # clock and forced_induction deliberately do NOT use this -- see ADR-005.
 # ================================================================
+# ================================================================
+# Load spectral tilt (ADR-007, 2.3.0). Until 2.3.0 `load` was a pure GAIN
+# control: it scaled a synth's tonal and broadband terms by the SAME factor, so
+# the spectrum never changed shape. Measured on the motor, the spectral centroid
+# was 2061.2 Hz at load 0.1, 0.5 AND 0.9 while RMS nearly doubled -- identical to
+# four figures. The engine was worse than flat: its centroid FELL from 8882 Hz to
+# 8690 Hz as load rose, because `base_amp` scaled the low-frequency combustion
+# thump alongside everything else, so the bass share grew.
+#
+# That is backwards. A machine working harder is brighter: faster cylinder
+# pressure rise, more current ripple, more mechanical contact noise -- all
+# high-frequency. So the broadband term of each load-taking synth is scaled by
+#
+#     tilt(load) = 1 + GHURNI_LOAD_TILT * load
+#
+# while the tonal term is not. At load 0 the tilt is exactly 1.0, so an unloaded
+# machine renders bit-identically to 2.2.0 -- the same "there is a point where
+# nothing changes" property ADR-005 used for the reference RPM, and for the same
+# reason: it bounds what a reviewer has to check.
+# ================================================================
+var GHURNI_LOAD_TILT = 1.0;
+
+#must_use
+fn ghurni_load_tilt(load) {
+    return ghurni_load_tilt_k(load, GHURNI_LOAD_TILT);
+}
+
+# Tilt with an explicit strength. Some synths need more than the default,
+# because their own LOW-frequency terms already grow steeply with load and a
+# gentle tilt cannot outrun them. The engine is the case in point: its intake
+# bed is scaled by load DIRECTLY (intake_noise * load) on top of base_amp, so it
+# grows ~31x from load 0.1 to 0.9 while the broadband bed grows ~6x. With k=1
+# the measured centroid still FELL. k=3 on the mechanical bed is what actually
+# makes the engine brighten, and it is defensible on its own terms: piston slap,
+# valvetrain clatter and injector noise all rise steeply with cylinder pressure.
+#must_use
+fn ghurni_load_tilt_k(load, k) {
+    if (ghurni_is_finite(load) == 0) { return F64_ONE; }
+    if (ghurni_is_finite(k) == 0) { return F64_ONE; }
+    var l = f64_clamp(load, 0, F64_ONE);
+    return f64_add(F64_ONE, f64_mul(k, l));
+}
+
+# Per-synth tilt strength. 1.0 is the default; the engine needs more (above).
+var GHURNI_LOAD_TILT_ENGINE = 3.0;
+
 # Clamp that ABSORBS non-finite input instead of propagating it (ADR-005).
 #
 # `f64_clamp` propagates NaN where f64_max/f64_min would swallow it, so every

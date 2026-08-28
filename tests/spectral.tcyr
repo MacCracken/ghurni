@@ -287,5 +287,88 @@ var fi_ratio = f64_div(f64_from(turbo_bin), f64_from(sc_bin));
 assert_gt(fi_ratio, f64_from(3), "turbo/supercharger ratio is about 10/3");
 assert_lt(fi_ratio, f64_from(4), "turbo/supercharger ratio is about 10/3");
 
+# ================================================================
+test_group("load tilts the SPECTRUM, not just the level (ADR-007)");
+# Until 2.3.0 load was a pure GAIN control. Measured: the motor's spectral
+# centroid was 2061.2 Hz at load 0.1, 0.5 AND 0.9 -- identical to four figures --
+# while RMS nearly doubled. The engine was worse than flat: its centroid FELL as
+# load rose, because base_amp scaled the low-frequency combustion thump too.
+fn spec_centroid(v) {
+    var m = fft_magnitudes(v);
+    var n = vec_len(m);
+    var num = 0;
+    var den = 0;
+    var i = 1;
+    while (i < n) {
+        var mg = vec_get(m, i);
+        var f = f64_div(f64_mul(f64_from(i), SR), f64_from(SPEC_N));
+        num = f64_add(num, f64_mul(f, mg));
+        den = f64_add(den, mg);
+        i = i + 1;
+    }
+    if (f64_le(den, 0) == 1) { return 0; }
+    return f64_div(num, den);
+}
+fn motor_centroid_at(load) {
+    var m = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR);
+    ghurni_motor_set_rpm(m, f64_from(3000));
+    ghurni_motor_set_load(m, load);
+    var w = spec_block();
+    ghurni_motor_process_block(m, w);
+    var b = spec_block();
+    ghurni_motor_process_block(m, b);
+    return spec_centroid(b);
+}
+var mc_lo = motor_centroid_at(0.1);
+var mc_mid = motor_centroid_at(0.5);
+var mc_hi = motor_centroid_at(0.9);
+assert_gt(mc_lo, f64_from(500), "motor centroid is a real measurement (not a vacuous 0)");
+assert_lt(mc_lo, mc_mid, "motor: more load is BRIGHTER (0.1 -> 0.5)");
+assert_lt(mc_mid, mc_hi, "motor: more load is BRIGHTER (0.5 -> 0.9)");
+
+fn engine_centroid_at(load) {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    ghurni_engine_set_load(e, load);
+    var w = spec_block();
+    ghurni_engine_process_block(e, w);
+    var b = spec_block();
+    ghurni_engine_process_block(e, b);
+    return spec_centroid(b);
+}
+var ec_lo = engine_centroid_at(0.1);
+var ec_hi = engine_centroid_at(0.9);
+assert_gt(ec_lo, f64_from(500), "engine centroid is a real measurement");
+assert_lt(ec_lo, ec_hi, "engine: more load is BRIGHTER, not duller");
+
+# The tilt is exactly 1.0 at zero load, so an unloaded machine is untouched.
+assert_eq(ghurni_load_tilt(0), F64_ONE, "tilt(0) = 1.0 exactly -- unloaded audio is unchanged");
+assert_gt(ghurni_load_tilt(F64_ONE), F64_ONE, "tilt rises with load");
+assert_eq(ghurni_load_tilt(f64_div(0, 0)), F64_ONE, "NaN load -> tilt 1.0, never propagates");
+assert_eq(ghurni_load_tilt_k(0, f64_from(3)), F64_ONE, "tilt_k(0, k) = 1.0 for any k");
+
+# ================================================================
+test_group("diesel has injection clatter; gasoline does not (ADR-007)");
+# Until 2.3.0 Diesel differed from Gasoline in exactly THREE numbers (exhaust
+# resonance, intake resonance, roughness base) -- a retuned petrol engine. The
+# signature diesel rattle comes from the near-instant pressure rise after
+# injection delay, and it puts energy high in the spectrum.
+fn eng_centroid(ty) {
+    var e = ghurni_engine_new(ty, 6, SR);
+    ghurni_engine_set_rpm(e, f64_from(2000));
+    ghurni_engine_set_load(e, 0.8);
+    var w = spec_block();
+    ghurni_engine_process_block(e, w);
+    var b = spec_block();
+    ghurni_engine_process_block(e, b);
+    return spec_centroid(b);
+}
+var c_diesel = eng_centroid(GH_ENGINE_DIESEL);
+var c_petrol = eng_centroid(GH_ENGINE_GASOLINE);
+assert_gt(c_petrol, f64_from(500), "gasoline centroid is a real measurement");
+assert_gt(c_diesel, c_petrol, "diesel is BRIGHTER than gasoline at the same rpm and load");
+# ...and by a margin that a mere resonance retune could not produce.
+assert_gt(f64_div(c_diesel, c_petrol), 1.05, "the diesel margin is substantial, not incidental");
+
 var rc = assert_summary();
 syscall(60, rc);

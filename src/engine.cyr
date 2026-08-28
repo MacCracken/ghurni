@@ -36,6 +36,20 @@ var GH_ENGINE_HYBRID     = 3;   # electric-with-whine
 # typical permanent-magnet traction motor.
 var GHURNI_HYBRID_POLES = 8;
 
+# Diesel injection clatter (ADR-007). A diesel's signature is not a deeper thump
+# -- it is the sharp metallic RATTLE from the near-instant pressure rise after
+# injection delay, which is why a diesel at idle is identifiable from across a
+# car park. Until 2.3.0 Diesel differed from Gasoline in exactly three numbers
+# (exhaust resonance, intake resonance, roughness base), so it was a retuned
+# petrol engine with no clatter at all.
+#
+# The clatter is a second, much sharper impulse riding just behind the main
+# combustion pulse: it starts after the injection delay and decays about 8x
+# faster, which puts its energy high in the spectrum where the rattle lives.
+var GHURNI_DIESEL_CLATTER_DELAY = 0.12;   # fraction of the combustion window
+var GHURNI_DIESEL_CLATTER_DECAY = 8.0;    # relative to the main pulse decay
+var GHURNI_DIESEL_CLATTER_AMP   = 0.55;
+
 # Externally-tagged serde variant name (parity with serde_json).
 #must_use
 fn ghurni_enginetype_name(t) {
@@ -317,6 +331,8 @@ fn ghurni_engine_process_block_naad(self, out) {
     # moves air, but it has no exhaust note). ADR-006.
     var is_hybrid = 0;
     if (GhEngine_engine_type(self) == GH_ENGINE_HYBRID) { is_hybrid = 1; }
+    var is_diesel = 0;
+    if (GhEngine_engine_type(self) == GH_ENGINE_DIESEL) { is_diesel = 1; }
     var whine_synth = GhEngine_whine_synth(self);
     var bed_gain = F64_ONE;
     if (is_hybrid == 1) { bed_gain = 0.25; }
@@ -409,6 +425,22 @@ fn ghurni_engine_process_block_naad(self, out) {
                     var rough_gain = f64_add(F64_ONE, f64_mul(roughness, ns));
                     var contrib = f64_mul(f64_mul(pulse, base_amp), rough_gain);
                     combustion_sum = f64_add(combustion_sum, contrib);
+                    # DIESEL: injection clatter, a sharper burst behind the main
+                    # pulse. Point-sampled deliberately -- unlike the combustion
+                    # pulse this is broadband noise, not a narrow deterministic
+                    # envelope, so lattice alignment does not notch it.
+                    if (is_diesel == 1) {
+                        if (f64_gt(t, GHURNI_DIESEL_CLATTER_DELAY) == 1) {
+                            var ct = f64_mul(f64_sub(t, GHURNI_DIESEL_CLATTER_DELAY),
+                              GHURNI_DIESEL_CLATTER_DECAY);
+                            var cenv = naad_db_to_amplitude(
+                              f64_mul(f64_neg(f64_mul(f64_from(8), ct)), GHURNI_DB_SCALE));
+                            var cn = noise_next_sample(noise);
+                            var clatter = f64_mul(f64_mul(f64_mul(cenv, cn), base_amp),
+                              GHURNI_DIESEL_CLATTER_AMP);
+                            combustion_sum = f64_add(combustion_sum, clatter);
+                        }
+                    }
                 }
             }
             c = c + 1;
@@ -466,7 +498,10 @@ fn ghurni_engine_process_block_naad(self, out) {
         }
 
         # mechanical noise
-        var mech = f64_mul(f64_mul(f64_mul(noise_next_sample(noise), roughness), base_amp), 0.1);
+        # ADR-007 load tilt: the broadband mechanical bed scales harder with load
+        # than the tonal combustion does, so working the engine brightens it.
+        var mech_raw = f64_mul(f64_mul(noise_next_sample(noise), roughness), base_amp);
+        var mech = f64_mul(f64_mul(mech_raw, 0.1), ghurni_load_tilt_k(load, GHURNI_LOAD_TILT_ENGINE));
 
         var events = f64_add(knock_sum, f64_add(decel, backfire));
         var s = f64_add(combustion_sum, f64_add(exhaust, f64_add(intake, f64_add(mech, events))));

@@ -550,20 +550,20 @@ fn rest_rms(v) {
 
 # --- exact silence, for the synths whose rpm floor is 0 ---
 assert_eq(rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), 0, 0.5, 0.1)),
-          0, "motor is EXACTLY silent at 0 rpm");
+  0, "motor is EXACTLY silent at 0 rpm");
 assert_eq(rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), 0, 0.1)),
-          0, "belt_drive is EXACTLY silent at 0 rpm");
+  0, "belt_drive is EXACTLY silent at 0 rpm");
 assert_eq(rest_rms(ghurni_differential_synthesize(ghurni_differential_new(41, 11, SR), 0, 0.1)),
-          0, "differential is EXACTLY silent at 0 rpm");
+  0, "differential is EXACTLY silent at 0 rpm");
 var tr_rest = vec_new();
 vec_push(tr_rest, f64_from(3)); vec_push(tr_rest, f64_from(2));
 assert_eq(rest_rms(ghurni_transmission_synthesize(ghurni_transmission_new(tr_rest, 40, SR), 0, 0.1)),
-          0, "transmission is EXACTLY silent at 0 rpm");
+  0, "transmission is EXACTLY silent at 0 rpm");
 assert_eq(rest_rms(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), 0, 0.1)),
-          0, "chain_drive is EXACTLY silent at 0 rpm");
+  0, "chain_drive is EXACTLY silent at 0 rpm");
 assert_eq(rest_rms(ghurni_forced_induction_synthesize(
-    ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), 0, 0.5, 0.1)),
-          0, "forced_induction is EXACTLY silent at 0 rpm");
+      ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), 0, 0.5, 0.1)),
+  0, "forced_induction is EXACTLY silent at 0 rpm");
 
 # --- rest is a small fraction of running, for the synths with an rpm floor ---
 var m_rest = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), 0, 0.5, 0.1));
@@ -682,18 +682,18 @@ fn streams_differ(a, b) {
 }
 # A bare f64_to keeps only whole units, so near-identical parameters collided.
 assert_eq(streams_differ(GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600), SR)),
-                         GhTurbine_noise_gen(ghurni_turbine_new(12, 600.4, SR))), 1,
-          "turbine: duct 600.0 vs 600.4 decorrelate");
+    GhTurbine_noise_gen(ghurni_turbine_new(12, 600.4, SR))), 1,
+  "turbine: duct 600.0 vs 600.4 decorrelate");
 assert_eq(streams_differ(GhBeltDrive_noise_gen(ghurni_belt_drive_new(f64_from(120), 0.6, SR)),
-                         GhBeltDrive_noise_gen(ghurni_belt_drive_new(f64_from(120), 0.65, SR))), 1,
-          "belt: tension 0.60 vs 0.65 decorrelate");
+    GhBeltDrive_noise_gen(ghurni_belt_drive_new(f64_from(120), 0.65, SR))), 1,
+  "belt: tension 0.60 vs 0.65 decorrelate");
 assert_eq(streams_differ(GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR)),
-                         GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.05, 0.3, SR))), 1,
-          "turbo: ratio 2.0 vs 2.05 decorrelate");
+    GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.05, 0.3, SR))), 1,
+  "turbo: ratio 2.0 vs 2.05 decorrelate");
 # Determinism is preserved (ADR-003): identical parameters, identical stream.
 assert_eq(streams_differ(GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600), SR)),
-                         GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600), SR))), 0,
-          "identical turbine parameters stay bit-identical");
+    GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600), SR))), 0,
+  "identical turbine parameters stay bit-identical");
 
 # ================================================================
 test_group("chain link count is audible (ADR-006)");
@@ -750,6 +750,22 @@ assert_lt(b1, b2, "tock is softer than the tick after it");
 assert_lt(b3, b2, "the pattern repeats: beat 3 is softer than beat 2");
 # ...and it is an ALTERNATION, not a decay: tick 2 is not weaker than tick 0.
 assert_gt(b2, f64_mul(b0, 0.9), "ticks stay at tick level -- this alternates, it does not fade");
+
+# ================================================================
+test_group("differential: ring and pinion counts are individually audible (ADR-007)");
+# The driveshaft turns the PINION, so the ring turns slower by the axle ratio.
+# Ring runout modulates the whine once per RING revolution. Before 2.3.0 only
+# the RATIO mattered: 40/10 and 80/20 both give 4.0 and rendered identically
+# apart from their noise seed, even though they are different hardware.
+var d_a = ghurni_differential_synthesize(ghurni_differential_new(40, 10, SR), f64_from(3000), 0.3);
+var d_b = ghurni_differential_synthesize(ghurni_differential_new(80, 20, SR), f64_from(3000), 0.3);
+assert_gt(vec_len(d_a), 0, "differential rendered real audio (not a vacuous compare)");
+assert_eq(buf_differs(d_a, d_b), 1, "40/10 and 80/20 sound different despite the same 4.0 ratio");
+# Determinism holds (ADR-003).
+var d_a2 = ghurni_differential_synthesize(ghurni_differential_new(40, 10, SR), f64_from(3000), 0.3);
+assert_eq(buf_differs(d_a, d_a2), 0, "identical tooth counts stay bit-identical");
+assert_eq(all_finite_buf(d_a), 1, "ring-modulated differential is finite");
+assert_gt(rest_rms(d_a), 0.001, "ring-modulated differential still has energy");
 
 var rc = assert_summary();
 syscall(60, rc);
