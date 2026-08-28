@@ -198,17 +198,32 @@ fn ghurni_clock_process_block_naad(self, out) {
         var abs_pos = f64_from(base_pos + i);
         var phase = f64_div(ghurni_fmod(abs_pos, tick_period), tick_period);
 
+        # TICK vs TOCK (ADR-006). An escapement alternates between two pallets,
+        # and the two impacts are not the same sound -- that asymmetry is why the
+        # sound is called "tick-tock" and not "tick-tick". Until 2.2.0 every beat
+        # was identical and perfectly periodic, which is what made the clock read
+        # as a metronome rather than a mechanism. Even beats keep the original
+        # timbre; odd beats are slightly softer and shorter-decaying, as the
+        # lighter pallet impact is.
+        var beat = f64_to(f64_div(abs_pos, tick_period));
+        var beat_amp = amp;
+        var beat_decay = decay;
+        if ((beat % 2) == 1) {
+            beat_amp = f64_mul(amp, 0.82);
+            beat_decay = f64_mul(decay, 0.78);
+        }
+
         var tick = 0;
         if (f64_lt(phase, 0.02) == 1) {
             var t = f64_div(phase, 0.02);
-            var impulse = f64_mul(f64_sub(F64_ONE, t), amp);
-            var ring_excitation = f64_mul(noise_next_sample(noise), amp);
-            var ring_env = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(phase), decay), GHURNI_DB_SCALE));
+            var impulse = f64_mul(f64_sub(F64_ONE, t), beat_amp);
+            var ring_excitation = f64_mul(noise_next_sample(noise), beat_amp);
+            var ring_env = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(phase), beat_decay), GHURNI_DB_SCALE));
             var ring = f64_mul(filter_biquad_process_sample(body_filter, ring_excitation), ring_env);
             tick = f64_add(f64_mul(impulse, 0.5), ring);
         } elif (f64_lt(phase, 0.15) == 1) {
-            var ring_excitation2 = f64_mul(f64_mul(noise_next_sample(noise), amp), 0.1);
-            var ring_env2 = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(phase), decay), GHURNI_DB_SCALE));
+            var ring_excitation2 = f64_mul(f64_mul(noise_next_sample(noise), beat_amp), 0.1);
+            var ring_env2 = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(phase), beat_decay), GHURNI_DB_SCALE));
             var ring2 = f64_mul(filter_biquad_process_sample(body_filter, ring_excitation2), ring_env2);
             tick = f64_mul(ring2, 0.3);
         }

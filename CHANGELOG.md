@@ -5,6 +5,106 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-08-28
+
+**Arc 2 — "Depth."** Breadth stays frozen; five of the ten synths were missing
+something structural about the machine they model. Recorded in
+[ADR-006](docs/architecture/adr-006-acoustic-depth.md).
+
+⚠ **This changes rendered audio.** Five goldens moved and two were *fixed* — see
+below. Every claim was verified against the source before being accepted.
+
+### Changed — mesh whine is no longer a pure sine
+
+`gear`, `transmission` and `differential` all used a single `WAVEFORM_SINE`,
+which is the one thing meshing gears never sound like. All three now use a
+3-partial additive mesh (the pattern `motor` and `turbine` already used).
+
+Gear's upper partials scale with **`brightness`** — the per-material constant
+that until now only fed the resonance filter — so material finally changes
+timbre:
+
+| material | brightness | h2/h1 | h3/h1 |
+|---|---|---|---|
+| steel | 0.9 | 0.546 | 0.278 |
+| brass | 0.7 | 0.426 | 0.219 |
+| cast iron | 0.5 | 0.307 | 0.153 |
+| nylon | 0.2 | 0.124 | 0.063 |
+
+The fundamental is identical across all four, so this is a timbre change and not
+a pitch change — `tests/spectral.tcyr` asserts the peak still lands at the mesh
+frequency. The fundamental is clamped to **nyquist/3** so the third partial
+cannot alias.
+
+### Changed — `GH_ENGINE_HYBRID` is now actually electric
+
+It is documented "electric-with-whine" and ran the full combustion path; the only
+per-type differences were two resonance constants and a roughness factor. So the
+one engine type advertised as electric was a quiet petrol engine.
+
+The combustion loop no longer runs for HYBRID at all. In its place: a 2-partial
+EM whine at `(rpm/60) × 8` poles — the relationship `motor.cyr` uses — with
+amplitude driven by load, because traction motors whine louder under torque. The
+exhaust and intake beds drop to 0.25; an EV still moves air but has no exhaust
+note. Measured: **398.4 Hz @3000 rpm and 199.2 Hz @1500** (predicted 400/200,
+within one bin), where gasoline and diesel peak at 102.3 Hz.
+
+### Changed — turbo and supercharger are no longer the same sound
+
+Both whined at plain shaft rate and differed *only* in spool lag, so at the same
+spool speed they were spectrally identical. A turbo's centrifugal wheel has
+roughly ten blades and whistles high; a Roots blower's three lobes give the low,
+hard whine it is known for. Whine is now `(spool/60) × order`. Measured at
+6000 rpm × ratio 2.0: **turbo 1798 Hz, supercharger 538 Hz** — a ratio of 3.34,
+which is 10/3 as intended.
+
+### Changed — chain link count is finally audible
+
+`engagement_frequency` uses *sprocket_teeth*, so `links` was stored, clamped and
+documented ("typically 100–120") while affecting **nothing but the noise seed**:
+a 40-link and a 500-link chain rendered identically. A chain is a closed loop, so
+link-to-link variation recurs once per lap (`engage_freq / links`); a shallow
+modulation at that rate is the slow wobble a worn chain has.
+
+### Changed — clock tick and tock differ
+
+Every beat was identical and perfectly periodic, which is what made a clock read
+as a metronome rather than a mechanism. An escapement alternates between two
+pallets and the two impacts are not the same sound. Odd beats are now 0.82×
+amplitude and 0.78× decay. Measured peaks: **0.205 / 0.172 / 0.216 / 0.177** — an
+alternation, not a decay, and the tests assert that distinction explicitly.
+
+### Fixed — two goldens that were blind
+
+Both were exposed *by* this release rather than broken by it:
+
+- **The clock golden ran for 0.5 s**, but a grandfather clock beats at 1 Hz — so
+  it contained only beat 0 and **never covered a tock**. The tick/tock change did
+  not move it. Widened to 3 s.
+- **HYBRID had no golden at all** — the engine type whose behaviour changed most
+  had nothing pinning it. Added.
+
+### Testing
+
+`tests/spectral.tcyr` grew 13 → 29 assertions: harmonic ratios strictly ordered
+by material, the hybrid EM whine tracking RPM, gasoline and hybrid no longer
+sharing a spectrum, and the turbo/blower ratio being *specifically* 10/3 rather
+than merely different. `tests/oracle_pins.tcyr` pins the chain-lap audibility
+(with a determinism control) and the clock alternation.
+
+### Deferred — Arc 2 split into 2.2.0 and 2.3.0
+
+Six of the original eleven Arc 2 items are **not** in this release, deliberately:
+load→spectral tilt, diesel valvetrain content, differential ring modulation,
+turbine rotor slap, and source-body impulse responses each need their own design
+decision, and bundling them would have made this release unreviewable. They are
+now **Arc 2b — `2.3.0` "Depth II"**.
+
+Two items moved out of the timbral track entirely, to Arc 3: **per-component
+stems** is an API change, and **differential drive/coast asymmetry** needs a
+torque-direction input the API does not have. Downstream arcs renumbered
+accordingly.
+
 ## [2.1.0] - 2026-08-28
 
 **Arc 1 — "Rest State."** The first deliberate acoustic divergence from the

@@ -28,6 +28,15 @@
 var GH_INDUCTION_TURBO        = 0;   # exhaust-driven, has spool lag
 var GH_INDUCTION_SUPERCHARGER = 1;   # belt-driven, direct RPM coupling
 
+# Whine order: how many pressure pulses the compressor makes per shaft
+# revolution (ADR-006). Until 2.2.0 both types whined at plain SHAFT rate, so a
+# turbo and a supercharger at the same spool speed were spectrally IDENTICAL --
+# the only difference between them was spool lag. They are not remotely the same
+# sound in life: a turbo's centrifugal wheel has ~10 blades and whistles high,
+# while a Roots blower's 3 lobes give the low, hard whine it is known for.
+var GHURNI_TURBO_BLADES     = 10;
+var GHURNI_SUPERCHARGER_LOBES = 3;
+
 # Externally-tagged serde variant name (parity with serde_json).
 #must_use
 fn ghurni_inductiontype_name(t) {
@@ -202,6 +211,13 @@ fn ghurni_forced_induction_process_block(self, out) {
 fn ghurni_forced_induction_process_block_naad(self, out) {
     var sr = GhForcedInduction_sample_rate(self);
     var nyquist = f64_mul(sr, 0.49);
+    # Pulses per shaft revolution: blade-pass for a turbo, lobe-pass for a
+    # supercharger. Block-constant -- it depends only on the induction type.
+    var whine_order = f64_from(GHURNI_TURBO_BLADES);
+    if (GhForcedInduction_induction_type(self) == GH_INDUCTION_SUPERCHARGER) {
+        whine_order = f64_from(GHURNI_SUPERCHARGER_LOBES);
+    }
+
     var spool_rpm = GhForcedInduction_spool_rpm(self);
     var whine_osc = GhForcedInduction_whine_osc(self);
     var noise = GhForcedInduction_noise_gen(self);
@@ -211,7 +227,7 @@ fn ghurni_forced_induction_process_block_naad(self, out) {
     var i = 0;
     while (i < n) {
         var spool = ghurni_smooth_next_value(spool_rpm);
-        var whine_freq = f64_clamp(f64_div(spool, f64_from(60)), f64_from(20), nyquist);
+        var whine_freq = f64_clamp(f64_mul(f64_div(spool, f64_from(60)), whine_order), f64_from(20), nyquist);
         osc_set_frequency(whine_osc, whine_freq);
 
         # whine amplitude scales with spool speed

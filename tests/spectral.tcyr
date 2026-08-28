@@ -184,5 +184,108 @@ var ring_bin = spec_bin_for(f64_from(2050));
 var got_bin = spec_peak_bin(db);
 assert_neq(got_bin, ring_bin, "differential peak is NOT at the ring-teeth frequency");
 
+# ================================================================
+test_group("mesh harmonics: material brightness shapes the spectrum (ADR-006)");
+# Until 2.2.0 every gear-mesh whine in the library was a single pure SINE -- the
+# one thing meshing gears never sound like. gear/transmission/differential now
+# use a 3-partial additive mesh, and gear's upper partials scale with the
+# existing per-material `brightness`, so material finally changes TIMBRE and not
+# just the resonance filter.
+fn bin_mag_at(v, hz) {
+    var mags = fft_magnitudes(v);
+    var b = spec_bin_for(hz);
+    if (b >= vec_len(mags)) { return 0; }
+    return vec_get(mags, b);
+}
+fn gear_h2_ratio(material) {
+    var g = ghurni_gear_new(32, material, SR);
+    ghurni_gear_set_rpm(g, f64_from(1500));
+    var w = spec_block();
+    ghurni_gear_process_block(g, w);
+    var b = spec_block();
+    ghurni_gear_process_block(g, b);
+    var f1 = bin_mag_at(b, f64_from(800));
+    var f2 = bin_mag_at(b, f64_from(1600));
+    return f64_div(f2, f1);
+}
+# 32 teeth @1500 rpm -> 800 Hz mesh, so the 2nd harmonic sits at 1600 Hz.
+var h2_steel = gear_h2_ratio(GH_GEAR_STEEL);      # brightness 0.9
+var h2_brass = gear_h2_ratio(GH_GEAR_BRASS);      # brightness 0.7
+var h2_iron  = gear_h2_ratio(GH_GEAR_CAST_IRON);  # brightness 0.5
+var h2_nylon = gear_h2_ratio(GH_GEAR_NYLON);      # brightness 0.2
+assert_gt(h2_steel, 0.4, "steel gear has a strong 2nd harmonic (it is not a sine)");
+assert_lt(h2_steel, h2_steel + 1, "reference read succeeded");
+# Strictly ordered by brightness -- this is the property that makes material audible.
+assert_lt(h2_brass, h2_steel, "brass is duller than steel");
+assert_lt(h2_iron, h2_brass, "cast iron is duller than brass");
+assert_lt(h2_nylon, h2_iron, "nylon is the dullest");
+assert_lt(h2_nylon, 0.2, "nylon is close to a pure sine");
+# The FUNDAMENTAL must not move -- this is a timbre change, not a pitch change.
+var gsteel = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_gear_set_rpm(gsteel, f64_from(1500));
+var gw2 = spec_block();
+ghurni_gear_process_block(gsteel, gw2);
+var gb2 = spec_block();
+ghurni_gear_process_block(gsteel, gb2);
+assert_peak_at(gb2, f64_from(800), "gear still peaks at the mesh fundamental");
+
+# ================================================================
+test_group("HYBRID is an electric drive, not a quiet petrol engine (ADR-006)");
+# GH_ENGINE_HYBRID is documented "electric-with-whine". Until 2.2.0 it ran the
+# full combustion path and merely used different resonance constants.
+# EM whine = (rpm/60) * 8 poles: 3000 rpm -> 400 Hz, 1500 rpm -> 200 Hz.
+var hy = ghurni_engine_new(GH_ENGINE_HYBRID, 4, SR);
+ghurni_engine_set_rpm(hy, f64_from(3000));
+ghurni_engine_set_load(hy, 0.7);
+var hw = spec_block();
+ghurni_engine_process_block(hy, hw);
+var hb = spec_block();
+ghurni_engine_process_block(hy, hb);
+assert_gt(spec_peak_mag(hb), 0.0001, "hybrid produces a real spectral peak");
+assert_peak_at(hb, f64_from(400), "hybrid @3000 rpm peaks at the 400 Hz EM whine");
+var hy2 = ghurni_engine_new(GH_ENGINE_HYBRID, 4, SR);
+ghurni_engine_set_rpm(hy2, f64_from(1500));
+ghurni_engine_set_load(hy2, 0.7);
+var hw2 = spec_block();
+ghurni_engine_process_block(hy2, hw2);
+var hb2 = spec_block();
+ghurni_engine_process_block(hy2, hb2);
+assert_peak_at(hb2, f64_from(200), "hybrid @1500 rpm peaks at 200 Hz -- whine tracks rpm");
+# A petrol engine at the same speed must NOT land there.
+var pet = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_set_rpm(pet, f64_from(3000));
+ghurni_engine_set_load(pet, 0.7);
+var pw = spec_block();
+ghurni_engine_process_block(pet, pw);
+var pb = spec_block();
+ghurni_engine_process_block(pet, pb);
+assert_neq(spec_peak_bin(pb), spec_peak_bin(hb), "gasoline and hybrid no longer share a spectrum");
+
+# ================================================================
+test_group("turbo and supercharger are spectrally distinct (ADR-006)");
+# Until 2.2.0 both whined at plain shaft rate and differed only in spool lag.
+# Now: turbo = 10 blades, supercharger = 3 lobes, so the turbo sits 10/3 higher.
+fn fi_peak_bin(ty) {
+    var f = ghurni_forced_induction_new(ty, f64_from(2), 0.1, SR);
+    ghurni_forced_induction_set_rpm(f, f64_from(6000));
+    ghurni_forced_induction_set_load(f, 0.9);
+    var a = spec_block();
+    ghurni_forced_induction_process_block(f, a);
+    ghurni_forced_induction_process_block(f, a);
+    ghurni_forced_induction_process_block(f, a);
+    var b = spec_block();
+    ghurni_forced_induction_process_block(f, b);
+    return spec_peak_bin(b);
+}
+var turbo_bin = fi_peak_bin(GH_INDUCTION_TURBO);
+var sc_bin = fi_peak_bin(GH_INDUCTION_SUPERCHARGER);
+assert_gt(turbo_bin, 0, "turbo has a real peak (not a vacuous compare)");
+assert_gt(sc_bin, 0, "supercharger has a real peak");
+assert_gt(turbo_bin, sc_bin, "turbo whines HIGHER than a supercharger");
+# The ratio must be the blade:lobe ratio, 10/3 = 3.33, not merely "different".
+var fi_ratio = f64_div(f64_from(turbo_bin), f64_from(sc_bin));
+assert_gt(fi_ratio, f64_from(3), "turbo/supercharger ratio is about 10/3");
+assert_lt(fi_ratio, f64_from(4), "turbo/supercharger ratio is about 10/3");
+
 var rc = assert_summary();
 syscall(60, rc);

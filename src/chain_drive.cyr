@@ -161,10 +161,23 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
             impact = f64_add(impulse, f64_mul(filter_biquad_process_sample(impact_filter, ring), 0.2));
         }
 
+        # CHAIN LAP (ADR-006). Until 2.2.0 `links` was stored, clamped and
+        # documented but audibly INERT -- engagement frequency uses
+        # sprocket_teeth, so a 40-link chain and a 500-link chain rendered
+        # identically apart from their noise seed. A real chain is a closed loop
+        # of N links, so any variation between links (wear, a stiff link, a
+        # master link) recurs once per LAP:
+        #     lap_freq = engage_freq / links
+        # A shallow amplitude modulation at that rate is what makes the link
+        # count audible, and it is the slow "wobble" a worn chain has.
+        var lap_period = f64_mul(engage_period, f64_from(GhChainDrive_links(self)));
+        var lap_phase = f64_div(ghurni_fmod(abs_pos, lap_period), lap_period);
+        var lap_mod = f64_add(0.85, f64_mul(0.15, f64_cos(f64_mul(F64_TAU, lap_phase))));
+
         var rattle = f64_mul(noise_next_sample(noise), 0.03);
         # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
         # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
-        var ch_sum = f64_add(impact, rattle);
+        var ch_sum = f64_mul(f64_add(impact, rattle), lap_mod);
         vec_set(out, i, f64_mul(ch_sum, ghurni_rpm_gain(smooth, GHURNI_REF_RPM_CHAIN)));
         i = i + 1;
     }

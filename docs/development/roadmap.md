@@ -207,38 +207,59 @@ tuning that consumers report as too aggressive or too subtle.
 
 ---
 
-## Arc 2 — `2.2.0` "Depth"  ⚠ audio-changing
+## Arc 2 — `2.2.0` "Depth"  ✅ SHIPPED
+
+> Released 2026-08-28 behind [ADR-006](../architecture/adr-006-acoustic-depth.md).
+> Five structural gaps closed; five goldens moved and two were **fixed** — the
+> clock golden never covered a tock, and HYBRID had no golden at all.
 
 **Theme: the ten synths get acoustically richer.** Breadth stays frozen; this arc
 is about the machines already modelled sounding more like themselves.
 
-- [ ] **Load is a pure gain control** — it produces no spectral tilt anywhere.
-- [ ] **Every gear-mesh whine in the library is a single pure sine** — no
-      harmonics, no sidebands, no tooth-profile error content. Affects gear,
-      transmission and differential together.
-- [ ] **Turbo and supercharger are spectrally identical**; forced-induction whine
-      sits at shaft rate rather than blade-pass rate; no surge or flutter; and the
-      **wastegate the README advertises does not exist**.
-- [ ] **`GH_ENGINE_HYBRID` is documented "electric-with-whine" and is a gasoline
-      engine** with different constants.
-- [ ] Diesel is a retuned Gasoline; no valvetrain, injector or timing-drive content.
-- [ ] Clock tick and tock are the same sound, perfectly periodic, with no strike.
-- [ ] Chain drive: link count is audibly inert; no slack or polygon effect.
-- [ ] Differential: no ring-revolution modulation, no drive/coast asymmetry.
-- [ ] Rotor slap and multi-spool turbines — turbine has the frequency but not the
-      character of helicopters or jets.
-- [ ] **Per-component stems.** Every synth sums exhaust + intake + mechanical into
-      one mono buffer. Rendering those separately is a real API gap — and it is
-      the *source-side* half of the old "multi-channel output" item, which was
-      otherwise already satisfied (mono stems positioned downstream by goonj).
-- [ ] Source-body impulse responses (exhaust pipe, engine bay). This is **not**
-      goonj's: ghurni already owns exhaust resonance as a constructor field.
+- [x] **Every gear-mesh whine in the library was a single pure sine.** gear,
+      transmission and differential now use a 3-partial additive mesh, and gear's
+      upper partials scale with the existing per-material `brightness`, so
+      material finally changes timbre (measured h2/h1: steel 0.546 → nylon 0.124).
+- [x] **`GH_ENGINE_HYBRID` was a gasoline engine.** It now renders an electric
+      drive: no combustion at all, a 2-partial EM whine at `(rpm/60) × 8` poles,
+      and the exhaust/intake beds pulled to 0.25.
+- [x] **Turbo and supercharger were spectrally identical.** Whine now sits at
+      blade-pass (10) and lobe-pass (3) respectively — measured ratio 3.34.
+- [x] **Chain link count was audibly inert.** A once-per-lap modulation at
+      `engage_freq / links` makes it audible.
+- [x] Clock tick and tock were the same sound. Odd beats are now softer and
+      shorter-decaying, an alternation rather than a decay.
 
 **Patch line `2.2.x`** — per-synth spectral tuning; golden refreshes.
 
 ---
 
-## Arc 3 — `2.3.0` "Events & Control"
+## Arc 2b — `2.3.0` "Depth II"  ⚠ audio-changing
+
+**Theme: the rest of Arc 2.** Split out deliberately — each of these is a design
+problem in its own right rather than a missing structural feature, and bundling
+them would have made 2.2.0 unreviewable. Reasons in [ADR-006](../architecture/adr-006-acoustic-depth.md).
+
+- [ ] **Load produces no spectral tilt.** Load already drives roughness and gain,
+      so this is a refinement rather than an absence. Doing it properly means
+      deciding a filter-tracking law for every synth — its own ADR.
+- [ ] **Diesel is a retuned Gasoline** — no valvetrain, injector or timing-drive
+      content. Additive work of the same size as all of 2.2.0.
+- [ ] **Differential ring-revolution modulation.** Straightforward.
+- [ ] **Turbine rotor slap and multi-spool** — a helicopter and a jet may be
+      different *machines* rather than a deeper turbine. Check against breadth
+      (Arc 4) before building.
+- [ ] **Source-body impulse responses** (exhaust pipe, engine bay). Needs a
+      convolution path and IR assets; larger than the rest of this arc combined.
+      Not goonj's — ghurni already owns exhaust resonance as a constructor field.
+
+> **Moved OUT of this arc:** differential drive/coast asymmetry needs a
+> torque-direction input the API does not have, and **per-component stems** is an
+> API change, not a timbral one. Both belong with Arc 3's control-surface work.
+
+---
+
+## Arc 3 — `2.4.0` "Events & Control"
 
 **Theme: the control surface stops lying.**
 
@@ -258,12 +279,17 @@ is about the machines already modelled sounding more like themselves.
       2.0.2 fixed for `GhurniError`.
 - [ ] `ghurni_differential_ratio` is dead API; `sample_position` is vestigial in
       three synths.
+- [ ] **Per-component stems** — every synth sums exhaust + intake + mechanical
+      into one mono buffer; rendering them separately is a real API gap. Moved
+      here from Arc 2 in 2.2.0: it is a control-surface change, not a timbral one.
+- [ ] **Differential drive/coast asymmetry** — needs a torque-direction input the
+      API does not have. Moved here from Arc 2 for the same reason.
 
-**Patch line `2.3.x`** — event-timing tuning; consumer-reported control gaps.
+**Patch line `2.4.x`** — event-timing tuning; consumer-reported control gaps.
 
 ---
 
-## Arc 4 — `2.4.0` "New Mechanisms"
+## Arc 4 — `2.5.0` "New Mechanisms"
 
 **Theme: breadth.** Deliberately last: a new synth built before Arc 1's loudness
 law and Arc 0's fuzz harness would inherit both problems on day one.
@@ -292,7 +318,7 @@ Ranked by what a consumer hits first. The old roadmap's five are re-scoped:
 - [ ] Weapon actions / rotary cannon — large genre, zero coverage. Check the
       garjan boundary first (the *impact* is theirs; the *action* is ours).
 
-**Patch line `2.4.x`** — per-synth tuning for the new mechanisms.
+**Patch line `2.5.x`** — per-synth tuning for the new mechanisms.
 
 ---
 

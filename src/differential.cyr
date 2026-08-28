@@ -70,8 +70,15 @@ fn ghurni_differential_new(ring_teeth, pinion_teeth, sample_rate) {
     var housing_resonance = f64_min(f64_from(2500), nyquist);
 
     # naad backend: sine whine oscillator + white noise + high-Q band-pass.
-    var whine_osc = osc_new(WAVEFORM_SINE, f64_from(100), sample_rate);
+    # Mesh tone is a 3-partial ADDITIVE synth, not a pure sine (ADR-006): real
+    # hypoid mesh has strong harmonics of the tooth-mesh frequency, and a single
+    # sine is the one thing meshing gears never sound like.
+    var whine_osc = additive_new(f64_from(100), 3, sample_rate);
     if (ghurni_is_err(whine_osc) == 1) { return ghurni_map_naad_error(whine_osc); }
+    additive_set_partial(whine_osc, 0, F64_ONE, F64_ONE);
+    additive_set_partial(whine_osc, 1, f64_from(2), 0.4);
+    additive_set_partial(whine_osc, 2, f64_from(3), 0.2);
+
     var noise = noise_new(NOISE_WHITE, ring * 41 + pinion);
     var resonance_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, housing_resonance, f64_from(6));
     if (ghurni_is_err(resonance_filter) == 1) { return ghurni_map_naad_error(resonance_filter); }
@@ -141,8 +148,9 @@ fn ghurni_differential_process_block(self, out) {
         var smooth = ghurni_smooth_next_value(smooth_rpm);
         var mesh_freq = ghurni_differential_mesh_frequency(self, smooth);
 
-        osc_set_frequency(whine_osc, f64_clamp(mesh_freq, F64_ONE, nyquist));
-        var whine = f64_mul(osc_next_sample(whine_osc), 0.2);
+        # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
+        additive_set_fundamental(whine_osc, f64_clamp(mesh_freq, F64_ONE, f64_div(nyquist, f64_from(3))));
+        var whine = f64_mul(additive_next_sample(whine_osc), 0.2);
 
         # High-Q housing resonance excited by mesh.
         var excitation = f64_mul(noise_next_sample(noise), 0.1);

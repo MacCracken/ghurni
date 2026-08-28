@@ -695,5 +695,61 @@ assert_eq(streams_differ(GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600
                          GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600), SR))), 0,
           "identical turbine parameters stay bit-identical");
 
+# ================================================================
+test_group("chain link count is audible (ADR-006)");
+# `links` was stored, clamped and documented ("typically 100-120") but affected
+# NOTHING: engagement frequency uses sprocket_teeth, so a 40-link chain and a
+# 500-link chain rendered identically apart from their noise seed. A real chain
+# is a closed loop, so link-to-link variation recurs once per lap.
+fn buf_differs(a, b) {
+    var n = vec_len(a);
+    if (n != vec_len(b)) { return 1; }
+    var i = 0;
+    while (i < n) { if (vec_get(a, i) != vec_get(b, i)) { return 1; } i = i + 1; }
+    return 0;
+}
+var ch60  = ghurni_chain_drive_synthesize(ghurni_chain_drive_new(60, 16, SR), f64_from(3000), 0.3);
+var ch240 = ghurni_chain_drive_synthesize(ghurni_chain_drive_new(240, 16, SR), f64_from(3000), 0.3);
+assert_gt(vec_len(ch60), 0, "chain rendered real audio (not a vacuous compare)");
+assert_eq(buf_differs(ch60, ch240), 1, "60-link and 240-link chains sound DIFFERENT");
+# ...and the same link count is still deterministic (ADR-003).
+var ch60b = ghurni_chain_drive_synthesize(ghurni_chain_drive_new(60, 16, SR), f64_from(3000), 0.3);
+assert_eq(buf_differs(ch60, ch60b), 0, "identical link counts stay bit-identical");
+# The lap modulation must not silence the chain or push it non-finite.
+assert_eq(all_finite_buf(ch60), 1, "lap-modulated chain is finite");
+assert_gt(rest_rms(ch60), 0.001, "lap-modulated chain still has energy");
+
+# ================================================================
+test_group("clock tick and tock differ (ADR-006)");
+# An escapement alternates between two pallets and the two impacts are not the
+# same sound -- that asymmetry is why it is called "tick-tock". Until 2.2.0 every
+# beat was identical and perfectly periodic, which read as a metronome.
+# WallClock ticks at 2 Hz, so beats land every 22050 samples at 44.1 kHz.
+fn beat_peak(v, beat) {
+    var start = beat * 22050;
+    var pk = 0;
+    var j = 0;
+    while (j < 2000) {
+        var a = f64_abs(vec_get(v, start + j));
+        if (f64_gt(a, pk) == 1) { pk = a; }
+        j = j + 1;
+    }
+    return pk;
+}
+var ck = ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR), f64_from(2));
+assert_eq(vec_len(ck), 88200, "2 s of wall clock at 44.1 kHz");
+var b0 = beat_peak(ck, 0);
+var b1 = beat_peak(ck, 1);
+var b2 = beat_peak(ck, 2);
+var b3 = beat_peak(ck, 3);
+assert_gt(b0, 0.05, "beat 0 is a real impact (not a vacuous compare)");
+assert_gt(b1, 0.05, "beat 1 is a real impact");
+# Odd beats (tocks) are the lighter pallet: softer than the ticks either side.
+assert_lt(b1, b0, "tock is softer than the tick before it");
+assert_lt(b1, b2, "tock is softer than the tick after it");
+assert_lt(b3, b2, "the pattern repeats: beat 3 is softer than beat 2");
+# ...and it is an ALTERNATION, not a decay: tick 2 is not weaker than tick 0.
+assert_gt(b2, f64_mul(b0, 0.9), "ticks stay at tick level -- this alternates, it does not fade");
+
 var rc = assert_summary();
 syscall(60, rc);

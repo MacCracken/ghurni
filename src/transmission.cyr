@@ -70,8 +70,15 @@ fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
     var shift_duration_samples = f64_to(f64_mul(sample_rate, 0.2));   # 200ms shift
 
     # naad backend: sine mesh oscillator + white noise + synchro band-pass.
-    var mesh_osc = osc_new(WAVEFORM_SINE, f64_from(100), sample_rate);
+    # Mesh tone is a 3-partial ADDITIVE synth, not a pure sine (ADR-006): real
+    # gear mesh has strong harmonics of the tooth-mesh frequency, and a single
+    # sine is the one thing meshing gears never sound like.
+    var mesh_osc = additive_new(f64_from(100), 3, sample_rate);
     if (ghurni_is_err(mesh_osc) == 1) { return ghurni_map_naad_error(mesh_osc); }
+    additive_set_partial(mesh_osc, 0, F64_ONE, F64_ONE);
+    additive_set_partial(mesh_osc, 1, f64_from(2), 0.4);
+    additive_set_partial(mesh_osc, 2, f64_from(3), 0.2);
+
     var noise = noise_new(NOISE_WHITE, teeth * 31);
     var synchro_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(4000), f64_from(3));
     if (ghurni_is_err(synchro_filter) == 1) { return ghurni_map_naad_error(synchro_filter); }
@@ -167,8 +174,9 @@ fn ghurni_transmission_process_block(self, out) {
         var smooth_rpm = ghurni_smooth_next_value(mesh_rpm);
         var mesh_freq = f64_mul(f64_div(smooth_rpm, f64_from(60)), teeth);
 
-        osc_set_frequency(mesh_osc, f64_clamp(mesh_freq, F64_ONE, nyquist));
-        var mesh = f64_mul(osc_next_sample(mesh_osc), 0.15);
+        # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
+        additive_set_fundamental(mesh_osc, f64_clamp(mesh_freq, F64_ONE, f64_div(nyquist, f64_from(3))));
+        var mesh = f64_mul(additive_next_sample(mesh_osc), 0.15);
 
         # synchro whine during a shift: decaying band-passed noise envelope
         var synchro = 0;

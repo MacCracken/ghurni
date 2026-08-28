@@ -106,8 +106,18 @@ fn ghurni_gear_new(teeth, material, sample_rate) {
     var initial_mesh_freq = f64_min(f64_from(100), nyq);
 
     # naad backend: sine mesh oscillator + white noise + band-pass resonance.
-    var mesh_osc = osc_new(WAVEFORM_SINE, initial_mesh_freq, sample_rate);
+    # Mesh tone is a 3-partial ADDITIVE synth, not a pure sine (ADR-006). Real
+    # spur-gear mesh has strong harmonics of the tooth-mesh frequency; a single
+    # sine is the one thing a meshing gear never sounds like. The 2nd and 3rd
+    # partials scale with `brightness`, the existing per-material constant, so
+    # material finally changes TIMBRE and not just the resonance filter: steel
+    # (0.9) is bright and buzzy, nylon (0.2) stays close to the old pure sine.
+    var mesh_osc = additive_new(initial_mesh_freq, 3, sample_rate);
     if (ghurni_is_err(mesh_osc) == 1) { return ghurni_map_naad_error(mesh_osc); }
+    additive_set_partial(mesh_osc, 0, F64_ONE, F64_ONE);
+    additive_set_partial(mesh_osc, 1, f64_from(2), f64_mul(0.5, brightness));
+    additive_set_partial(mesh_osc, 2, f64_from(3), f64_mul(0.25, brightness));
+
     var noise = noise_new(NOISE_WHITE, t * 7 + material);
     var resonance_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(resonance, nyq), 4.0);
     if (ghurni_is_err(resonance_filter) == 1) { return ghurni_map_naad_error(resonance_filter); }
@@ -181,7 +191,8 @@ fn ghurni_gear_process_block_naad(self, out) {
     var nyq = f64_mul(sr, 0.49);
 
     var mesh_osc = GhGear_mesh_osc(self);
-    osc_set_frequency(mesh_osc, f64_min(mesh_freq, nyq));
+    # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
+    additive_set_fundamental(mesh_osc, f64_min(mesh_freq, f64_div(nyq, f64_from(3))));
 
     var noise = GhGear_noise_gen(self);
     var resonance_filter = GhGear_resonance_filter(self);
@@ -193,7 +204,7 @@ fn ghurni_gear_process_block_naad(self, out) {
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
-        var mesh = f64_mul(f64_mul(osc_next_sample(mesh_osc), amp), 0.5);
+        var mesh = f64_mul(f64_mul(additive_next_sample(mesh_osc), amp), 0.5);
 
         var abs_pos = f64_from(base_pos + i);
         var mesh_phase = ghurni_fmod(f64_div(f64_mul(abs_pos, mesh_freq), sr), F64_ONE);
