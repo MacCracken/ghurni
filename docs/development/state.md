@@ -25,9 +25,9 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (3,072 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (3,161 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 7 suites, 205 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 7 suites, 224 assertions, 0 failures)
 
 | Suite | Covers |
 |-------|--------|
@@ -44,7 +44,7 @@ Bundle: `dist/ghurni.cyr` (3,072 lines, `cyrius distlib`).
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
-`cyrius coverage`: 79/164 functions referenced (48%) — a floor, not a proof.
+`cyrius coverage`: 82/167 functions referenced (49%) — a floor, not a proof.
 
 ## Deliberate divergences from `rust-old/`
 

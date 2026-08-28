@@ -14,7 +14,7 @@ Procedural synthesis of engines, gears, motors, turbines, clocks, transmissions,
 - **Turbine** — configurable blade count, blade pass frequency, whoosh noise, optional duct resonance
 - **Clock** — 4 types (Wristwatch, WallClock, GrandfatherClock, PocketWatch), escapement tick, resonant decay
 - **Drivetrain** — Transmission (gear mesh + synchro whine on shift), Differential (hypoid whine + housing resonance), ChainDrive (link engagement rattle), BeltDrive (friction squeal + flap)
-- **ForcedInduction** — turbocharger (spool lag, wastegate) and supercharger, with blow-off-valve burst
+- **ForcedInduction** — turbocharger (spool lag) and supercharger, with blow-off-valve burst
 - **Mixer** — multi-component mixing with per-channel gain, pan (equal-power law), and mute; mono and stereo
 - **Presets** — 12 shipped factory configurations
 

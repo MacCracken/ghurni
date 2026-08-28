@@ -1,8 +1,12 @@
-/target
-Cargo.lock
-**/*.rs.bk
-*.pdb
-/coverage/
+# Build artifacts. `cyrius build` writes here; nothing under build/ belongs in
+# git — 12 compiled ELF binaries (11 MB) were tracked through 2.0.2 and shipped
+# inside every release tarball. To untrack them: git rm -r --cached build/
+/build/
+
+# Resolved dependency bundles are VENDORED deliberately (cyrius.lock pins their
+# commits and hashes), so lib/ is NOT ignored.
+
+# Editors / OS
 .DS_Store
 *.swp
 *.swo
@@ -10,3 +14,10 @@ Cargo.lock
 .idea/
 .vscode/
 .claude/
+
+# Rust-era leftovers, kept because rust-old/ is still in the tree until 2.0.4.
+rust-old/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+/coverage/
