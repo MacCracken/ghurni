@@ -159,7 +159,7 @@ fn ghurni_mixer_set_channel_gain(m, index, gain) {
 fn ghurni_mixer_set_channel_pan(m, index, pan) {
     var channels = GhMixer_channels(m);
     if ((index >= 0) && (index < vec_len(channels))) {
-        GhMixerChannel_set_pan(vec_get(channels, index), f64_clamp(pan, f64_neg(F64_ONE), F64_ONE));
+        GhMixerChannel_set_pan(vec_get(channels, index), ghurni_finite_clamp(pan, f64_neg(F64_ONE), F64_ONE));
     }
     return 0;
 }

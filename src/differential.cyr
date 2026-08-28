@@ -92,7 +92,7 @@ fn ghurni_differential_new(ring_teeth, pinion_teeth, sample_rate) {
 
 # set_rpm(rpm) -- clamp to 0..50000.
 fn ghurni_differential_set_rpm(self, rpm) {
-    GhDifferential_set_rpm(self, f64_clamp(rpm, 0, f64_from(50000)));
+    GhDifferential_set_rpm(self, ghurni_finite_clamp(rpm, 0, f64_from(50000)));
     return 0;
 }
 
@@ -149,7 +149,10 @@ fn ghurni_differential_process_block(self, out) {
         var ring = f64_mul(filter_biquad_process_sample(resonance_filter, excitation), 0.15);
 
         var noise_sample = f64_mul(noise_next_sample(noise), 0.02);
-        vec_set(out, i, f64_add(whine, f64_add(ring, noise_sample)));
+        # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
+        # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
+        var df_sum = f64_add(whine, f64_add(ring, noise_sample));
+        vec_set(out, i, f64_mul(df_sum, ghurni_rpm_gain(smooth, GHURNI_REF_RPM_DIFFERENTIAL)));
         i = i + 1;
     }
 

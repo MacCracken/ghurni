@@ -85,7 +85,7 @@ fn ghurni_chain_drive_new(links, sprocket_teeth, sample_rate) {
 
 # set_rpm(rpm) -- clamp to 0..30000.
 fn ghurni_chain_drive_set_rpm(self, rpm) {
-    GhChainDrive_set_rpm(self, f64_clamp(rpm, 0, f64_from(30000)));
+    GhChainDrive_set_rpm(self, ghurni_finite_clamp(rpm, 0, f64_from(30000)));
     return 0;
 }
 
@@ -162,7 +162,10 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
         }
 
         var rattle = f64_mul(noise_next_sample(noise), 0.03);
-        vec_set(out, i, f64_add(impact, rattle));
+        # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
+        # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
+        var ch_sum = f64_add(impact, rattle);
+        vec_set(out, i, f64_mul(ch_sum, ghurni_rpm_gain(smooth, GHURNI_REF_RPM_CHAIN)));
         i = i + 1;
     }
     return 0;

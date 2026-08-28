@@ -84,7 +84,7 @@ fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sampl
         return GH_ERR_INVALID_PARAMETER;
     }
 
-    var ratio = f64_clamp(drive_ratio, 0.5, f64_from(10));
+    var ratio = ghurni_finite_clamp(drive_ratio, 0.5, f64_from(10));
 
     # Supercharger is belt-driven off the crank, so it has no spool lag: the
     # oracle hard-codes 0.01 for it and IGNORES the caller's spool_inertia
@@ -92,7 +92,7 @@ fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sampl
     # Turbo honours the argument. Pinned in tests/oracle_pins.tcyr.
     var inertia = 0.01;
     if (induction_type == GH_INDUCTION_TURBO) {
-        inertia = f64_clamp(spool_inertia, 0.1, f64_from(5));
+        inertia = ghurni_finite_clamp(spool_inertia, 0.1, f64_from(5));
     }
 
     # naad backend: saw whine oscillator + white noise + band-pass BOV filter.
@@ -131,7 +131,7 @@ fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sampl
 # set_rpm(rpm) -- clamp to 0..15000, retarget the spool smoother.
 # target_spool = rpm * drive_ratio * load.
 fn ghurni_forced_induction_set_rpm(self, rpm) {
-    var r = f64_clamp(rpm, 0, f64_from(15000));
+    var r = ghurni_finite_clamp(rpm, 0, f64_from(15000));
     GhForcedInduction_set_rpm(self, r);
     var target = f64_mul(f64_mul(r, GhForcedInduction_drive_ratio(self)), GhForcedInduction_load(self));
     ghurni_smooth_set_target(GhForcedInduction_spool_rpm(self), target);
@@ -143,7 +143,7 @@ fn ghurni_forced_induction_set_rpm(self, rpm) {
 # spinning fast (current > 5000).
 fn ghurni_forced_induction_set_load(self, load) {
     var prev = GhForcedInduction_load(self);
-    var l = f64_clamp(load, 0, F64_ONE);
+    var l = ghurni_finite_clamp(load, 0, F64_ONE);
     GhForcedInduction_set_load(self, l);
     var spool_now = ghurni_smooth_current(GhForcedInduction_spool_rpm(self));
     var was_boosted = f64_gt(prev, 0.5);

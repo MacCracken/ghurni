@@ -59,8 +59,8 @@ fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
     var vsr = ghurni_validate_sample_rate(sample_rate);
     if (ghurni_is_err(vsr) == 1) { return vsr; }
 
-    var diameter = f64_clamp(pulley_diameter, f64_from(20), f64_from(500));
-    var tens = f64_clamp(tension, 0, F64_ONE);
+    var diameter = ghurni_finite_clamp(pulley_diameter, f64_from(20), f64_from(500));
+    var tens = ghurni_finite_clamp(tension, 0, F64_ONE);
     var nyq = f64_mul(sample_rate, 0.49);
 
     # Squeal frequency depends on belt speed and tension (2000..5000 Hz).
@@ -98,13 +98,13 @@ fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
 
 # set_rpm(rpm) -- clamp to 0..20000.
 fn ghurni_belt_drive_set_rpm(self, rpm) {
-    GhBeltDrive_set_rpm(self, f64_clamp(rpm, 0, f64_from(20000)));
+    GhBeltDrive_set_rpm(self, ghurni_finite_clamp(rpm, 0, f64_from(20000)));
     return 0;
 }
 
 # set_tension(tension) -- clamp to 0..1 (0 = slack/squealy, 1 = tight/quiet).
 fn ghurni_belt_drive_set_tension(self, tension) {
-    GhBeltDrive_set_tension(self, f64_clamp(tension, 0, F64_ONE));
+    GhBeltDrive_set_tension(self, ghurni_finite_clamp(tension, 0, F64_ONE));
     return 0;
 }
 
@@ -135,6 +135,11 @@ fn ghurni_belt_drive_synthesize(self, rpm, duration) {
 fn ghurni_belt_drive_process_block(self, out) {
     var smooth_rpm = GhBeltDrive_smooth_rpm(self);
     var rpm = GhBeltDrive_rpm(self);
+    # ADR-005 RPM loudness law. Computed once per block: this synth has no
+    # per-sample smoother, so its frequency terms are block-constant too.
+    # (belt_drive HAS a smoother but deliberately discards it -- see the note at
+    # the ghurni_smooth_next_value call below -- so the raw rpm is the right input.)
+    var rpm_gain = ghurni_rpm_gain(rpm, GHURNI_REF_RPM_BELT);
     ghurni_smooth_set_target(smooth_rpm, rpm);
 
     var sr = GhBeltDrive_sample_rate(self);
@@ -199,7 +204,8 @@ fn ghurni_belt_drive_process_block(self, out) {
             belt_mod = f64_add(0.8, f64_mul(0.2, f64_sin(f64_mul(belt_omega, abs_pos))));
         }
 
-        vec_set(out, i, f64_mul(f64_add(squeal, flap), belt_mod));
+        var bd_sum = f64_mul(f64_add(squeal, flap), belt_mod);
+        vec_set(out, i, f64_mul(bd_sum, rpm_gain));
         i = i + 1;
     }
 

@@ -158,7 +158,14 @@ commit rather than noise inside a feature arc.
 
 ---
 
-## Arc 1 — `2.1.0` "Rest State"  ⚠ audio-changing
+## Arc 1 — `2.1.0` "Rest State"  ✅ SHIPPED
+
+> Released 2026-08-28 behind [ADR-005](../architecture/adr-005-rpm-loudness-law.md).
+> One loudness law applied uniformly; the combustion pulse integrated across each
+> sample (killing a 70% amplitude notch at resonant RPMs); NaN closed at all 18
+> parameter clamps; seed resolution unified. Six of eleven goldens moved —
+> gear/transmission/belt were **bit-identical**, which is the ADR's central claim
+> holding. 509 assertions.
 
 **Theme: RPM actually drives loudness.** Ships **all** deliberate audio changes
 at once, behind one ADR, so there is exactly one release where goldens move.
@@ -182,16 +189,16 @@ path has no RPM term at all, and `belt_drive`'s `squeal_amp = (1 - tension) * 0.
 has none either. Both are faithful ports — the oracle does the same — which is
 exactly why this needs an ADR rather than a patch.
 
-- [ ] **ADR-005: acoustic divergence from the oracle.** The umbrella for this arc.
-- [ ] An RPM-dependent loudness law for the seven synths that lack one.
-- [ ] **Resonant-RPM combustion amplitude.** At RPMs where samples-per-cycle is an
+- [x] **ADR-005: acoustic divergence from the oracle.** The umbrella for this arc.
+- [x] An RPM-dependent loudness law for the seven synths that lack one.
+- [x] **Resonant-RPM combustion amplitude.** At RPMs where samples-per-cycle is an
       integer (`5292000/rpm ∈ ℤ` at 44.1 kHz) the engine lands off-peak every
       cycle and the thump loses up to two thirds of its amplitude; the f32
       oracle's coarser rounding accidentally snapped the lattice onto the cycle.
       Characterised in [state.md](state.md). Same ADR, same release.
-- [ ] **NaN at the parameter boundary.** `f64_clamp` propagates it; guarding is
+- [x] **NaN at the parameter boundary.** `f64_clamp` propagates it; guarding is
       itself an audio change, so it belongs here.
-- [ ] Seed aliasing the port introduced in `belt_drive` / `turbine` /
+- [x] Seed aliasing the port introduced in `belt_drive` / `turbine` /
       `forced_induction` (behavioural integer seeds that lose parameter
       resolution) — decide the convention once and apply it uniformly.
 

@@ -155,6 +155,65 @@ fn ghurni_sample_count(sample_rate, duration) {
     return n;
 }
 
+# ================================================================
+# RPM loudness law (ADR-005, 2.1.0). ghurni's thesis is that RPM drives
+# everything, but until 2.1.0 loudness was very nearly RPM-INDEPENDENT: gear at
+# 3% of its nominal speed rendered 94% of its nominal level, and motor, engine
+# and chain_drive were non-monotonic -- speeding them up made them quieter.
+#
+#   r    = rpm / ref_rpm
+#   gain = 2r / (r + 1)
+#
+# Exactly 1.0 at ref_rpm, so audio at each synth's nominal operating point is
+# UNCHANGED and only off-nominal speeds move. 0 at rest. Monotonic. Saturates at
+# 2.0 (+6 dB) so a 10x overspeed cannot produce a 10x louder signal.
+#
+# Also the library's NaN sink: f64_clamp PROPAGATES NaN where f64_max/f64_min
+# absorb it, so a NaN rpm used to render a fully non-finite buffer and poison
+# smoother state. A non-finite or negative rpm yields gain 0 here.
+#
+# clock and forced_induction deliberately do NOT use this -- see ADR-005.
+# ================================================================
+# Clamp that ABSORBS non-finite input instead of propagating it (ADR-005).
+#
+# `f64_clamp` propagates NaN where f64_max/f64_min would swallow it, so every
+# public setter written in the oracle's idiom -- `rpm.clamp(0.0, 50000.0)` --
+# let a NaN straight into synth state, where it poisoned oscillator phase and
+# filter memory permanently: one NaN set_rpm made every subsequent sample
+# non-finite, for the life of the object. The oracle had the same hole, so this
+# is a deliberate divergence, not a transliteration fix.
+#
+# Non-finite collapses to `lo`, which is the "off" end for every parameter this
+# guards: rpm -> stopped (or the synth's idle floor), load -> 0, tension -> 0.
+#must_use
+fn ghurni_finite_clamp(x, lo, hi) {
+    if (ghurni_is_finite(x) == 0) { return lo; }
+    return f64_clamp(x, lo, hi);
+}
+
+var GHURNI_RPM_GAIN_MAX = 2.0;
+
+#must_use
+fn ghurni_rpm_gain(rpm, ref_rpm) {
+    if (ghurni_is_finite(rpm) == 0) { return 0; }
+    if (ghurni_is_finite(ref_rpm) == 0) { return 0; }
+    if (f64_le(ref_rpm, 0) == 1) { return 0; }
+    if (f64_le(rpm, 0) == 1) { return 0; }
+    var r = f64_div(rpm, ref_rpm);
+    return f64_div(f64_mul(f64_from(2), r), f64_add(r, F64_ONE));
+}
+
+# Reference RPMs -- each mechanism's typical operating speed (ADR-005). Chosen
+# on physical grounds, NOT to minimise golden movement.
+var GHURNI_REF_RPM_ENGINE       = 3000.0;
+var GHURNI_REF_RPM_GEAR         = 1500.0;
+var GHURNI_REF_RPM_MOTOR        = 3000.0;
+var GHURNI_REF_RPM_TURBINE      = 8000.0;
+var GHURNI_REF_RPM_TRANSMISSION = 3000.0;
+var GHURNI_REF_RPM_DIFFERENTIAL = 3000.0;
+var GHURNI_REF_RPM_BELT         = 2000.0;
+var GHURNI_REF_RPM_CHAIN        = 3000.0;
+
 # map_naad_error -- ports naad_init_error (naad-backend gated). Rust emitted a
 # `tracing::error!(... "naad backend error")` and returned
 # GhurniError::SynthesisFailed; the port wires the diagnostic to sakshi and

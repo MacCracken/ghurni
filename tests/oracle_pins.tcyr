@@ -529,18 +529,16 @@ assert_eq(GhSmoothedParam_coeff(sp2), GhSmoothedParam_coeff(sp), "coeff roundtri
 assert_neq(GhSmoothedParam_coeff(sp), 0, "coeff is a real value (not a vacuous 0 == 0)");
 
 # ================================================================
-test_group("rest-state CHARACTERISATION -- records today's behaviour, not the goal");
-# ⚠ THIS GROUP DOCUMENTS A KNOWN DEFECT. Seven of ten synths emit audible output
-# at 0 RPM, and two are as loud stopped as running -- which contradicts the
-# library's whole thesis that RPM drives everything. The causes are structural
-# and inherited from the oracle: motor's amplitude path has no RPM term at all,
-# and belt_drive's squeal_amp = (1 - tension) * 0.3 has none either.
+test_group("RPM loudness law: rest is quiet, and louder means faster (ADR-005)");
+# This group used to pin the DEFECT -- motor was as loud stopped as running and
+# belt_drive was louder stopped -- deliberately, so the fix could not land
+# silently. 2.1.0 landed it (ADR-005), so these are now the INVARIANT.
 #
-# Fixing it changes rendered audio, so it is Arc 1 / 2.1.0 behind ADR-005. Until
-# then this group PINS the wrong behaviour so that the fix cannot land silently:
-# when 2.1.0 introduces the loudness law, these assertions MUST be rewritten as
-# the invariant (rest < running for every synth). A failure here after that point
-# is the fix working, not a regression.
+# Note the rest level is not always exactly zero: each synth clamps its own rpm,
+# and engine's floor is 100 rpm (an engine at 0 is not running, it is off),
+# gear's and turbine's are 1 rpm. Those floors are oracle parity. So the
+# invariant is "rest is a small fraction of running", plus exact silence for the
+# synths whose floor really is 0.
 fn rest_rms(v) {
     var n = vec_len(v);
     if (n == 0) { return 0; }
@@ -549,28 +547,153 @@ fn rest_rms(v) {
     while (i < n) { var x = vec_get(v, i); acc = f64_add(acc, f64_mul(x, x)); i = i + 1; }
     return f64_sqrt(f64_div(acc, f64_from(n)));
 }
-# chain_drive and forced_induction ALREADY behave correctly -- exactly silent at
-# rest. These two assertions are the invariant, and must keep holding.
-var rest_ch = rest_rms(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), 0, 0.1));
-assert_eq(rest_ch, 0, "chain_drive is EXACTLY silent at 0 rpm (correct today)");
-var rest_fi = rest_rms(ghurni_forced_induction_synthesize(
-    ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), 0, 0.5, 0.1));
-assert_eq(rest_fi, 0, "forced_induction is EXACTLY silent at 0 rpm (correct today)");
-# motor: identical stopped and running. The defect, stated as an assertion.
+
+# --- exact silence, for the synths whose rpm floor is 0 ---
+assert_eq(rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), 0, 0.5, 0.1)),
+          0, "motor is EXACTLY silent at 0 rpm");
+assert_eq(rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), 0, 0.1)),
+          0, "belt_drive is EXACTLY silent at 0 rpm");
+assert_eq(rest_rms(ghurni_differential_synthesize(ghurni_differential_new(41, 11, SR), 0, 0.1)),
+          0, "differential is EXACTLY silent at 0 rpm");
+var tr_rest = vec_new();
+vec_push(tr_rest, f64_from(3)); vec_push(tr_rest, f64_from(2));
+assert_eq(rest_rms(ghurni_transmission_synthesize(ghurni_transmission_new(tr_rest, 40, SR), 0, 0.1)),
+          0, "transmission is EXACTLY silent at 0 rpm");
+assert_eq(rest_rms(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), 0, 0.1)),
+          0, "chain_drive is EXACTLY silent at 0 rpm");
+assert_eq(rest_rms(ghurni_forced_induction_synthesize(
+    ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), 0, 0.5, 0.1)),
+          0, "forced_induction is EXACTLY silent at 0 rpm");
+
+# --- rest is a small fraction of running, for the synths with an rpm floor ---
 var m_rest = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), 0, 0.5, 0.1));
-var m_run  = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), f64_from(1500), 0.5, 0.1));
-assert_gt(m_rest, 0, "KNOWN DEFECT: motor is audible at 0 rpm");
-assert_eq(m_rest, m_run, "KNOWN DEFECT: motor at rest is IDENTICAL to running");
-# belt_drive: louder stopped than running.
+var m_run  = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), f64_from(3000), 0.5, 0.1));
+assert_gt(m_run, 0.01, "motor running produces real signal (not a vacuous compare)");
+assert_lt(m_rest, f64_mul(m_run, 0.05), "motor at rest is under 5% of running");
+
 var b_rest = rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), 0, 0.1));
 var b_run  = rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(2000), 0.1));
-assert_gt(b_rest, 0, "KNOWN DEFECT: belt_drive is audible at 0 rpm");
-assert_gt(b_rest, b_run, "KNOWN DEFECT: belt_drive is LOUDER stopped than running");
-# The remaining five are audible at rest but quieter than running.
+assert_gt(b_run, 0.01, "belt running produces real signal");
+assert_lt(b_rest, f64_mul(b_run, 0.05), "belt at rest is under 5% of running");
+
 var g_rest = rest_rms(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), 0, 0.1));
 var g_run  = rest_rms(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(1500), 0.1));
-assert_gt(g_rest, 0, "KNOWN DEFECT: gear is audible at 0 rpm");
-assert_lt(g_rest, g_run, "gear is at least quieter at rest than running");
+assert_gt(g_run, 0.01, "gear running produces real signal");
+assert_lt(g_rest, f64_mul(g_run, 0.05), "gear at rest is under 5% of running (1 rpm floor)");
+
+var t_rest = rest_rms(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), 0, 0.1));
+var t_run  = rest_rms(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), f64_from(8000), 0.1));
+assert_gt(t_run, 0.01, "turbine running produces real signal");
+assert_lt(t_rest, f64_mul(t_run, 0.05), "turbine at rest is under 5% of running (1 rpm floor)");
+
+var e_rest = rest_rms(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), 0, 0.5, 0.1));
+var e_run  = rest_rms(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), 0.5, 0.1));
+assert_gt(e_run, 0.005, "engine running produces real signal");
+assert_lt(e_rest, f64_mul(e_run, 0.2), "engine at rest is well under running (100 rpm idle floor)");
+
+# --- MONOTONIC: faster must not be quieter. Three synths failed this before. ---
+var m_lo = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), f64_from(300), 0.5, 0.1));
+assert_lt(m_lo, m_run, "motor: 300 rpm is quieter than 3000");
+var c_lo = rest_rms(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_from(300), 0.1));
+var c_hi = rest_rms(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_from(3000), 0.1));
+assert_lt(c_lo, c_hi, "chain_drive: 300 rpm is quieter than 3000");
+var b_lo = rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(200), 0.1));
+assert_lt(b_lo, b_run, "belt_drive: 200 rpm is quieter than 2000");
+var g_lo = rest_rms(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(150), 0.1));
+assert_lt(g_lo, g_run, "gear: 150 rpm is quieter than 1500");
+
+# --- clock is EXEMPT: a fixed-rate escapement, not RPM-driven (ADR-005) ---
+var ck_a = rest_rms(ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR), 0.2));
+var ck_b = rest_rms(ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR), 0.2));
+assert_eq(ck_a, ck_b, "clock is deterministic");
+assert_gt(ck_a, 0.001, "clock ticks regardless of rpm -- deliberately exempt from the law");
+
+# ================================================================
+test_group("ghurni_rpm_gain: the law itself (ADR-005)");
+var REF = f64_from(1500);
+assert_eq(ghurni_rpm_gain(0, REF), 0, "gain(0) = 0 exactly");
+assert_eq(ghurni_rpm_gain(REF, REF), F64_ONE, "gain(ref) = 1.0 EXACTLY -- nominal audio is unchanged");
+# 2r/(r+1): r=0.5 -> 0.6667, r=2 -> 1.3333
+var half = ghurni_rpm_gain(f64_from(750), REF);
+assert_gt(half, 0.6666, "gain(ref/2) ~ 0.6667");
+assert_lt(half, 0.6667, "gain(ref/2) ~ 0.6667");
+var dbl = ghurni_rpm_gain(f64_from(3000), REF);
+assert_gt(dbl, 1.3333, "gain(2*ref) ~ 1.3333");
+assert_lt(dbl, 1.3334, "gain(2*ref) ~ 1.3333");
+# Monotonic and bounded by GHURNI_RPM_GAIN_MAX.
+assert_lt(ghurni_rpm_gain(f64_from(150), REF), ghurni_rpm_gain(f64_from(750), REF), "monotonic (low)");
+assert_lt(ghurni_rpm_gain(f64_from(3000), REF), ghurni_rpm_gain(f64_from(30000), REF), "monotonic (high)");
+assert_lt(ghurni_rpm_gain(f64_from(100000000), REF), GHURNI_RPM_GAIN_MAX, "saturates below the +6 dB ceiling");
+# NaN sink -- f64_clamp propagates NaN, this absorbs it.
+assert_eq(ghurni_rpm_gain(f64_div(0, 0), REF), 0, "NaN rpm -> 0");
+assert_eq(ghurni_rpm_gain(GHURNI_POS_INF, REF), 0, "+inf rpm -> 0");
+assert_eq(ghurni_rpm_gain(GHURNI_NEG_INF, REF), 0, "-inf rpm -> 0");
+assert_eq(ghurni_rpm_gain(f64_neg(f64_from(500)), REF), 0, "negative rpm -> 0");
+assert_eq(ghurni_rpm_gain(f64_from(500), 0), 0, "zero reference -> 0, no divide by zero");
+
+# ================================================================
+test_group("ghurni_finite_clamp absorbs NaN where f64_clamp propagates it");
+assert_eq(ghurni_finite_clamp(0.5, 0, F64_ONE), 0.5, "in-range value passes through");
+assert_eq(ghurni_finite_clamp(f64_from(5), 0, F64_ONE), F64_ONE, "clamps down");
+assert_eq(ghurni_finite_clamp(f64_neg(F64_ONE), 0, F64_ONE), 0, "clamps up");
+assert_eq(ghurni_finite_clamp(f64_div(0, 0), 0, F64_ONE), 0, "NaN collapses to lo");
+assert_eq(ghurni_finite_clamp(GHURNI_POS_INF, 0, F64_ONE), 0, "+inf collapses to lo");
+assert_eq(ghurni_finite_clamp(GHURNI_NEG_INF, 0, F64_ONE), 0, "-inf collapses to lo");
+# The reason it exists: f64_clamp does NOT do this.
+assert_eq(ghurni_is_finite(f64_clamp(f64_div(0, 0), 0, F64_ONE)), 0, "f64_clamp really does propagate NaN");
+
+# ================================================================
+test_group("NaN at the parameter boundary renders finite audio (ADR-005)");
+fn all_finite_buf(v) {
+    var n = vec_len(v);
+    if (n == 0) { return 0; }
+    var i = 0;
+    while (i < n) { if (ghurni_is_finite(vec_get(v, i)) == 0) { return 0; } i = i + 1; }
+    return 1;
+}
+var NANV = f64_div(0, 0);
+assert_eq(all_finite_buf(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), NANV, 0.5, 0.05)), 1, "engine: NaN rpm");
+assert_eq(all_finite_buf(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), NANV, 0.05)), 1, "engine: NaN load");
+assert_eq(all_finite_buf(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), NANV, 0.05)), 1, "gear: NaN rpm");
+assert_eq(all_finite_buf(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), NANV, 0.5, 0.05)), 1, "motor: NaN rpm");
+assert_eq(all_finite_buf(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), f64_from(3000), NANV, 0.05)), 1, "motor: NaN load");
+assert_eq(all_finite_buf(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), NANV, 0.05)), 1, "turbine: NaN rpm");
+assert_eq(all_finite_buf(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), NANV, 0.05)), 1, "belt: NaN rpm");
+assert_eq(all_finite_buf(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), NANV, 0.5, 0.05)), 1, "forced: NaN rpm");
+assert_eq(all_finite_buf(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), f64_from(5000), NANV, 0.05)), 1, "forced: NaN load");
+# A NaN construction parameter must not poison the object either.
+assert_eq(all_finite_buf(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(NANV, NANV, SR), f64_from(2000), 0.05)), 1, "belt: NaN diameter + tension");
+
+# ================================================================
+test_group("seed resolution: float parameters reach the seed (ADR-005)");
+fn streams_differ(a, b) {
+    var i = 0;
+    var d = 0;
+    var nz = 0;
+    while (i < 32) {
+        var sa = noise_next_sample(a);
+        var sb = noise_next_sample(b);
+        if (sa != sb) { d = 1; }
+        if (f64_abs(sa) != 0) { nz = 1; }
+        i = i + 1;
+    }
+    if (nz == 0) { return 0 - 1; }
+    return d;
+}
+# A bare f64_to keeps only whole units, so near-identical parameters collided.
+assert_eq(streams_differ(GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600), SR)),
+                         GhTurbine_noise_gen(ghurni_turbine_new(12, 600.4, SR))), 1,
+          "turbine: duct 600.0 vs 600.4 decorrelate");
+assert_eq(streams_differ(GhBeltDrive_noise_gen(ghurni_belt_drive_new(f64_from(120), 0.6, SR)),
+                         GhBeltDrive_noise_gen(ghurni_belt_drive_new(f64_from(120), 0.65, SR))), 1,
+          "belt: tension 0.60 vs 0.65 decorrelate");
+assert_eq(streams_differ(GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR)),
+                         GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.05, 0.3, SR))), 1,
+          "turbo: ratio 2.0 vs 2.05 decorrelate");
+# Determinism is preserved (ADR-003): identical parameters, identical stream.
+assert_eq(streams_differ(GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600), SR)),
+                         GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600), SR))), 0,
+          "identical turbine parameters stay bit-identical");
 
 var rc = assert_summary();
 syscall(60, rc);

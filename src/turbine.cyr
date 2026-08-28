@@ -82,7 +82,13 @@ fn ghurni_turbine_new(blades, duct_resonance, sample_rate) {
     if (ghurni_is_err(whoosh_lfo) == 1) { return ghurni_map_naad_error(whoosh_lfo); }
 
     # noise_gen: pink noise (never errors). Seed derives from blades + duct.
-    var noise = noise_new(NOISE_PINK, b * 13 + f64_to(duct));
+    # Seed convention (ADR-005): where the oracle used `X.to_bits()`, the port
+    # derives a behavioural integer seed -- but every float parameter must reach
+    # it with enough RESOLUTION to decorrelate realistic instances. A bare
+    # f64_to keeps only whole units, so two turbines whose duct resonance
+    # differs by less than 1 Hz shared a stream. x1000 matches belt_drive and
+    # forced_induction, both fixed earlier for the same defect.
+    var noise = noise_new(NOISE_PINK, b * 13 + f64_to(f64_mul(duct, f64_from(1000))));
 
     var self = alloc(sizeof(GhTurbine));
     GhTurbine_set_blades(self, b);
@@ -100,7 +106,7 @@ fn ghurni_turbine_new(blades, duct_resonance, sample_rate) {
 
 # set_rpm(rpm) -- clamp to 1..200000.
 fn ghurni_turbine_set_rpm(self, rpm) {
-    var r = f64_clamp(rpm, F64_ONE, f64_from(200000));
+    var r = ghurni_finite_clamp(rpm, F64_ONE, f64_from(200000));
     GhTurbine_set_rpm(self, r);
     return 0;
 }
@@ -143,6 +149,9 @@ fn ghurni_turbine_process_block(self, out) {
 # The naad synthesis core (ports process_block_naad).
 fn ghurni_turbine_process_block_naad(self, out) {
     var bpf = ghurni_turbine_blade_pass_frequency(self, GhTurbine_rpm(self));
+    # ADR-005 RPM loudness law. Computed once per block: this synth has no
+    # per-sample smoother, so its frequency terms are block-constant too.
+    var rpm_gain = ghurni_rpm_gain(GhTurbine_rpm(self), GHURNI_REF_RPM_TURBINE);
     var nyquist = f64_mul(GhTurbine_sample_rate(self), 0.49);
     var amp = 0.3;
 
@@ -166,7 +175,7 @@ fn ghurni_turbine_process_block_naad(self, out) {
             duct = f64_mul(osc_next_sample(duct_osc), 0.15);
         }
         var s = f64_add(f64_add(f64_mul(tone, amp), whoosh), duct);
-        vec_set(out, i, s);
+        vec_set(out, i, f64_mul(s, rpm_gain));
         i = i + 1;
     }
     return 0;

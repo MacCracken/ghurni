@@ -95,7 +95,7 @@ fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
 
 # set_rpm(rpm) -- clamp to 0..15000 (ports the Synthesizer::set_rpm impl).
 fn ghurni_transmission_set_rpm(self, rpm) {
-    GhTransmission_set_rpm(self, f64_clamp(rpm, 0, f64_from(15000)));
+    GhTransmission_set_rpm(self, ghurni_finite_clamp(rpm, 0, f64_from(15000)));
     return 0;
 }
 
@@ -145,6 +145,11 @@ fn ghurni_transmission_synthesize(self, rpm, duration) {
 # naad synthesis inline (no separate _naad helper). Advances sample_position per
 # sample inside the loop (matching the Rust naad-backend arm).
 fn ghurni_transmission_process_block(self, out) {
+    # ADR-005 loudness gain uses the INPUT shaft rpm -- the speed the consumer
+    # sets -- not `smooth_rpm`, which tracks OUTPUT rpm (rpm / current_ratio) and
+    # would make loudness depend on the selected gear. That would be a different
+    # behaviour, and not one this ADR is introducing.
+    var tx_gain = ghurni_rpm_gain(GhTransmission_rpm(self), GHURNI_REF_RPM_TRANSMISSION);
     var out_rpm = ghurni_transmission_output_rpm(self);
     var mesh_rpm = GhTransmission_mesh_rpm(self);
     ghurni_smooth_set_target(mesh_rpm, out_rpm);
@@ -177,7 +182,10 @@ fn ghurni_transmission_process_block(self, out) {
         }
 
         var hiss = f64_mul(noise_next_sample(noise), 0.02);
-        vec_set(out, i, f64_add(mesh, f64_add(synchro, hiss)));
+        # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
+        # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
+        var tx_sum = f64_add(mesh, f64_add(synchro, hiss));
+        vec_set(out, i, f64_mul(tx_sum, tx_gain));
 
         # VESTIGIAL: advanced every block, read by nothing in this module. Its only
         # readers in the oracle were the non-naad fallback arms, which ADR-004 drops.

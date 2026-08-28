@@ -168,7 +168,7 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
 
 # set_rpm(rpm) -- clamp to 100..15000, retarget the smoother.
 fn ghurni_engine_set_rpm(self, rpm) {
-    var r = f64_clamp(rpm, f64_from(100), f64_from(15000));
+    var r = ghurni_finite_clamp(rpm, f64_from(100), f64_from(15000));
     GhEngine_set_rpm(self, r);
     ghurni_smooth_set_target(GhEngine_smooth_rpm(self), r);
     return 0;
@@ -177,7 +177,7 @@ fn ghurni_engine_set_rpm(self, rpm) {
 # set_load(load) -- clamp to 0..1, retarget the smoother, detect decel pop.
 fn ghurni_engine_set_load(self, load) {
     GhEngine_set_prev_load(self, GhEngine_load(self));
-    var l = f64_clamp(load, 0, F64_ONE);
+    var l = ghurni_finite_clamp(load, 0, F64_ONE);
     GhEngine_set_load(self, l);
     ghurni_smooth_set_target(GhEngine_smooth_load(self), l);
     var was_loaded = f64_gt(GhEngine_prev_load(self), 0.5);
@@ -312,6 +312,11 @@ fn ghurni_engine_process_block_naad(self, out) {
 
         var revs_per_sample = f64_div(rpm, f64_mul(f64_from(60), sr));
         var crank_deg = ghurni_fmod(f64_mul(f64_mul(abs_pos, revs_per_sample), f64_from(360)), cycle);
+        # How far `t` advances in one sample: crank degrees per sample divided by
+        # the width of the combustion window (0.08 of the cycle). Guarded so a
+        # stalled crank cannot divide by zero in the integrated pulse below.
+        var pulse_dt = f64_div(f64_mul(revs_per_sample, f64_from(360)), f64_mul(0.08, cycle));
+        if (f64_le(pulse_dt, 0) == 1) { pulse_dt = 0.000000001; }
 
         # sum combustion impulses from each cylinder
         var combustion_sum = 0;
@@ -331,7 +336,32 @@ fn ghurni_engine_process_block_naad(self, out) {
             if (skip == 0) {
                 if (f64_lt(cyl_norm, 0.08) == 1) {
                     var t = f64_div(cyl_norm, 0.08);
-                    var pulse = naad_db_to_amplitude(f64_mul(f64_neg(f64_mul(f64_from(8), t)), GHURNI_DB_SCALE));
+                    # SAMPLE-INTEGRATED PULSE (ADR-005). The envelope e^(-a*t)
+                    # decays to 1% within t < 0.11, which at 7000 rpm is about
+                    # three samples wide -- narrower than the grid can resolve.
+                    # Point-sampling it made the peak depend on where the sample
+                    # lattice happened to fall: at RPMs where samples-per-cycle
+                    # is an integer (5292000/rpm at 44.1 kHz) the lattice repeats
+                    # exactly, so if no sample landed near t=0 then none ever
+                    # did, and the thump lost up to 70% of its amplitude in a
+                    # notch 50 rpm wide. Integrating the envelope across each
+                    # sample instead conserves the pulse energy regardless of
+                    # alignment, because consecutive samples' intervals tile
+                    # [0, 1) exactly:
+                    #     avg = INTEGRAL(lo..hi) e^(-a*u) du / dt
+                    #         = (e^(-a*lo) - e^(-a*hi)) / (a * dt)
+                    # `lo` snaps to 0 when the pulse fired inside this sample's
+                    # span (t < dt), which is what recovers the onset energy the
+                    # point-sample dropped. Dividing by dt, not by (hi - lo),
+                    # is what makes it energy-conserving rather than just
+                    # smoothed.
+                    var lo = t;
+                    if (f64_lt(t, pulse_dt) == 1) { lo = 0; }
+                    var hi = f64_add(t, pulse_dt);
+                    if (f64_gt(hi, F64_ONE) == 1) { hi = F64_ONE; }
+                    var e_lo = naad_db_to_amplitude(f64_mul(f64_neg(f64_mul(f64_from(8), lo)), GHURNI_DB_SCALE));
+                    var e_hi = naad_db_to_amplitude(f64_mul(f64_neg(f64_mul(f64_from(8), hi)), GHURNI_DB_SCALE));
+                    var pulse = f64_div(f64_sub(e_lo, e_hi), f64_mul(GHURNI_COMBUSTION_DECAY, pulse_dt));
                     var ns = noise_next_sample(noise);
                     var rough_gain = f64_add(F64_ONE, f64_mul(roughness, ns));
                     var contrib = f64_mul(f64_mul(pulse, base_amp), rough_gain);
@@ -396,7 +426,9 @@ fn ghurni_engine_process_block_naad(self, out) {
 
         var events = f64_add(knock_sum, f64_add(decel, backfire));
         var s = f64_add(combustion_sum, f64_add(exhaust, f64_add(intake, f64_add(mech, events))));
-        vec_set(out, i, s);
+        # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
+        # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
+        vec_set(out, i, f64_mul(s, ghurni_rpm_gain(rpm, GHURNI_REF_RPM_ENGINE)));
         i = i + 1;
     }
     return 0;

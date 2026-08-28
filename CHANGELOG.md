@@ -5,6 +5,112 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-08-28
+
+**Arc 1 — "Rest State."** The first deliberate acoustic divergence from the
+retired Rust oracle, and the first release since 2.0.0 that changes how ghurni
+sounds. Recorded in [ADR-005](docs/architecture/adr-005-rpm-loudness-law.md).
+
+⚠ **This changes rendered audio.** Six of eleven goldens moved; they were
+updated in the same commit, each with its reason. See "What moved" below.
+
+### The defect
+
+ghurni's thesis is that RPM is the fundamental parameter. Measurement said
+otherwise — **loudness was very nearly RPM-independent across the entire
+operating range**, and three synths were non-monotonic:
+
+| synth | @ 0 RPM | nominal | |
+|---|---|---|---|
+| motor | 0.184407 | 0.185256 | as loud stopped as running |
+| belt_drive | 0.084913 | 0.069786 | **louder** stopped than running |
+| turbine | 0.106632 | 0.251488 @8000 | 99.5% of nominal at 5% of nominal speed |
+| gear | 0.026472 | 0.106961 @1500 | 94% of nominal at 3% of nominal speed |
+
+Structural, not a bug: `gear.cyr` set `var amp = 0.3` and never varied it;
+`belt_drive`'s `squeal_amp = (1 - tension) * 0.3` had no RPM term at all. These
+were faithful ports — the oracle did the same — which is exactly why the fix
+needed an ADR rather than a patch.
+
+### Added — one loudness law, applied uniformly
+
+`ghurni_rpm_gain(rpm, ref_rpm)` = `2r / (r + 1)` where `r = rpm / ref_rpm`.
+
+Chosen for four properties, in this order: **exactly 1.0 at the reference RPM**
+(so nominal audio is unchanged and the release stays reviewable), 0 at rest,
+monotonic everywhere, and saturating at +6 dB so a 10× overspeed cannot produce
+a 10× louder signal. Reference speeds are each mechanism's typical operating
+point — engine/motor/transmission/differential/chain 3000, gear 1500, belt 2000,
+turbine 8000.
+
+**clock and forced_induction are deliberately exempt**: an escapement runs at a
+fixed tick rate and is not RPM-driven, and forced_induction already scales
+through `spool_rpm`, so a second gain would double-count.
+
+### Fixed — the combustion pulse is integrated across each sample
+
+The engine's envelope `e^(-a·t)` (a = 8·ln(10)² ≈ 42.4) decays to 1% within
+about **three samples** at 7000 rpm — narrower than the sample grid resolves. So
+the rendered peak depended on where the lattice fell, and at RPMs where
+samples-per-cycle is an integer (`5292000/rpm` at 44.1 kHz) the lattice repeats
+exactly: if no sample landed near the peak, none ever did.
+
+| rpm | before | after |
+|---|---|---|
+| 6950 | 1.0388 | 0.7819 |
+| **7000 (resonant)** | **0.3082** | **0.7896** |
+| 7050 | 1.1127 | 0.7661 |
+
+A 70% dropout in a notch ~50 rpm wide, at twenty RPMs between 2250 and 7000 —
+audible as a hole during a sweep. Now the envelope is integrated across each
+sample, `(e^(-a·lo) − e^(-a·hi)) / (a·dt)`, which is **energy-conserving**: the
+integral over the cycle is invariant to lattice offset, so the notch cannot
+exist. A 1000→9000 rpm sweep is smooth (0.99 → 0.68, no notches). Peaks are
+lower than the old best case because that best case was an aliasing artefact.
+**No measurable benchmark cost** — the extra exponential replaced a `pow` inside
+the same guard.
+
+### Fixed — NaN at the parameter boundary
+
+`f64_clamp` **propagates** NaN where `f64_max`/`f64_min` absorb it, so every
+public setter written in the oracle's idiom (`rpm.clamp(0.0, 50000.0)`) let a
+NaN into synth state, where it poisoned oscillator phase and filter memory
+permanently — one NaN `set_rpm` made every subsequent sample non-finite for the
+life of the object. New `ghurni_finite_clamp` collapses non-finite input to the
+"off" end; applied at all **18** public-parameter clamps. Measured: every NaN
+entry point now renders 0/2205 non-finite samples, down from 2205/2205.
+
+### Fixed — seed resolution unified
+
+`turbine` folded `duct_resonance` into its noise seed with a bare `f64_to`,
+keeping only whole Hz, so two turbines under 1 Hz apart shared a stream. Now
+×1000, matching `belt_drive` and `forced_induction` — both fixed earlier for the
+same defect. That convention is now stated once and applied everywhere.
+
+### What moved, and what deliberately did not
+
+The five unchanged goldens are the evidence the design did what it claimed:
+**gear @1500, transmission @3000 and belt @2000 sit exactly at their reference
+RPM, so their audio is bit-identical.** clock is exempt; forced_induction already
+scaled. The six that moved: both engine goldens, motor @4000 (gain is 1.14
+there, not 1), turbine @8000 (gain exactly 1 — it moved only because its seed
+gained resolution), and differential/chain @3000, whose per-sample smoothers
+converge to within an ULP of target so the gain is 0.9999999… rather than 1.
+
+**`tests/spectral.tcyr` passed unchanged throughout**, which is the check that
+this is a loudness change and not a pitch change: every peak still lands where
+the RPM physics says.
+
+### Testing
+
+- The rest-state assertions added in 2.0.3 deliberately pinned the **wrong**
+  behaviour so it could not be fixed silently. They are now the invariant:
+  exact silence at rest for the six synths whose RPM floor is 0, rest under 5%
+  of running for those with a floor (engine idles at 100 rpm, gear and turbine
+  at 1), and monotonicity for the three that failed it.
+- New groups covering the law itself, `ghurni_finite_clamp`, NaN at every entry
+  point, and seed decorrelation. 509 assertions across 10 suites, up from 450.
+
 ## [2.0.4] - 2026-08-28
 
 **Arc 0b — "Delete the Oracle."** `rust-old/`, the Rust 1.0.0 crate that served

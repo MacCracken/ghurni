@@ -17,6 +17,23 @@
 # first. If the move is intended, record the reason in the CHANGELOG entry for
 # the release that changes it.
 #
+# MOVED IN 2.1.0 (ADR-005). Six of the eleven goldens changed when the RPM
+# loudness law landed. They were updated deliberately, in the same commit as the
+# change, with the reason recorded here:
+#   engine (both)  the combustion pulse is now integrated across each sample
+#                  instead of point-sampled, which removes the resonant-RPM
+#                  amplitude notch; and the loudness law applies.
+#   motor @4000    ref is 3000, so the gain at 4000 is 1.14, not 1.
+#   turbine @8000  gain is exactly 1 at its 8000 reference -- this moved only
+#                  because the noise SEED gained resolution (duct x1000).
+#   differential   ref 3000, but its per-sample smoother converges to within an
+#   chain @3000    ULP of target rather than exactly, so the gain is
+#                  0.9999999..., which the 1e-6 quantizer can see.
+# UNCHANGED, and that is the ADR's central claim holding: gear @1500,
+# transmission @3000 and belt @2000 all sit exactly at their reference RPM, so
+# their gain is exactly 1.0 and their audio is bit-identical. clock is exempt
+# from the law entirely, and forced_induction already scaled via spool_rpm.
+#
 # QUANTIZATION. Samples are truncated to 1e-6 before hashing. ghurni's DSP leans
 # on f64_sin / f64_cos / f64_exp / f64_pow, and a different platform's libm may
 # differ in the last ulp; quantizing absorbs that while still catching any real
@@ -71,25 +88,25 @@ fn golden(v, want_len, want_ck, name) {
 # ================================================================
 test_group("golden: engine");
 golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), 0.6, 0.1),
-       4410, 0 - 8766513367084661521, "gasoline 4cyl @3000 load 0.6");
+       4410, 0 - 5023229049051638223, "gasoline 4cyl @3000 load 0.6");
 golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_DIESEL, 6, SR), f64_from(1500), 0.9, 0.1),
-       4410, 0 - 1987024575981388422, "diesel 6cyl @1500 load 0.9");
+       4410, 3711602253019168005, "diesel 6cyl @1500 load 0.9");
 
 # ================================================================
 test_group("golden: rotating");
 golden(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(1500), 0.1),
        4410, 0 - 7489493870062565672, "steel gear 32t @1500");
 golden(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), f64_from(4000), 0.5, 0.1),
-       4410, 0 - 2830928156387266083, "brushless motor 8p @4000");
+       4410, 1213431900338395374, "brushless motor 8p @4000");
 golden(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), f64_from(8000), 0.1),
-       4410, 1448162320472386103, "ducted turbine 12b @8000");
+       4410, 1523957458651737894, "ducted turbine 12b @8000");
 golden(ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_GRANDFATHER_CLOCK, SR), 0.5),
        22050, 0 - 7415208127804752968, "grandfather clock 0.5 s");
 
 # ================================================================
 test_group("golden: drivetrain");
 golden(ghurni_differential_synthesize(ghurni_differential_new(41, 11, SR), f64_from(3000), 0.1),
-       4410, 0 - 2363300520625950448, "differential 41/11 @3000");
+       4410, 2312913301246635992, "differential 41/11 @3000");
 var g_ratios = vec_new();
 vec_push(g_ratios, 3.5); vec_push(g_ratios, 2.1); vec_push(g_ratios, 1.4);
 golden(ghurni_transmission_synthesize(ghurni_transmission_new(g_ratios, 24, SR), f64_from(3000), 0.1),
@@ -102,7 +119,7 @@ test_group("golden: drives");
 golden(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(2000), 0.1),
        4410, 4082743555079396767, "belt 120mm tension 0.6 @2000");
 golden(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_from(3000), 0.1),
-       4410, 0 - 2656417122739950350, "chain 110 links 16t @3000");
+       4410, 0 - 2346550670873454044, "chain 110 links 16t @3000");
 
 # ================================================================
 test_group("golden: the checksum itself is sensitive");

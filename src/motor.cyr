@@ -142,13 +142,13 @@ fn ghurni_motor_new(motor_type, poles, sample_rate) {
 
 # set_rpm(rpm) -- clamp to 0..100000.
 fn ghurni_motor_set_rpm(self, rpm) {
-    GhMotor_set_rpm(self, f64_clamp(rpm, 0, f64_from(100000)));
+    GhMotor_set_rpm(self, ghurni_finite_clamp(rpm, 0, f64_from(100000)));
     return 0;
 }
 
 # set_load(load) -- clamp to 0..1.
 fn ghurni_motor_set_load(self, load) {
-    GhMotor_set_load(self, f64_clamp(load, 0, F64_ONE));
+    GhMotor_set_load(self, ghurni_finite_clamp(load, 0, F64_ONE));
     return 0;
 }
 
@@ -194,6 +194,9 @@ fn ghurni_motor_process_block_naad(self, out) {
     var noise_filter = GhMotor_noise_filter(self);
 
     var em_freq = ghurni_motor_em_frequency(self, GhMotor_rpm(self));
+    # ADR-005 RPM loudness law. Computed once per block: this synth has no
+    # per-sample smoother, so its frequency terms are block-constant too.
+    var rpm_gain = ghurni_rpm_gain(GhMotor_rpm(self), GHURNI_REF_RPM_MOTOR);
     var nyquist = f64_mul(GhMotor_sample_rate(self), 0.49);
     additive_set_fundamental(hum_synth, f64_min(em_freq, f64_div(nyquist, f64_from(3))));
 
@@ -206,7 +209,7 @@ fn ghurni_motor_process_block_naad(self, out) {
         var hum = f64_mul(additive_next_sample(hum_synth), amp);
         var raw_noise = f64_mul(f64_mul(noise_next_sample(noise), noise_level), amp);
         var flt = filter_biquad_process_sample(noise_filter, raw_noise);
-        vec_set(out, i, f64_add(hum, flt));
+        vec_set(out, i, f64_mul(f64_add(hum, flt), rpm_gain));
         i = i + 1;
     }
     return 0;

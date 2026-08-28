@@ -119,6 +119,14 @@ fn ghurni_is_finite(x) {
     return f64_lt(f64_abs(x), GHURNI_POS_INF);
 }
 
+# Combustion-pulse decay rate: the pulse is naad_db_to_amplitude(-8*t*DB_SCALE),
+# which is exactly e^(-a*t) with a = 8*ln(10)^2 = 42.415184883827195. Stored as a
+# bit pattern, like DB_SCALE, so a consumer's older toolchain cannot miscompile
+# the literal. Needed in closed form by the sample-integrated pulse (ADR-005):
+# the analytic integral of e^(-a*t) needs `a` explicitly, not just the ability
+# to evaluate the pulse.
+var GHURNI_COMBUSTION_DECAY = 0x40453524C73CEA6A;   # 8 * ln(10)^2 = 42.415184883827195
+
 # Copy a vec of f64 (by value). Several Rust setters/constructors take a
 # `Vec<f32>` BY VALUE -- the move makes it impossible for the caller to touch the
 # vec again. Cyrius passes the vec as a pointer, so storing the caller's vec

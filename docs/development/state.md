@@ -5,7 +5,7 @@
 
 ## Version
 
-**2.0.4** — full-parity Cyrius port, hardened, pinned, oracle retired. Dependency set:
+**2.1.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law (ADR-005). Dependency set:
 cyrius 6.5.35 · naad 2.2.1 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
@@ -26,9 +26,9 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (3,242 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (3,377 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 10 suites, 450 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 10 suites, 509 assertions, 0 failures)
 
 | Suite | Covers |
 |-------|--------|
@@ -48,7 +48,7 @@ Bundle: `dist/ghurni.cyr` (3,242 lines, `cyrius distlib`).
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
-`cyrius coverage`: 111/167 functions referenced (66%) — a floor, not a proof.
+`cyrius coverage`: 113/169 functions referenced (66%) — a floor, not a proof.
 Fuzz: `fuzz/ghurni.fcyr`, 1631 adversarial checks (`cyrius fuzz`).
 
 ## Deliberate divergences from `rust-old/`
