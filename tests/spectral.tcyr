@@ -437,5 +437,100 @@ var fc_hi = fi_centroid_at(0.9);
 assert_gt(fc_lo, f64_from(200), "forced_induction centroid is a real measurement");
 assert_lt(fc_lo, fc_hi, "forced_induction: more load is BRIGHTER");
 
+# ================================================================
+test_group("the exhaust duct is a QUARTER-WAVE PIPE, not a tone control (ADR-010)");
+# These are the assertions that carry content, and ADR-010 says so explicitly.
+# ADR-009's acceptance criterion (exhaust energy share > 25%, firing-period
+# autocorrelation > mono) was met comfortably by 2.6.0 -- and is ALSO met by a
+# literal wire that routes combustion into the exhaust term with no delay, no
+# filter and no resonance at all (measured: 66.1% share, +0.743 AC). It is a
+# ROUTING test. It cannot see whether a duct exists, so it must never be cited
+# as evidence that one does. What follows can see it.
+#
+# 1. THE MODES TRACK THE PIPE. A quarter-wave resonator's modes are fixed by its
+#    length; retuning f1 must move them. A bandpass would do this too -- this is
+#    the necessary half, not the sufficient one.
+# 2. THE SERIES IS ODD. A pipe closed at one end and open at the other resonates
+#    at f1, 3*f1, 5*f1 and NOT at 2*f1. A bandpass has one peak and no series;
+#    a positive-feedback comb would put energy on every multiple. This is the
+#    half that distinguishes a duct from everything else.
+# 3. IT BOOMS WHERE THE PHYSICS SAYS. Firing harmonics sweep through the fixed
+#    modes as rpm changes, so the mode band must be louder at an rpm where a
+#    harmonic lands on it than at one where none does. Nothing here is fitted.
+fn duct_render(rpm_v, f1_v) {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    GhEngine_set_exhaust_resonance(e, f1_v);
+    ghurni_engine_set_rpm(e, rpm_v);
+    ghurni_engine_set_load(e, 0.6);
+    var w = spec_block();
+    ghurni_engine_process_block(e, w);
+    var b = spec_block();
+    ghurni_engine_process_block(e, b);
+    return b;
+}
+# Mean magnitude in [lo, hi] Hz.
+fn duct_band(v, lo, hi) {
+    var mags = fft_magnitudes(v);
+    var n = vec_len(mags);
+    var i0 = f64_to(f64_div(f64_mul(lo, f64_from(SPEC_N)), SR));
+    var i1 = f64_to(f64_div(f64_mul(hi, f64_from(SPEC_N)), SR));
+    if (i0 < 1) { i0 = 1; }
+    if (i1 >= n) { i1 = n - 1; }
+    var acc = 0;
+    var c = 0;
+    var i = i0;
+    while (i <= i1) { acc = f64_add(acc, vec_get(mags, i)); c = c + 1; i = i + 1; }
+    if (c == 0) { return 0; }
+    return f64_div(acc, f64_from(c));
+}
+
+# --- 1. the modes track the pipe -------------------------------------------
+# Tuned to 200 Hz vs 400 Hz, same engine, same rpm, same noise sequence.
+var dm_200 = duct_render(f64_from(3300), f64_from(200));
+var dm_400 = duct_render(f64_from(3300), f64_from(400));
+var dm_at200_when200 = duct_band(dm_200, f64_from(185), f64_from(215));
+var dm_at200_when400 = duct_band(dm_400, f64_from(185), f64_from(215));
+var dm_at400_when200 = duct_band(dm_200, f64_from(385), f64_from(415));
+var dm_at400_when400 = duct_band(dm_400, f64_from(385), f64_from(415));
+assert_gt(dm_at200_when200, 0, "band energy is a real measurement");
+assert_gt(dm_at200_when200, dm_at200_when400,
+  "200 Hz band is louder when the pipe IS tuned to 200 Hz");
+assert_gt(dm_at400_when400, dm_at400_when200,
+  "400 Hz band is louder when the pipe IS tuned to 400 Hz");
+
+# --- 2. the series is ODD ---------------------------------------------------
+# 3300 rpm, 4cyl 4-stroke -> firing 110 Hz. With f1 = 250 Hz, neither 2*f1 = 500
+# (500/110 = 4.55) nor 3*f1 = 750 (750/110 = 6.82) is a firing harmonic, so the
+# SOURCE puts no line on either one. Any difference between them comes from the
+# pipe. A quarter-wave pipe resonates at 3*f1 and NOT at 2*f1.
+var dm_250 = duct_render(f64_from(3300), f64_from(250));
+var dm_even = duct_band(dm_250, f64_from(480), f64_from(520));
+var dm_odd = duct_band(dm_250, f64_from(730), f64_from(770));
+assert_gt(dm_even, 0, "even-multiple band is a real measurement");
+assert_gt(dm_odd, dm_even,
+  "3*f1 is louder than 2*f1 -- the ODD series of a closed-open pipe");
+
+# --- 3. it booms where the physics says -------------------------------------
+# With the shipped gasoline 4cyl f1 = 230 Hz, a firing harmonic m lands on the
+# mode when rpm/60 * 2 * m = 230, i.e. rpm = 6900/m. m = 3 gives 2300 rpm; the
+# next is m = 4 at 1725. 2000 rpm sits between them, with no harmonic on the
+# mode. Nothing here is fitted: 6900/m falls out of the shipped constant.
+fn duct_mode_share(rpm_v) {
+    var b = duct_render(rpm_v, f64_from(230));
+    var inband = duct_band(b, f64_from(215), f64_from(245));
+    var broad = duct_band(b, f64_from(300), f64_from(3000));
+    return f64_div(inband, f64_max(broad, GHURNI_EPSILON));
+}
+var dm_on = duct_mode_share(f64_from(2300));   # harmonic 3 ON the mode
+var dm_off = duct_mode_share(f64_from(2000));  # between harmonics
+assert_gt(dm_on, 0, "mode-band share is a real measurement");
+# The bar is 1.6, chosen to DISCRIMINATE rather than merely to be true. Measured:
+# 2.5.1's bandpass gives 1.318 and the 2.6.0 duct gives 1.937, so a bare
+# "on > off" assertion passes on BOTH -- the source's own firing harmonic lands
+# on 230 Hz at 2300 rpm whether or not a pipe exists. Only the DEPTH of the boom
+# separates them, and 1.6 sits between the two with margin on each side.
+assert_gt(f64_div(dm_on, dm_off), 1.6,
+  "the pipe BOOMS at 2300 rpm (firing harmonic 3 on the 230 Hz mode) -- and deeper than a bandpass can");
+
 var rc = assert_summary();
 syscall(60, rc);

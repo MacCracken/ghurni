@@ -388,7 +388,26 @@ by the route this arc assumed.**
 
 ---
 
-## Arc 3c — `2.6.0` "Radiation Paths"
+## Arc 3c — `2.6.0` "Radiation Paths"  ✅ SHIPPED (exhaust only)
+
+> Released 2026-08-28. 640 assertions (was 633), **3 of 28 goldens moved**
+> (gasoline, diesel, hybrid — all nine non-engine synths bit-identical).
+> cyrius 6.5.36. See [ADR-010](../architecture/adr-010-radiation-paths.md).
+>
+> **The criterion below is MET and is no longer the blocker**: exhaust share
+> 3.59% → 64.3%, firing-period autocorrelation −0.040 → +0.717, with mono
+> autocorrelation *rising* 0.654 → 0.664 and level +0.21 dB. Muting the exhaust
+> now moves the engine −4.39 dB where 2.5.1 moved −0.11 dB.
+>
+> ⚠ **But the criterion is passed by a wire** (66.12% / +0.743 with no delay, no
+> filter, no resonance), so it was NOT what justified the release. The evidence
+> that carries content is the odd-harmonic mode series and the boom depth, both
+> asserted in `tests/spectral.tcyr` and both mutation-verified to fail against
+> 2.5.1. ADR-009 is corrected in place.
+>
+> **It was listened to before shipping** — A/B audio at a steady 3000 rpm and
+> over a 900→6500 rpm sweep, reviewed by ear and judged close to a real exhaust.
+> No metric here would have caught the alternative.
 
 **Theme: give the engine somewhere for the sound to come out of.** This is the
 release ADR-009's measurement points at, and stems ship as a *consequence* of it
@@ -400,26 +419,50 @@ cannot be deferred a fifth time by inattention:
 > the engine's exhaust path must carry **>25% of mean-square energy** AND a
 > **positive firing-period autocorrelation exceeding today's mono (+0.597)**.
 
-- [ ] **Model the exhaust as a resonant duct, not a bandpass.** A pipe closed at
+- [x] **Model the exhaust as a resonant duct, not a bandpass.** A pipe closed at
       one end resonates at odd harmonics of c/4L, and it must carry the
       *combustion pulse train*, not a separate noise bed — that is what makes an
       exhaust note an exhaust note. Candidate mechanisms: a resonant comb / delay
       line with a reflection coefficient, or a small modal bank. Both are cheap
       relative to convolution, which ADR-009 closed.
-- [ ] **Model the intake tract the same way** (Helmholtz plenum + runner), so the
+- [ ] **Model the intake tract the same way** → **2.7.0.** Not prototyped, and
+      adding a second unmeasured resonator to the largest audio change in the
+      project's history is how you get a golden you cannot explain. (Helmholtz plenum + runner), so the
       two apertures are genuinely different rather than two bandpasses on one
       noise source.
-- [ ] **Then per-component stems**, re-derived once the acceptance criterion is
-      met. ADR-009's radiation-path rule is the taxonomy to start from — it was
+- [ ] **Then per-component stems** → **2.7.0.** The criterion is met and closed;
+      what blocks stems now is that the intake lane is still 1.3% of noise, and a
+      taxonomy keyed on radiation path would hand consumers two real lanes and
+      one fake — the exact failure ADR-009 refused. Re-derived once the intake
+      clears the same bar the exhaust just did. ADR-009's radiation-path rule is the taxonomy to start from — it was
       the correct definition applied to a model that could not feed it.
 - [ ] Re-check the ADR-005 loudness law against the new duct: a resonant pipe has
       its own RPM-dependent gain and may double-count.
 
-**Patch line `2.6.x`** — duct tuning per engine type; golden refreshes.
+**Patch line `2.6.x`** — duct tuning per engine type; golden refreshes; the
+two-stroke expansion chamber (characterised, not papered over: it is a
+divergent-then-convergent cone pair, a different device, and misses the share bar
+at 21.9%).
 
 ---
 
-## Arc 4 — `2.7.0` "New Mechanisms"
+## Arc 3d — `2.7.0` "Intake & Stems"
+
+**Theme: finish the radiation model, then hand out the lanes.**
+
+- [ ] **Intake duct** — Helmholtz plenum + runner, to the same bar the exhaust
+      cleared. An airbox is a duct too; that is what airbox resonance IS.
+- [ ] **Per-component stems**, keyed on radiation path, once there are two real
+      lanes. ADR-009's taxonomy is the starting point — it was the correct
+      definition applied to a model that could not feed it.
+- [ ] Let the duct energy split (`GHURNI_DUCT_DRIVE` / `_STRUCT`) survive one
+      release in consumers' hands before an occlusion curve is built on it.
+
+**Patch line `2.7.x`** — stem-level tuning.
+
+---
+
+## Arc 4 — `2.8.0` "New Mechanisms"
 
 **Theme: breadth.** Deliberately last: a new synth built before Arc 1's loudness
 law and Arc 0's fuzz harness would inherit both problems on day one.
@@ -451,7 +494,7 @@ Ranked by what a consumer hits first. The old roadmap's five are re-scoped:
 - [ ] Weapon actions / rotary cannon — large genre, zero coverage. Check the
       garjan boundary first (the *impact* is theirs; the *action* is ours).
 
-**Patch line `2.7.x`** — per-synth tuning for the new mechanisms.
+**Patch line `2.8.x`** — per-synth tuning for the new mechanisms.
 
 ---
 

@@ -5,6 +5,114 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-08-28
+
+**Arc 3c — "Radiation Paths."** The engine gets a pipe. This is the largest
+deliberate audio change in the project's history, and it was **listened to**
+before it shipped. Recorded in
+[ADR-010](docs/architecture/adr-010-radiation-paths.md).
+
+⚠ **This changes rendered audio.** Three of 28 goldens move — gasoline, diesel
+and hybrid. All nine non-engine synths are bit-identical.
+
+### Added — the exhaust is a quarter-wave waveguide
+
+ADR-009 measured that ghurni had nothing to split: the exhaust was a bandpass on
+a *separate white-noise bed*, the combustion pulse train never went through it,
+and the buffer labelled EXHAUST carried 3.6% of the energy with **negative**
+firing-period autocorrelation.
+
+A pipe closed at the exhaust valve and open at the tailpipe is a quarter-wave
+resonator — standing waves at odd harmonics of `c/4L`, fixed by the *pipe*, while
+the firing rate sweeps with RPM. One naad `DelayLine` per engine, used
+bidirectionally, with a **negative** loop gain (that is what puts the resonances
+on the odd series), a one-pole loop loss so high modes die faster than low ones,
+and a first-order radiation highpass on what escapes the open end.
+
+- exhaust energy share **3.59% → 64.3%**
+- exhaust firing-period autocorrelation **−0.040 → +0.717**
+- mono autocorrelation **0.654 → 0.664** — the engine got *more* periodic, not
+  less; it did not sacrifice itself to buy a periodic exhaust
+- level **+0.21 dB**
+- muting the exhaust now moves the engine **−4.39 dB**, where 2.5.1 moved −0.11 dB
+
+`exhaust_resonance` is **reinterpreted, not replaced**: it was a bandpass centre,
+it is now the quarter-wave fundamental `f1 = c/4L`. Same field, units and
+accessors — and the shipped per-type constants turn out to imply sensible
+geometry at c ≈ 550 m/s (gasoline 4cyl 230 Hz = 0.60 m, diesel 6cyl 170 Hz =
+0.81 m). A consumer who tuned it by ear in 2.5.x will get a different result.
+
+The duct sits **after** the rev-limiter, stall, shutdown and startup gates, so a
+fuel cut and a stall now reach the tailpipe. No `noise_next_sample` draw was
+added, removed or reordered.
+
+### Corrected — ADR-009's acceptance criterion is passed by a wire
+
+The criterion that authorised this release cannot detect a duct. Routing
+combustion straight into the exhaust term with **no delay, no filter and no
+resonance** measures **66.12% share and +0.743 autocorrelation** — both bars
+cleared with no pipe present. Three further controls confirm it (feedback = 0,
+reflection = 0, and swinging the share 64% → 44% while the autocorrelation stays
+bit-for-bit identical).
+
+It is a **routing test** — sound as the gate it was written to be, worthless as
+evidence a radiation path exists. 2.6.0 met it, but is justified on two
+assertions that **fail against 2.5.1 and pass against 2.6.0**:
+
+- **the series is odd** — at 3300 rpm with f1 = 250 Hz, neither 2·f1 = 500 nor
+  3·f1 = 750 is a firing harmonic, so any difference comes from the pipe, and
+  3·f1 is louder. A bandpass has one peak and no series.
+- **it booms where the physics says** — a firing harmonic lands on the 230 Hz
+  mode at rpm = 6900/m, so 2300 rpm booms and 2000 rpm does not. The bar is 1.6,
+  chosen to *discriminate*: a bare "boom > no-boom" passes on 2.5.1 too, because
+  the source's own harmonic lands there regardless. Only the depth separates them
+  (1.318 bandpass vs 1.937 duct).
+
+### Removed — the 2.5.0 tripwire, because it was wrong
+
+ADR-009 pinned "detuning both bodies to 60 Hz moves the engine under 0.45 dB —
+they are not ducts", expecting a real duct to break it. **It didn't** — measured
+−0.27 dB with the duct in place. The premise was wrong physics: a waveguide's
+throughput is level-invariant under retuning, because the escape coefficient and
+the radiation filter do not care where the modes sit. Detuning a pipe moves its
+**colour**, not its level. Replaced rather than deleted, with an explicit pin
+that the level is *not* what moves.
+
+### Changed — cyrius 6.5.35 → 6.5.36
+
+Toolchain pin bumped and `lib/` re-resolved clean (`cyrius deps --verify`: 35
+verified, 0 failed).
+
+### Tests
+
+640 assertions across 10 suites, up from 633. Both new duct assertions were
+mutation-verified against 2.5.1.
+
+### Notes for consumers
+
+- **The hybrid golden moves for an inaudible reason.** `duct_drive` is 0 for
+  HYBRID, so the EM whine is untouched; only the small `bed_gain = 0.25`
+  flow-noise term now traverses the duct. Measured level change **−0.004 dB**.
+  The checksum moves; the sound does not. This is not an electric-drive regression.
+- **The timbral rebalance is larger than the +0.21 dB level change suggests**:
+  −4.55 dB in both the 45–90 and 90–180 Hz bands, +0.4 to +0.8 dB above 355 Hz,
+  and the first five firing harmonics fall from 8.1% to 4.2% of total energy.
+  The engine trades some bottom end for a radiated character. This was reviewed
+  by ear and judged close to a real exhaust before shipping.
+- **Cost is negligible** — measured +24 ns/sample on `synthesize`, +10 ns on
+  64-sample blocks, within noise at 512 and 4096, against a 22.68 µs budget.
+- **Memory**: 16 KB per `GhEngine` for the delay line, allocated even for HYBRID.
+- **14 new public symbols** (8 `GHURNI_DUCT_*` constants, 3 fields + accessors).
+
+### Deferred
+
+The **intake duct** and **stems** both slide to 2.7.0, and breadth to 2.8.0.
+ADR-009's criterion is met and is no longer the blocker — but the intake lane is
+still 1.3% of noise, and shipping a stem taxonomy keyed on radiation path would
+hand consumers two real lanes and one fake, which is the exact failure ADR-009
+refused. The **two-stroke expansion chamber** is characterised, not papered over:
+it is a different device and misses the share bar at 21.9%.
+
 ## [2.5.1] - 2026-08-28
 
 Patch. **No API change and no rendered-audio change** — all 28 golden checksums

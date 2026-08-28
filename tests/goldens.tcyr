@@ -100,14 +100,34 @@ fn golden(v, want_len, want_ck, name) {
 
 # ================================================================
 test_group("golden: engine");
+# ALL THREE MOVED IN 2.6.0 (ADR-010). The combustion pulse train now propagates
+# down a quarter-wave waveguide and reaches the listener as the radiated field
+# from the open end. Before 2.6.0 100% of it went straight out and the buffer
+# labelled EXHAUST was an unrelated white-noise bed (ADR-009 s2). These are the
+# only three golden assertions that move: all nine non-engine synths are
+# bit-identical, which is the correct blast radius for a change confined to
+# src/engine.cyr.
+#
+# gasoline: exhaust share 3.59% -> 64.3%, exhaust firing-period autocorrelation
+# -0.040 -> +0.717, mono autocorrelation 0.654 -> 0.664 (the engine did NOT get
+# less periodic to buy a periodic exhaust), level +0.21 dB.
 golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), 0.6, 0.1),
-  4410, 2631444480808559620, "gasoline 4cyl @3000 load 0.6");
+  4410, 3595897445964641417, "gasoline 4cyl @3000 load 0.6");
+# diesel: same mechanism at the longer pipe its own resonance constant already
+# implied -- f1 = 170 Hz is L = 0.81 m at c = 550 m/s, and a bigger engine really
+# does carry a longer manifold. Level +0.57 dB.
 golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_DIESEL, 6, SR), f64_from(1500), 0.9, 0.1),
-  4410, 0 - 9103023349525747648, "diesel 6cyl @1500 load 0.9");
+  4410, 3636923078240481450, "diesel 6cyl @1500 load 0.9");
 # HYBRID had no golden before 2.2.0 -- the one engine type whose behaviour
 # changed most had nothing pinning it.
+#
+# THIS ONE READS ALARMING AND IS NOT. duct_drive is 0 for HYBRID, so the EM whine
+# and the (absent) combustion path are untouched. What changed is that the
+# hybrid's small bed_gain=0.25 flow-noise term now traverses the duct instead of
+# being the exhaust term directly. Measured level change: -0.004 dB. The checksum
+# moves; the sound does not.
 golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_HYBRID, 4, SR), f64_from(3000), 0.7, 0.1),
-  4410, 6513342785621031237, "hybrid 4cyl @3000 load 0.7 (electric drive)");
+  4410, 8431386026841458236, "hybrid 4cyl @3000 load 0.7 (electric drive)");
 
 # ================================================================
 test_group("golden: rotating");

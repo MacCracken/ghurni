@@ -132,10 +132,31 @@ it is a number, not a judgement:
 > mean-square energy** *and* a **positive firing-period autocorrelation exceeding
 > today's mono (+0.597)**.
 
+> ⚠ **CORRECTED BY [ADR-010](adr-010-radiation-paths.md) (2.6.0). This criterion
+> is passed by a wire.** Routing combustion straight into the exhaust term with
+> no delay, no filter and no resonance measures 66.12% share and +0.743
+> autocorrelation — both bars cleared with no duct present at all. Three
+> independent controls (feedback = 0, reflection = 0, and the bare wire) confirm
+> it. What it actually tests is *"the exhaust buffer now contains the combustion
+> pulse train"*, which was this ADR's literal complaint — so it is a **routing
+> test**, sound as the gate it was written to be and **worthless as evidence
+> that a radiation path exists**. 2.6.0 met it, but was justified on the
+> odd-harmonic mode series and the boom depth instead; see ADR-010. The
+> measurement protocol also matters and was not stated here: these figures are
+> for a fresh engine over 1 s with no warm-up. Discarding a 4410-sample warm-up
+> gives mono +0.654 rather than +0.597.
+
 `tests/oracle_pins.tcyr` pins the externally-observable proxy today: detuning both
 bodies to 60 Hz moves the engine less than 0.45 dB (measured −0.152 dB). The day
 the engine gets a real duct, that assertion fails loudly and the question reopens
 on evidence.
+
+> ⚠ **IT DID NOT.** 2.6.0 gave the engine a real quarter-wave duct and this
+> assertion still passed, at −0.27 dB. The premise was wrong physics: a
+> waveguide's throughput is roughly level-invariant under retuning, because the
+> escape coefficient and the radiation filter do not care where the modes sit.
+> Detuning a real pipe moves its **colour**, not its level. The tripwire was
+> retired in 2.6.0 and replaced with assertions that discriminate — see ADR-010.
 
 Only the downward direction is asserted. Detuning *up* raises the level (+2.6 dB
 at 9999 Hz), but a constant-Q bandpass has bandwidth f0/Q, so a higher centre

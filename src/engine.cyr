@@ -50,6 +50,75 @@ var GHURNI_DIESEL_CLATTER_DELAY = 0.12;   # fraction of the combustion window
 var GHURNI_DIESEL_CLATTER_DECAY = 8.0;    # relative to the main pulse decay
 var GHURNI_DIESEL_CLATTER_AMP   = 0.55;
 
+# ================================================================
+# EXHAUST DUCT (2.6.0, ADR-010 "Radiation Paths").
+#
+# A pipe is not a tone control. A pipe closed at the engine end and open at the
+# tailpipe is a QUARTER-WAVE RESONATOR: standing waves at f_n = (2n-1)*c/(4L),
+# i.e. odd harmonics of a fundamental fixed by the pipe, while the EXCITATION
+# (the firing rate) sweeps with RPM. Harmonics of the firing rate sliding
+# through the pipe's fixed modes is what makes a real exhaust boom at some RPMs
+# and not others; a constant-Q bandpass on a noise bed cannot do that at all.
+#
+# Implemented as a single delay line used as a bidirectional waveguide:
+#   closed (engine) end : pressure reflects with +1
+#   open (tailpipe) end : pressure INVERTS and part escapes -- reflection -R,
+#                         transmission (1 - R)
+# so the loop is  fwd[n] = in[n] - R * loss(fwd[n - D]),  D = round trip in
+# samples = fs / (2*f1). Negative loop gain => resonances at ODD multiples of
+# fs/(2D), which is the quarter-wave series, not the fs/D series a positive
+# comb would give.
+var GHURNI_DUCT_MAX_DELAY = 2048;    # 44100/(2*2048) = 10.8 Hz lowest f1
+
+# Open-end pressure reflection magnitude. Physically |R| = 1 - (ka)^2/2 for a
+# small ka, so a tailpipe reflects nearly everything at low frequency; 0.85 is
+# the broadband stand-in, chosen with GHURNI_DUCT_LOSS_HZ below to leave the
+# first three or four modes ringing and damp the rest. Swept 0.72 / 0.80 / 0.85
+# / 0.90: the acceptance numbers barely move (share 44-47%, AC 0.70-0.71 with
+# the output makeup re-trimmed each time), so this is a timbre choice, not a
+# load-bearing one.
+var GHURNI_DUCT_REFLECT = 0.85;
+
+# Loop loss, as a one-pole lowpass corner in Hz. Wall friction and the
+# frequency-dependent part of the radiation loss both rise with frequency, so
+# the high modes must die faster than the low ones. Without this the comb rings
+# equally at every odd harmonic up to Nyquist and reads as a metallic buzz.
+var GHURNI_DUCT_LOSS_HZ = 1100.0;
+
+# RADIATION. A tailpipe is an acoustically small monopole: radiated pressure
+# goes as the time derivative of the mouth volume flow, so the escaping wave is
+# differentiated -- +6 dB/octave below ka ~ 1, flat above. Implemented as
+# (x - lowpass(x)), a first-order highpass whose corner is the ka ~ 1 knee.
+# 520 Hz rather than the c/(2*pi*a) ~ 1.8 kHz of a bare 60 mm pipe in free
+# field: what is modelled here is a whole exhaust SYSTEM heard close to the
+# ground, where the near-field loading and the plane the car sits on both hold
+# the low end up. Pushed to the free-field value the duct is technically more
+# correct and audibly a hiss, which is the wrong object.
+var GHURNI_DUCT_RAD_HZ = 520.0;
+
+# How the combustion pulse train splits between the two radiation paths.
+# Until 2.6.0 all of it went STRAIGHT to the listener and none of it entered
+# the exhaust at all (ADR-009 s2). Physically the split is between gas-borne
+# sound leaving the tailpipe and structure-borne sound radiated by the block,
+# and the tailpipe wins: these are not free gains, they move energy between
+# paths rather than adding any.
+var GHURNI_DUCT_DRIVE  = 0.90;   # into the duct
+var GHURNI_DUCT_STRUCT = 0.58;   # straight out through the block
+
+# Flow noise. Turbulence at the valve, through the muffler and out of the
+# tailpipe is real, but it is the SECONDARY source, not the whole exhaust as it
+# was until now. It is injected at the closed end with the combustion so it
+# picks up the same modal colour, which is why the old bandpassed bed survives
+# as the duct's excitation instead of as the exhaust term itself.
+var GHURNI_DUCT_FLOW = 0.55;
+
+# Output makeup on the radiated term. The escape coefficient (1-R) and the
+# radiation highpass together throw away most of the internal pipe level, and
+# this puts the tailpipe back at a sane share of the mix.
+var GHURNI_DUCT_OUT = 8.30;
+
+# --- MEASUREMENT INSTRUMENTATION (scratch only; not part of the release diff) ---
+
 # Event sequence durations, in seconds (2.4.0). Five of the eight declared
 # MechanicalEvent kinds were accepted and SILENTLY DISCARDED until now -- the
 # oracle ignored them too (`_ => {}`), but the oracle retired in 2.0.4 and the
@@ -122,6 +191,9 @@ struct GhEngine {
     exhaust_filter;
     intake_filter;
     whine_synth;
+    duct_line;
+    duct_loss_z;
+    duct_rad_z;
 }
 
 # Even firing offsets (deg) for `cyl` cylinders. 4-stroke = 720deg cycle,
@@ -217,6 +289,9 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
     GhEngine_set_exhaust_filter(self, exhaust_filter);
     GhEngine_set_intake_filter(self, intake_filter);
     GhEngine_set_whine_synth(self, whine);
+    GhEngine_set_duct_line(self, delay_line_new(GHURNI_DUCT_MAX_DELAY));
+    GhEngine_set_duct_loss_z(self, 0);
+    GhEngine_set_duct_rad_z(self, 0);
     return self;
 }
 
@@ -410,6 +485,48 @@ fn ghurni_engine_process_block_naad(self, out) {
     var shutdown_total = f64_mul(sr, GHURNI_SHUTDOWN_SECONDS);
     var chop_period = f64_div(sr, GHURNI_REV_LIMIT_CHOP_HZ);
     var nyq_e = f64_mul(sr, 0.49);
+    # --- EXHAUST DUCT setup (2.6.0). Everything here depends only on the
+    # sample rate and exhaust_resonance, so it is hoisted out of the loop.
+    # exhaust_resonance is REINTERPRETED (ADR-010): it was the centre of a
+    # bandpass on a noise bed, it is now the duct's quarter-wave fundamental
+    # f1 = c/(4L). Same field, same units, same public accessors, and for the
+    # first time it sets something a listener would call the exhaust note.
+    var duct_line = GhEngine_duct_line(self);
+    # ghurni_finite_clamp, NOT f64_clamp: a NaN exhaust_resonance would otherwise
+    # reach the delay taps and latch NaN into the waveguide FOR THE LIFE OF THE
+    # OBJECT, which is the exact failure mode dsp.cyr:228 documents for the
+    # smoothers. Non-finite collapses to the 20 Hz floor (a very long pipe).
+    var duct_f1 = ghurni_finite_clamp(GhEngine_exhaust_resonance(self), f64_from(20), f64_div(nyq_e, f64_from(2)));
+    var duct_d = f64_div(sr, f64_mul(f64_from(2), duct_f1));
+    var duct_dmax = f64_from(GHURNI_DUCT_MAX_DELAY - 2);
+    if (f64_gt(duct_d, duct_dmax) == 1) { duct_d = duct_dmax; }
+    if (f64_lt(duct_d, f64_from(4)) == 1) { duct_d = f64_from(4); }
+    var duct_loss_a = f64_sub(F64_ONE, f64_exp(f64_neg(f64_div(f64_mul(F64_TAU, GHURNI_DUCT_LOSS_HZ), sr))));
+    # The loop lowpass is not free: a one-pole y += a*(x-y) has a low-frequency
+    # group delay of (1-a)/a samples, and that delay is INSIDE the round trip,
+    # so it lengthens the pipe. Uncompensated the modes land ~6% flat (measured:
+    # 217 Hz for a nominal 230 Hz f1, and 5.89 samples of filter delay on a 95.9
+    # sample round trip is exactly that). Subtracting it makes
+    # exhaust_resonance mean what it says.
+    var duct_lag = f64_div(f64_sub(F64_ONE, duct_loss_a), duct_loss_a);
+    # The loop tap is read BEFORE the write, so delay k returns fwd[n-1-k]:
+    # D-1 gives fwd[n-D], the full round trip. The mouth tap is read AFTER the
+    # write, where delay k returns fwd[n-k], so D/2 is the one-way transit to
+    # the open end -- the wave that is actually arriving at the tailpipe.
+    var duct_dloop = f64_sub(f64_sub(duct_d, F64_ONE), duct_lag);
+    if (f64_lt(duct_dloop, F64_ONE) == 1) { duct_dloop = F64_ONE; }
+    var duct_dmouth = f64_mul(duct_d, F64_HALF);
+    var duct_rad_a = f64_sub(F64_ONE, f64_exp(f64_neg(f64_div(f64_mul(F64_TAU, GHURNI_DUCT_RAD_HZ), sr))));
+    var duct_loss_z = GhEngine_duct_loss_z(self);
+    var duct_rad_z = GhEngine_duct_rad_z(self);
+    var duct_escape = f64_sub(F64_ONE, GHURNI_DUCT_REFLECT);
+    # HYBRID has no exhaust at all, so nothing enters the duct and the electric
+    # drive's whine keeps its whole level on the direct path.
+    # HYBRID has no exhaust at all, so nothing enters the duct and the electric
+    # drive's whine keeps its whole level on the direct path.
+    var duct_drive = GHURNI_DUCT_DRIVE;
+    var duct_struct = GHURNI_DUCT_STRUCT;
+    if (is_hybrid == 1) { duct_drive = 0; duct_struct = F64_ONE; }
     # Skip the per-cylinder knock scan entirely while nothing is armed -- the
     # common case for every sample of ordinary engine audio. Rust pays the same
     # scan, but it is pure overhead: every iteration is `if *remaining > 0`.
@@ -537,8 +654,11 @@ fn ghurni_engine_process_block_naad(self, out) {
         # exhaust resonance
         var exhaust_noise = f64_mul(f64_mul(noise_next_sample(noise), base_amp), 0.3);
         var exhaust_gain = f64_add(0.5, f64_mul(load, 0.5));
-        var exhaust_raw = filter_biquad_process_sample(exhaust_filter, exhaust_noise);
-        var exhaust = f64_mul(f64_mul(exhaust_raw, exhaust_gain), bed_gain);
+        # Exhaust FLOW NOISE. Same noise draw, same position in the draw order,
+        # same bandpass -- but this is now the duct's SECONDARY excitation, not
+        # the exhaust term. It is consumed further down, after the event gates,
+        # so the duct sees combustion as the events actually leave it.
+        var exhaust_bp = filter_biquad_process_sample(exhaust_filter, exhaust_noise);
 
         # intake resonance (louder at higher load)
         var intake_noise = f64_mul(f64_mul(f64_mul(noise_next_sample(noise), base_amp), 0.2), load);
@@ -604,6 +724,26 @@ fn ghurni_engine_process_block_naad(self, out) {
             starter = f64_mul(f64_mul(additive_next_sample(whine_synth), ufrac), 0.18);
         }
 
+        # ================= EXHAUST DUCT (2.6.0, ADR-010) =================
+        # Placed AFTER the event gates on purpose: a rev-limiter fuel cut, a
+        # stall or a shutdown must reach the tailpipe, and until now the
+        # exhaust term could not hear any of them because it was pure noise.
+        var duct_in = f64_add(f64_mul(combustion_sum, duct_drive),
+          f64_mul(exhaust_bp, GHURNI_DUCT_FLOW));
+        var duct_back = flush_denormal(delay_line_read(duct_line, duct_dloop));
+        duct_loss_z = f64_add(duct_loss_z, f64_mul(duct_loss_a, f64_sub(duct_back, duct_loss_z)));
+        var duct_fwd = f64_sub(duct_in, f64_mul(GHURNI_DUCT_REFLECT, duct_loss_z));
+        delay_line_write(duct_line, duct_fwd);
+        # What escapes the open end, then radiated: pressure at the listener is
+        # the derivative of the mouth flow, so (x - lowpass(x)).
+        var duct_mouth = f64_mul(delay_line_read(duct_line, duct_dmouth), duct_escape);
+        duct_rad_z = f64_add(duct_rad_z, f64_mul(duct_rad_a, f64_sub(duct_mouth, duct_rad_z)));
+        var exhaust = f64_mul(f64_mul(f64_mul(f64_sub(duct_mouth, duct_rad_z), exhaust_gain),
+            bed_gain), GHURNI_DUCT_OUT);
+        # The pulse train no longer reaches the listener whole: what is left on
+        # the direct path is the structure-borne share radiated by the block.
+        combustion_sum = f64_mul(combustion_sum, duct_struct);
+
         var events = f64_add(starter, f64_add(knock_sum, f64_add(decel, backfire)));
         var s = f64_add(combustion_sum, f64_add(exhaust, f64_add(intake, f64_add(mech, events))));
         # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
@@ -614,6 +754,8 @@ fn ghurni_engine_process_block_naad(self, out) {
 
     # Persist the event counters: they are decremented per sample inside the
     # loop, so without this every block would restart each sequence.
+    GhEngine_set_duct_loss_z(self, duct_loss_z);
+    GhEngine_set_duct_rad_z(self, duct_rad_z);
     GhEngine_set_stall_remaining(self, stall_rem);
     GhEngine_set_rev_limit_remaining(self, revlim_rem);
     GhEngine_set_startup_remaining(self, startup_rem);

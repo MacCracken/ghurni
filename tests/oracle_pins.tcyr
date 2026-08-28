@@ -956,7 +956,10 @@ assert_eq(br_ndiff(br_base, br_render(br_i, 4410)), 4410,
   "intake_resonance is LIVE (was 0 of 4410 before 2.5.0)");
 var br_e = br_engine();
 GhEngine_set_exhaust_resonance(br_e, f64_from(9999));
-assert_eq(br_ndiff(br_base, br_render(br_e, 4410)), 4410,
+# 4408 not 4410 since 2.6.0: the duct's mouth tap sits D/2 samples into the
+# waveguide, so the first two output samples are zero in BOTH renders and cannot
+# differ. The parameter is no less live; the tap is simply not instantaneous.
+assert_eq(br_ndiff(br_base, br_render(br_e, 4410)), 4408,
   "exhaust_resonance is LIVE (nothing rendered through it before 2.5.0)");
 # The nyquist clamp survives the retune: an absurd frequency must not blow up.
 fn br_all_finite(v) {
@@ -974,26 +977,22 @@ assert_eq(br_all_finite(br_render(br_ny, 2205)), 1,
   "intake_resonance far above nyquist still renders finite audio");
 
 # ================================================================
-test_group("PIN THE GAP: the engine's bodies are tone controls, not ducts (ADR-009)");
-# 2.5.0 deferred per-component stems because measurement said ghurni has nothing
-# to split: deleting the exhaust AND intake terms outright moves the engine by
-# -0.211 dB (gasoline 4cyl @3000 load 0.6) and -0.099 dB (diesel 6cyl @1500 load
-# 0.9), against a ~1 dB level JND. Those A/Bs need source instrumentation, so the
-# externally-observable proxy is pinned here instead: detuning BOTH bodies far
-# down barely changes the engine's level, because almost none of its energy goes
-# through them.
+test_group("RETIRED TRIPWIRE: the 2.5.0 proxy was the wrong measurement (ADR-010)");
+# 2.5.0 pinned a tripwire here: "detuning BOTH bodies to 60 Hz moves the engine
+# under 0.45 dB -- they are not ducts", with the stated intent that "the day the
+# engine gets a real duct that carries the combustion pulse, detuning it will
+# move the level a great deal and this assertion will fail."
 #
-# WHAT THIS DOES AND DOES NOT PROVE. Detuning DOWN is the clean direction. Moving
-# the bodies UP raises the level (+2.6 dB at 9999 Hz) but that is a constant-Q
-# artifact -- a bandpass's bandwidth is f0/Q, so a higher centre simply passes
-# more of the white noise -- and is evidence of nothing. Only the downward
-# assertion is made.
+# 2.6.0 gave the engine exactly that duct, and THE ASSERTION STILL PASSED --
+# measured -0.27 dB, comfortably inside the 0.45 dB bracket. The premise was
+# wrong physics on my part: a waveguide's throughput is roughly level-invariant
+# under retuning, because the escape coefficient and the radiation filter do not
+# care where the modes sit. Detuning a real pipe moves its COLOUR, not its level.
 #
-# This is a TRIPWIRE, in the spirit of 2.0.3's rest-state pins, which deliberately
-# asserted the WRONG behaviour so 2.1.0 could not fix it quietly. The day the
-# engine gets a real duct that carries the combustion pulse, detuning it will move
-# the level a great deal and this assertion will fail -- at which point the stems
-# question reopens on evidence rather than on argument.
+# Shipping a false assertion is worse than shipping none, so the level test is
+# retired and replaced with what actually carries content: the odd-harmonic mode
+# series and the rpm-dependent boom, both in tests/spectral.tcyr. What survives
+# here is the honest version of the same idea -- retuning must change the SOUND.
 fn br_rms(e, n) {
     var b = br_render(e, n);
     var acc = 0;
@@ -1009,13 +1008,19 @@ var br_rms_default = br_rms(br_engine(), 44100);
 assert_gt(br_rms_default, 0.02, "baseline engine is loud (not a vacuous compare)");
 var br_low = br_engine();
 GhEngine_set_exhaust_resonance(br_low, f64_from(60));
-GhEngine_set_intake_resonance(br_low, f64_from(60));
+var br_low_buf = br_render(br_low, 4410);
+# 4363, not 4410: both renders are silent until the wave first reaches the mouth
+# tap at D/2, and the 230 Hz default reaches it at ~48 samples. Those 48 leading
+# zeros are common to both, so they cannot differ. A longer pipe simply takes
+# longer to speak -- which is itself the waveguide behaving like a waveguide.
+assert_eq(br_ndiff(br_base, br_low_buf), 4363,
+  "retuning the pipe to 60 Hz changes the render (colour, not level)");
+# And the level is NOT the thing that moves -- pinned so the retired tripwire's
+# premise cannot be reintroduced by someone reading only its old message.
 var br_rms_low = br_rms(br_low, 44100);
-# measured ratio 0.98260 == -0.152 dB; 0.95 is -0.45 dB, a generous bracket.
-assert_gt(f64_div(br_rms_low, br_rms_default), 0.95,
-  "detuning BOTH bodies to 60 Hz moves the engine under 0.45 dB -- they are not ducts");
-assert_lt(f64_div(br_rms_low, br_rms_default), F64_ONE,
-  "...but it does move it, so this is a real measurement");
+assert_gt(f64_div(br_rms_low, br_rms_default), 0.9,
+  "a waveguide's throughput is level-invariant under retuning -- by design");
+
 
 var rc = assert_summary();
 syscall(60, rc);
