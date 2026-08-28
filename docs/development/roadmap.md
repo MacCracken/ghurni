@@ -324,13 +324,16 @@ retire the two remaining vestigial `sample_position` writes.
 
 ## Arc 3b — `2.5.0` "Output Path"  ✅ SHIPPED (as a deferral, with the measurement)
 
-> Released 2026-08-28. 643 assertions (was 600), **goldens unchanged**, **zero new
+> Released 2026-08-28. 633 assertions (was 590; both figures corrected in 2.5.1), **goldens unchanged**, **zero new
 > public symbols**. See [ADR-009](../architecture/adr-009-no-stems-yet.md).
 
 **Theme: how a synth's sound leaves it — and the finding that it does not leave
 by the route this arc assumed.**
 
-- [ ] **Per-component stems** → **deferred to Arc 3c (`2.6.0`), on measurement.**
+- [ ] **Per-component stems** → **DEFERRAL REVIEWED AND ACCEPTED**; moved to
+      Arc 3c (`2.6.0`). This is a settled decision, not an open question — it was
+      put to review with the measurements below and agreed. Reopen it only if the
+      ADR-009 acceptance criterion is met, or if the measurements are shown wrong.
       Four API designs were argued (three by signal character, one by radiation
       path) and all four fail. Character taxonomies structurally cannot separate
       exhaust from intake — `engine.cyr:527` and `:532` are the same operation on
@@ -361,7 +364,7 @@ by the route this arc assumed.**
       would make a consumer read return 0 forever; deleting the accessor would be
       a breaking change a MINOR may not make. Documented, not removed.
 
-**Patch line `2.5.x`** — **pull the fixed naad**.
+**Patch line `2.5.x`** — ✅ **2.5.1 pulled the fixed naad (2.2.2).**
 
 > **Queued dependency fix — naad convolution.** While settling the convolution
 > question for this arc, `naad_convolution_process_block` (the FFT path) was
@@ -377,7 +380,9 @@ by the route this arc assumed.**
 > processes **one** block of 8 on a fresh object, and the tail only matters from
 > block two onward. The regression test must run at least two consecutive blocks.
 >
-> Sequence: ship 2.5.0 → fix naad + cut a naad patch → `2.5.x` here to pull it.
+> ✅ DONE. Sequence ran as planned: 2.5.0 shipped → naad 2.2.2 fixed it with
+> overlap-save (naad ADR 0003) → ghurni 2.5.1 pulled it. ghurni audio unchanged,
+> as predicted, because ghurni calls no convolution symbol.
 > **ghurni calls no convolution symbol today**, so nothing shipping is affected;
 > this is a trap for whoever wires convolution up later, not a live bug.
 

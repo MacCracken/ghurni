@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-08-28
+
+Patch. **No API change and no rendered-audio change** — all 28 golden checksums
+hold byte-for-byte.
+
+### Changed — naad 2.2.1 → 2.2.2
+
+Pulls the convolution fix ghurni's own ADR-009 investigation turned up.
+`naad_convolution_process_block` wrote only the first `block_len` samples of the
+convolution and discarded the rest — the impulse response still ringing — so it
+truncated the tail at every block boundary. naad fixed it with overlap-save
+(naad ADR 0003), which also makes `process_block` and `process_sample` share one
+history so they can be interleaved.
+
+**ghurni's audio is unaffected, and that was predicted rather than hoped for:**
+ghurni calls no convolution symbol at all — it models resonant bodies with
+biquads, which is exactly what ADR-009 decided to keep. The goldens passing
+unchanged confirms it.
+
+### Fixed — the assertion counts in 2.3.0, 2.4.0 and 2.5.0 were overstated
+
+Each was produced by summing the per-suite `N passed` lines, and the summation
+also picked up the run's final `10 passed, 0 failed` line — which is the **suite**
+count, not assertions. So every figure was inflated by exactly 10.
+
+Re-measured from the tagged trees, not inferred:
+
+| release | claimed | actual |
+|---|---|---|
+| 2.3.0 | 556 | **546** |
+| 2.4.0 | 600 | **590** |
+| 2.5.0 | 643 | **633** |
+
+The suites and their contents were never wrong — only the reported totals. The
+counting method is now `grep -E '^[0-9]+ passed, [0-9]+ failed \([0-9]+ total\)$'`,
+which cannot match the aggregate line.
+
 ## [2.5.0] - 2026-08-28
 
 **Arc 3b — "Output Path."** The release that does not ship the feature it was

@@ -5,11 +5,11 @@
 
 ## Version
 
-**2.5.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
+**2.5.1** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
 (ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007), a
 control surface that no longer lies (ADR-008), and stems deferred on measurement
 with convolution closed (ADR-009). Dependency set:
-cyrius 6.5.35 · naad 2.2.1 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
+cyrius 6.5.35 · naad 2.2.2 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 
@@ -31,7 +31,13 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 
 Bundle: `dist/ghurni.cyr` (3,925 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 10 suites, 643 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 10 suites, 633 assertions, 0 failures)
+
+> Count with `cyrius test 2>&1 | grep -E '^[0-9]+ passed, [0-9]+ failed \([0-9]+ total\)$'`
+> and sum the leading numbers. Do NOT sum every `N passed` line: the run's final
+> `10 passed, 0 failed` is the **suite** count, and including it inflated the
+> figures reported for 2.3.0, 2.4.0 and 2.5.0 by exactly 10 each (corrected in
+> the 2.5.1 CHANGELOG entry).
 
 | Suite | Covers |
 |-------|--------|

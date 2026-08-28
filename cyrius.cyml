@@ -92,7 +92,7 @@ stdlib = [
 #   matched. Re-check before assuming a shared set.
 [deps.naad]
 git = "https://github.com/MacCracken/naad.git"
-tag = "2.2.1"
+tag = "2.2.2"
 modules = ["dist/naad.cyr"]
 
 # hisab — math/geometry (HVec3/HComplex/FFT). Referenced by naad's bundle
