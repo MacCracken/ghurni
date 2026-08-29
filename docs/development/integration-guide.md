@@ -99,6 +99,38 @@ ghurni_gear_set_load(gear, f64_from(5));    # -> 1.0
 ghurni_gear_set_load(gear, f64_div(0, 0));  # NaN -> 0.0, never NaN in your audio
 ```
 
+### The engine's exhaust is a pipe (2.6.0)
+
+`exhaust_resonance` **changed meaning in 2.6.0** without changing its name, units
+or signature. It was the centre frequency of a bandpass on a noise bed; it is now
+the **quarter-wave fundamental of the exhaust duct**, `f1 = c/4L`. If you tuned it
+by ear on 2.5.x you will get a different result.
+
+```cyrius
+# f1 = 230 Hz is a 0.60 m pipe at c = 550 m/s (a hot exhaust).
+# Halving f1 doubles the pipe length.
+GhEngine_set_exhaust_resonance(engine, f64_from(115));   # a long, deep exhaust
+```
+
+The pipe length is **fixed**; what sweeps is the excitation. Harmonics of the
+firing rate (`rpm/60 x cylinders/2` for a 4-stroke) slide through the duct's fixed
+modes as RPM changes, which is why the engine now booms at some RPMs and not
+others — with `f1 = 230 Hz` a harmonic lands on the mode at `rpm = 6900/m`, so
+2300 rpm booms and 2000 rpm does not. You do not need to automate anything to get
+that; it falls out of the model.
+
+Two consequences worth knowing before you re-tune a mix:
+
+- The engine trades some bottom end for a radiated character: measured −4.55 dB
+  in both the 45–90 and 90–180 Hz bands against 2.5.1, with overall level
+  +0.21 dB. See [ADR-010](../architecture/adr-010-radiation-paths.md).
+- It stops behaving like a pipe length far above the shipped tunings (140–310 Hz).
+  The in-loop damping kills the mode by roughly 1.5–2 kHz, above which you get the
+  radiation slope and no resonance.
+
+`GH_ENGINE_HYBRID` has no exhaust at all, so the duct is silent for it and the
+electric drive keeps its whole level on the direct path.
+
 Two controls are not RPM or load:
 
 ```cyrius

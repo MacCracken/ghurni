@@ -8,7 +8,7 @@ The order below is the dependency order declared in `cyrius.cyml [lib].modules`.
 
 ```
 ghurni/
-├── src/                       19 modules, ~3,140 lines
+├── src/                       19 modules, ~4,110 lines
 │   │  -- L0 foundations (no internal deps beyond each other, in this order)
 │   ├── error.cyr              GH_ERR_* codes, f64 sentinels, ghurni_fmod, ghurni_vec_copy
 │   ├── logging.cyr            sakshi-backed structured logging (replaces `tracing`)
@@ -19,7 +19,8 @@ ghurni/
 │   ├── traits.cyr             GH_KIND_* dispatch tags (Synthesizer replacement)
 │   │
 │   │  -- L1: the ten RPM-driven synths, each self-contained on naad + L0
-│   ├── engine.cyr             combustion engines (4 types, firing order, events)
+│   ├── engine.cyr             combustion engines (4 types, firing order, events,
+│   │                          quarter-wave exhaust waveguide)
 │   ├── gear.cyr               gear mesh (4 materials)
 │   ├── motor.cyr              electric motors (4 types)
 │   ├── turbine.cyr            turbines / fans / propellers
@@ -111,3 +112,23 @@ set_load(load) ┤
 | **goonj** | Sound propagation (distance, occlusion, Doppler) |
 | **dhvani** | Audio engine (mixing, buses, spatialization) |
 | **kiran** | Game engine integration |
+
+## Where the acoustic decisions live
+
+The module map above says what exists; these say **why it sounds the way it
+does**. Each one changed rendered audio deliberately and moved golden checksums.
+
+| ADR | Decision |
+|---|---|
+| [002](adr-002-scope-boundaries.md) | what ghurni owns — and that reverb, Doppler and spatialization belong to goonj/dhvani |
+| [004](adr-004-cyrius-port.md) | tag dispatch instead of trait objects |
+| [005](adr-005-rpm-loudness-law.md) | one shared RPM loudness law; the sample-integrated combustion pulse |
+| [006](adr-006-acoustic-depth.md) | mesh partials, HYBRID as a real electric drive, induction orders, chain links, tick/tock |
+| [007](adr-007-load-tilt-and-diesel.md) | load tilts the spectrum instead of moving a fader; diesel clatter |
+| [008](adr-008-events-and-control.md) | the control surface stops lying — five dead events made real |
+| [009](adr-009-no-stems-yet.md) | why stems were deferred, and why convolution is closed |
+| [010](adr-010-radiation-paths.md) | the exhaust becomes a quarter-wave duct that carries the pulse train |
+
+Two of those correct earlier claims made by this project, which is worth knowing
+before citing them: ADR-010 records that **ADR-009's acceptance criterion is
+passed by a wire** and that **its tripwire never fired**.

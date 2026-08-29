@@ -73,13 +73,13 @@ pinned to a git tag and recorded with its commit hash in `cyrius.lock`.
 
 | Dependency | Version | Purpose | Risk |
 |------------|---------|---------|------|
-| [naad](https://github.com/MacCracken/naad) | 2.2.1 | DSP primitives (oscillators, filters, noise, additive) | Same ecosystem; the only backend |
+| [naad](https://github.com/MacCracken/naad) | 2.2.2 | DSP primitives (oscillators, filters, noise, additive) | Same ecosystem; the only backend |
 | [hisab](https://github.com/MacCracken/hisab) | 2.11.2 | Math / geometry, referenced by naad's bundle | Same ecosystem; pure computation |
 | [goonj](https://github.com/MacCracken/goonj) | 2.0.4 | Acoustics, referenced by naad's bundle | Same ecosystem; pure computation |
 | [sakshi](https://github.com/MacCracken/sakshi) | 2.4.11 | Structured logging | Same ecosystem; writes to stderr |
-| cyrius toolchain | 6.5.35 | Compiler, pinned in `[package].cyrius` | Build-time |
+| cyrius toolchain | 6.5.36 | Compiler, pinned in `[package].cyrius` | Build-time |
 
-The pinned set is the one naad 2.2.1 itself pins, so the vendored bundles agree
+The pinned set is the one naad 2.2.2 itself pins, so the vendored bundles agree
 with what each was built against. `cyrius deps --verify` re-checks the recorded
 hashes.
 

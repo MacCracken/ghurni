@@ -21,7 +21,7 @@ and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 non-naad fallback path, which ADR-004 drops. All 44 Rust integration tests are
 reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green.
 
-## Modules (`src/*.cyr`, 19 modules, 3,938 lines)
+## Modules (`src/*.cyr`, 19 modules, 4,112 lines)
 
 | Layer | Modules |
 |-------|---------|
@@ -30,7 +30,7 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (3,925 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (4,099 lines, `cyrius distlib`).
 
 ## Tests (`tests/*.tcyr`, 10 suites, 640 assertions, 0 failures)
 
@@ -58,10 +58,18 @@ Bundle: `dist/ghurni.cyr` (3,925 lines, `cyrius distlib`).
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
-`cyrius coverage`: 134/185 functions referenced (72%) — a floor, not a proof.
+`cyrius coverage`: 137/185 functions referenced (74%) — a floor, not a proof.
 Fuzz: `fuzz/ghurni.fcyr`, 1631 adversarial checks (`cyrius fuzz`).
 
 ## Deliberate divergences from `rust-old/`
+
+> The list below is the **port-time** set. Since 2.1.0 the audio has also diverged
+> deliberately, each time with an ADR, and those are the larger divergences now:
+> the RPM loudness law and integrated combustion pulse (ADR-005), acoustic depth
+> (ADR-006), the load tilt and diesel clatter (ADR-007), five events that the
+> oracle also ignored (ADR-008), and the quarter-wave exhaust waveguide
+> (ADR-010), which replaces the oracle's bandpass-on-a-noise-bed outright. The
+> oracle was retired in 2.0.4; the correctness bar is the frozen suite.
 
 - **naad-only backend.** The Rust `#[cfg(not(feature="naad-backend"))]` fallback
   (`rng.rs`, `math.rs`, per-synth fallback loops) is not ported — naad's
@@ -147,7 +155,7 @@ needs `git rm -r --cached build/`.
 ## `rust-old/` — RETIRED in 2.0.4
 
 The oracle is gone from the tree. Record: [`rust-old-retirement.md`](rust-old-retirement.md).
-Everything it proved is pinned by `tests/oracle_pins.tcyr` (297 assertions),
+Everything it proved is pinned by `tests/oracle_pins.tcyr` (304 assertions),
 `tests/goldens.tcyr` and `tests/spectral.tcyr`. Recover it with
 `git show 2.0.3:rust-old/src/<mod>.rs`, or from tag `1.0.0` where the same crate
 lives at `src/*.rs`.
@@ -159,9 +167,6 @@ patch release.
 ## Known follow-ups
 
 - None outstanding for parity.
-- `CHANGELOG.md` still has **no `2.0.0` entry** for the port itself. 2.0.1 and
-  2.0.2 have one, so `release.yml`'s changelog extraction populates for those
-  tags, but a re-cut of the 2.0.0 tag would still produce an empty release body.
 - **Allocation failure is unhandled.** No `alloc()` result is null-checked
   anywhere in the port, and no sibling library checks either. The contract wants
   deciding ecosystem-wide rather than patching here alone.
@@ -173,35 +178,22 @@ patch release.
   project's own generated bundle, not a `[deps]`-resolved one, and there is no
   trust-list mechanism in the manifest. `cyrius deny` and `cyrius audit` both
   exit 0. CI does not run `vet`.
-- ~~**No fuzz harness.**~~ Landed in 2.0.3: `fuzz/ghurni.fcyr`, 1631 checks.
-- ~~**CI does not run the quality gates.**~~ It does, as of 2.0.3:
-  `test` · `distlib --check` · `audit` · `deny` · `fuzz` · `coverage --min`.
-  The fuzz step guards against `cyrius fuzz`'s vacuous exit-0 when it finds no
-  harness at all.
+- **16 KB per `GhEngine`** for the 2.6.0 exhaust delay line, allocated
+  unconditionally — including for HYBRID, where the duct is silent. Sizing it
+  from `exhaust_resonance` at construction is NOT safe: the parameter is
+  settable afterwards and a smaller buffer would silently truncate.
 
-## FIXED in 2.1.0: resonant-RPM combustion amplitude
+## Fixed, kept as precedent
 
-*Kept as a record — this was the port's longest-lived characterised defect, and
-the reasoning is why the goldens exist.*
-
-The engine's combustion pulse peak depended on where the sample lattice fell
-relative to crank angle 0. `src/engine.cyr` was an expression-for-expression
-transliteration of `rust-old/src/engine.rs:265-266`, but the oracle computed it
-in f32, whose ULP at ~45000 degrees is coarse enough to snap the phase lattice
-back onto the cycle. In f64 that accidental snapping was gone.
-
-At RPMs where samples-per-cycle is an integer (`5292000/rpm` is an integer at
-44.1 kHz: 2250, 3000, 4200, 6000, 7000, ...) the port landed consistently just
-past crank 0 every cycle and the thump lost up to two thirds of its amplitude
-(measured: 2-stroke 1-cyl @6000 rpm, peak 0.176 vs the oracle's 0.517). At the
-other ~92% of RPMs f64 matched or beat f32.
-
-It was deliberately **not** repaired in 2.0.2, because the fix changes the pulse
-computation — an audio change that diverges from the oracle by construction, and
-so it needed an ADR and a minor. It got both:
-[ADR-005](../architecture/adr-005-rpm-loudness-law.md) integrates the envelope
-across each sample rather than point-sampling it, which is energy-conserving and
-therefore lattice-invariant. A 1000→9000 rpm sweep is now smooth with no notches.
+- **Resonant-RPM combustion amplitude** (fixed 2.1.0). The combustion pulse was
+  point-sampled, so its peak depended on where the sample lattice fell: at RPMs
+  where samples-per-cycle is an integer the thump lost up to two thirds of its
+  amplitude in a notch ~50 rpm wide. Deliberately NOT repaired in 2.0.2, because
+  the fix changes the pulse computation and so needed an ADR and a minor. It got
+  both — [ADR-005](../architecture/adr-005-rpm-loudness-law.md) integrates the
+  envelope across each sample, which is energy-conserving and therefore
+  lattice-invariant. The port's longest-lived characterised defect, and the
+  reason the golden suite exists.
 
 ## Float-literal hardening
 

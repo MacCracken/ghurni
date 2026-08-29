@@ -10,12 +10,13 @@ Procedural synthesis of engines, gears, motors, turbines, clocks, transmissions,
 
 ## Features
 
-- **Engine** — 4 types (Gasoline, Diesel, TwoStroke, Hybrid — Hybrid is a true electric drive, Diesel has its own injection clatter), combustion impulses, exhaust + intake resonance, 1–16 cylinders, custom firing order, and the full event set: startup / shutdown / stall / rev-limiter / backfire / misfire / knock / decel-pop
+- **Engine** — 4 types (Gasoline, Diesel, TwoStroke, Hybrid — Hybrid is a true electric drive, Diesel has its own injection clatter), combustion impulses, 1–16 cylinders, custom firing order, and the full event set: startup / shutdown / stall / rev-limiter / backfire / misfire / knock / decel-pop
+- **A real exhaust** — the combustion pulse train propagates down a **quarter-wave waveguide** and reaches the listener as the radiated field from the open end, so the engine booms where the physics says it should: firing harmonics sweep through the pipe's fixed modes as RPM changes. `exhaust_resonance` sets the pipe's fundamental (`f1 = c/4L`), not a filter centre. Intake is still a resonant bandpass ([ADR-010](docs/architecture/adr-010-radiation-paths.md))
 - **Gear** — 4 materials (Steel, CastIron, Brass, Nylon), tooth mesh frequency, resonant ringing, material-specific decay and brightness
 - **Motor** — 4 types (DcBrushed, AcInduction, Brushless, Servo), electromagnetic hum harmonics, commutator/bearing noise, pole-count-driven frequency
 - **Turbine** — configurable blade count, blade pass frequency, whoosh noise, optional duct resonance
 - **Clock** — 4 types (Wristwatch, WallClock, GrandfatherClock, PocketWatch), escapement tick, resonant decay
-- **Drivetrain** — Transmission (gear mesh + synchro whine on shift), Differential (hypoid whine + housing resonance, drive/coast flank, ring-revolution warble), ChainDrive (link engagement rattle + per-lap wobble), BeltDrive (friction squeal + flap). All three take load.
+- **Drivetrain** — Transmission (gear mesh + synchro whine on shift), Differential (hypoid whine + housing resonance, drive/coast flank, ring-revolution warble), ChainDrive (link engagement rattle + per-lap wobble), BeltDrive (friction squeal + flap). Gear, Transmission and Differential all take load.
 - **ForcedInduction** — turbocharger (spool lag) and supercharger, with blow-off-valve burst
 - **Mixer** — multi-component mixing with per-channel gain, pan (equal-power law), and mute; mono and stereo
 - **Presets** — 12 shipped factory configurations
@@ -104,11 +105,11 @@ Resolved from `cyrius.cyml` by `cyrius deps` into `lib/`. All are pinned to the 
 
 | Dependency | Version | Role |
 |------------|---------|------|
-| [naad](https://github.com/MacCracken/naad) | 2.2.1 | audio synthesis primitives (oscillators, filters, noise, additive) |
+| [naad](https://github.com/MacCracken/naad) | 2.2.2 | audio synthesis primitives (oscillators, filters, noise, additive) |
 | [hisab](https://github.com/MacCracken/hisab) | 2.11.2 | math / geometry (referenced by naad's bundle) |
 | [goonj](https://github.com/MacCracken/goonj) | 2.0.4 | acoustics engine (referenced by naad's bundle) |
 | [sakshi](https://github.com/MacCracken/sakshi) | 2.4.11 | structured logging |
-| cyrius toolchain | 6.5.35 | pinned in `[package].cyrius` |
+| cyrius toolchain | 6.5.36 | pinned in `[package].cyrius` |
 
 ## Consumers
 

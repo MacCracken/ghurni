@@ -27,10 +27,10 @@ Each `tests/*.tcyr` file includes the `src/*.cyr` modules it needs directly
 | `serde` | EngineType / GearMaterial / MotorType / ClockType / InductionType roundtrips + GhurniError name mapping |
 | `mixer` | mono / stereo / mute, tag dispatch, process-block continuity, presets |
 | `smoke_all` | full-unit integration: every synth + mixer + preset produce finite audio |
-| `hardening` | the P-1 regression suite — every defect fixed in 2.0.2 |
-| `oracle_pins` | every constant and contract the retired Rust oracle used to prove, each citing its source line |
+| `hardening` | the P-1 regression suite — every defect fixed in 2.0.2, plus bit-identical block-size independence for all ten synths and hostile input on the engine resonance setters |
+| `oracle_pins` | every constant and contract the retired Rust oracle used to prove, each citing its source line; extended each release with the behaviour that release made real |
 | `goldens` | rendered-audio checksums — the gate that makes "a patch may not change audio" enforceable |
-| `spectral` | FFT peak assertions that audio lands where the RPM physics says it should |
+| `spectral` | FFT assertions that audio lands where the RPM physics says — peak frequencies, load brightening for every load-taking synth, and the exhaust duct's odd-harmonic series and boom depth |
 
 ## Writing Assertions That Are Worth Having
 
@@ -42,6 +42,22 @@ envelopes — and all 135 assertions passed, because every audio assertion was
 for both the right and the wrong value.
 
 So:
+
+**And a test can be non-vacuous and still measure the wrong thing.** ADR-009 set
+a numeric gate for reopening the stems question: the exhaust path must carry
+>25% of the energy with positive firing-period autocorrelation. Both halves were
+real measurements, neither could pass by accident, and the gate was still
+worthless — because a **literal wire** routing combustion into the exhaust term,
+with no delay, no filter and no resonance, scores 66.12% and +0.743. It measured
+*routing*, not whether a duct existed. What replaced it in `spectral` are two
+assertions that were checked to **fail against the previous release**: the
+odd-harmonic series a bandpass cannot produce, and a boom depth with its bar set
+*between* the two implementations (1.318 vs 1.937) rather than at a value both
+clear.
+
+So the check on a new assertion is not only "can this fail?" but **"does it fail
+for the thing I am claiming?"** Run it against the code from before the change.
+If it passes there, it is measuring something else.
 
 - **Assert exact values wherever the arithmetic is exact.** Firing frequency is
   `cylinders * rpm / 120` for a 4-stroke — a 4-cylinder at 3000 RPM is exactly

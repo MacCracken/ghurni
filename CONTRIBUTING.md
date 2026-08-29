@@ -11,7 +11,7 @@
 ## Prerequisites
 
 - The cyrius toolchain, at the version pinned in `cyrius.cyml [package].cyrius`
-  (currently **6.5.35**). CI installs exactly that pin — never hardcode a
+  (currently **6.5.36**). CI installs exactly that pin — never hardcode a
   version anywhere else.
 - Nothing else. ghurni has no Rust build. The 1.0.0 Rust crate that served as
   the parity oracle was retired in 2.0.4; read it with

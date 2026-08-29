@@ -19,430 +19,69 @@ it ships. Nothing here is scheduled by date; the ordering is by dependency.
 
 ---
 
-## Arc 0 — `2.0.3` "Pin the Oracle"  ✅ SHIPPED
+## Shipped
 
-> Released 2026-08-27. 10 suites / 450 assertions (was 7 / 224), coverage
-> 49% → 66%, 14 benchmarks (was 6), a 1631-check fuzz harness, and the full CI
-> gate chain. See the 2.0.3 CHANGELOG entry.
+Full detail lives in [`CHANGELOG.md`](../../CHANGELOG.md) and the ADRs; this is
+the index. Everything below is closed — nothing here is outstanding work.
 
-**Theme: make every behaviour `rust-old/` currently proves provable without it.**
-Nothing here changes audio or adds public API. This is the deck-clearing patch
-that makes the oracle deletable and the audio arcs safe.
-
-### Pin what only the oracle checks
-- [x] **All 12 preset parameter sets.** Only 4 are touched by any test, and only
-      for "has energy" — no assertion reads a stored value back. A typo
-      (`3.8` → `3.6` in `manual_6speed`) is caught by nothing today.
-- [x] **The 36 per-material / per-type property constants.** Clock's 16 and
-      motor's 8 are reachable through pure `#must_use` fns
-      (`ghurni_clock_tick_rate_for` / `_resonance_for` / `_decay_for` / `_amp_for`,
-      `ghurni_motor_noise_cutoff` / `_noise_level`) — one-line assertions each.
-      Gear's 12 are inline literals in `ghurni_gear_new`, so they need the
-      `GhGear_resonance` / `_decay` / `_brightness` accessor route.
-      *(The retirement doc says "32"; the actual enumeration is 36.)*
-- [x] Engine even-firing offsets, per-type exhaust/intake resonances, event durations.
-- [x] The auto-BOV trigger triple (`prev_load > 0.5`, `load < 0.2`, `spool > 5000`).
-- [x] The differential's **ring/pinion asymmetry** — mesh frequency uses *pinion*
-      teeth. A swap is completely silent today.
-- [x] The equal-power pan law's **left=cos / right=sin** assignment and its
-      −3 dB centre attenuation. A left/right swap passes the suite today.
-- [x] `ChainDrive` silence below 1 Hz engagement **and its non-advancing RNG**.
-- [x] `process_block_stereo` leaves the longer buffer's tail **untouched**.
-- [x] `Transmission::new` accepts an **empty** ratios vec; `current_ratio()` → 1.0.
-
-### New test machinery
-- [x] **Golden-file regression** — checksum every synth's output for fixed
-      parameters. This is the gate that makes the semver rule above enforceable:
-      after this lands, an unintended audio change fails CI instead of shipping.
-      **Highest-value item in the arc.**
-- [x] **Spectral validation** — assert the peak bin matches the expected
-      firing / mesh / blade-pass frequency. Cheaper than the old roadmap assumed:
-      naad already ships `fft_magnitudes` (`lib/naad.cyr:499`), so this is a
-      direct call, not an FFT project. Input length must be a power of two, so
-      use 4096/8192 rather than the current 4410/2205 block sizes.
-- [x] **Fuzz harness** — `cyrius fuzz` runs `fuzz/*.fcyr`; ghurni has none, and
-      the command currently **exits 0 while finding nothing**, which is a vacuous
-      gate. Drive the public boundary with `INT64_MIN`, NaN, ±inf, subnormals,
-      `f64::MAX`, non-power-of-two lengths. Sweep enum ids at valid parameters
-      and values at a valid id — correlate them and the harness proves nothing
-      (naad's lesson).
-- [x] **Rest-state invariant** — landed as a CHARACTERISATION in
-      `oracle_pins.tcyr`: chain_drive and forced_induction are asserted exactly
-      silent at rest (already correct), while motor's stopped-equals-running and
-      belt_drive's louder-stopped are pinned as *known defects* so Arc 1's fix
-      cannot land silently. Those assertions must be rewritten as the invariant
-      when 2.1.0 introduces the loudness law.
-
-### Release hygiene — blocks a clean 2.0.3
-- [ ] **12 compiled ELF binaries (11 MB) are tracked in git** and ship inside
-      every release tarball, including 5 stale `build/err_*` from an old naming
-      scheme. `.gitignore` covers `/build/` as of 2.0.3, but untracking is a git
-      operation the maintainer runs: **`git rm -r --cached build/`**. Carried
-      into 2.0.4.
-- [x] **`.gitignore` is still the Rust crate's** (`/target`, `Cargo.lock`,
-      `*.rs.bk`, `*.pdb`) and has no `/build/` — which is how the binaries got in.
-- [x] **`scripts/version-bump.sh` is Rust-era**: it writes `VERSION`, then seds a
-      root `Cargo.toml` that does not exist and runs `cargo generate-lockfile`.
-      It half-bumps the repo and fails. It would corrupt the 2.0.3 release.
-- [x] **CI runs no quality gates.** `.github/workflows/ci.yml` is
-      deps → build → test → build-examples. Add `cyrius audit` (exits 0 today),
-      `cyrius deny` (exits 0), `cyrius distlib --check` (nothing currently
-      prevents `dist/ghurni.cyr` drifting from `src/` — and `dist/` is what
-      consumers compile), and **actually run** the examples: CI builds all five
-      and never executes them, so a compiling-but-crashing example passes.
-
-### Documentation defects (several ship inside `dist/ghurni.cyr`)
-- [x] **README advertises a wastegate.** `grep -rn wastegate src/ dist/` returns
-      nothing. Either implement it (Arc 2) or stop claiming it.
-- [x] `src/dsp.cyr:12` cites `tests/dsp.tcyr`, **which does not exist** — and the
-      comment ships to consumers at `dist/ghurni.cyr:196`.
-- [x] ADR-004 still carries the serde justification `state.md` already corrected
-      as false (`MixerChannel` serialized `name`/`gain`/`pan`/`muted`).
-- [x] Stale measured numbers across `state.md`, `overview.md`, `README.md`.
-      Truth as shipped in 2.0.3: **111/167 functions referenced (66%)**,
-      **10 suites / 450 assertions**, 14 benchmarks, 1631 fuzz checks,
-      `dist/ghurni.cyr` 3,242 lines.
-- [x] The retirement checklist's own `rust-old` reference counts are wrong.
-- [x] No `2.0.0` CHANGELOG entry — a re-cut of that tag still ships an empty
-      release body. Release machinery, not a nicety.
-- [x] Record the undocumented contracts: `smooth_time_s` is **tau** (63%), not a
-      settling time; `MechanicalEvent` cylinder is 0-indexed and `GearShift.from`
-      0 = neutral; the cross-plane V8 offsets exist because uneven intervals make
-      the burble; the supercharger preset's `spool_inertia` argument is inert.
-
-### Small correctness items found by the sweep
-- [x] `ghurni_dcblocker_new` is the **only** public constructor that does not
-      validate its sample rate.
-- [x] ~~`ghurni_gear_new` clamps teeth only from below~~ — **investigated, not a
-      defect.** The oracle does the same (`teeth.max(4)`, `rust-old/src/gear.rs:72`,
-      documented "Number of teeth (4+)"), and a huge tooth count is safe because
-      mesh frequency is Nyquist-clamped before it reaches the oscillator (verified
-      by execution at 100000 teeth). Adding an upper bound would DIVERGE from the
-      oracle, not fix anything. The lower clamp and the huge-teeth path are now
-      pinned in `oracle_pins.tcyr` instead.
-- [x] `GhSmoothedParam`'s derived serde roundtrip is untested while both sibling
-      POD structs are.
-- [x] Two setters silently no-op and return success — the exact shape 2.0.2 hunted.
-- [x] `f64_clamp` propagates NaN where `f64_max`/`f64_min` absorb it. Several NaN
-      entry points render 100% non-finite audio, and **SECURITY.md claims
-      otherwise**. Fix the doc here; fix the behaviour in Arc 1 (it is an audio
-      change at the boundary).
-- [x] **Benchmark gap** — 6 of the oracle's 10, plus its 64→4096 block-size sweep.
-      Missing: motor, turbine, clock, transmission, turbocharger.
-
----
-
-## Arc 0b — `2.0.4` "Delete the Oracle"  ✅ SHIPPED
-
-> Released 2026-08-28. 33 files / 3,934 lines removed; 118 references across 39
-> files reframed as historical citations. All 450 assertions green and **every
-> golden unchanged**, proving the removal was purely documentary. The oracle is
-> recoverable at tag `2.0.3`.
-
-**Theme: retire `rust-old/`.** Its own release so the deletion is a revertable
-commit rather than noise inside a feature arc.
-
-- [x] Everything in [`rust-old-retirement.md`](rust-old-retirement.md) is checked. *(zero open items as of 2.0.3)*
-- [x] `git rm -r rust-old/`; update the 61 references across 34 files.
-- [x] **Rewrite CLAUDE.md's correctness bar.** It currently reads "matches what
-      the Rust naad-backend path did". That stops being checkable the moment the
-      directory goes; it becomes "matches the frozen goldens in `tests/`" — which
-      is only true if Arc 0 actually landed them. **This is why Arc 0 comes first.**
-- [x] Note in ADR-004 which tag the oracle is recoverable from.
-
-> **Sequencing constraint — now satisfied.** Both audio arcs below were blocked
-> on this one: while `rust-old/` existed the stated correctness bar was "match
-> the oracle", so a deliberate divergence had to argue against the project's own
-> rule every time. The bar is now the goldens, which is the bar acoustic work
-> actually wants. **Arc 1 is unblocked.**
-
----
-
-## Arc 1 — `2.1.0` "Rest State"  ✅ SHIPPED
-
-> Released 2026-08-28 behind [ADR-005](../architecture/adr-005-rpm-loudness-law.md).
-> One loudness law applied uniformly; the combustion pulse integrated across each
-> sample (killing a 70% amplitude notch at resonant RPMs); NaN closed at all 18
-> parameter clamps; seed resolution unified. Six of eleven goldens moved —
-> gear/transmission/belt were **bit-identical**, which is the ADR's central claim
-> holding. 509 assertions.
-
-**Theme: RPM actually drives loudness.** Ships **all** deliberate audio changes
-at once, behind one ADR, so there is exactly one release where goldens move.
-
-Measured today (0.2 s, RMS, rest vs running):
-
-| synth | @ 0 RPM | running | |
+| release | arc | what it was | record |
 |---|---|---|---|
-| motor | 0.184407 | 0.184407 | **identical stopped and running** |
-| belt_drive | 0.084913 | 0.069786 | **louder stopped** |
-| turbine (ducted) | 0.106632 | 0.251488 | 42% of running while stationary |
-| gear | 0.026472 | 0.106961 | 25% |
-| differential | 0.019027 | 0.140681 | 14% |
-| transmission | 0.016178 | 0.106189 | 15% |
-| engine | 0.008977 | 0.026329 | 34% |
-| chain_drive · forced_induction | 0.000000 | — | correct |
+| `2.0.1` | — | toolchain + dependency catch-up | CHANGELOG |
+| `2.0.2` | — | P-1 audit / hardening / security sweep | CHANGELOG |
+| `2.0.3` | Arc 0 "Pin the Oracle" | golden checksums, spectral assertions, the fuzz harness and the CI gate chain — the deck-clearing that made the oracle deletable and the audio arcs safe | CHANGELOG |
+| `2.0.4` | Arc 0b "Delete the Oracle" | `rust-old/` retired; the correctness bar moved to the frozen suite | [retirement doc](rust-old-retirement.md) |
+| `2.1.0` | Arc 1 "Rest State" | one shared RPM loudness law (`2r/(r+1)`), plus the sample-integrated combustion pulse that closed the resonant-RPM notch | [ADR-005](../architecture/adr-005-rpm-loudness-law.md) |
+| `2.2.0` | Arc 2 "Depth" | 3-partial mesh tone, HYBRID as a real electric drive, turbo/blower orders, audible chain links, tick/tock asymmetry | [ADR-006](../architecture/adr-006-acoustic-depth.md) |
+| `2.3.0` | Arc 2b "Depth II" | load tilts the spectrum instead of moving a fader; diesel injection clatter; differential ring-revolution modulation | [ADR-007](../architecture/adr-007-load-tilt-and-diesel.md) |
+| `2.4.0` | Arc 3 "Events & Control" | five dead `GH_EVENT_*` kinds made real, drivetrain load inputs, clock speed control, the missing `name`/`from_name` halves | [ADR-008](../architecture/adr-008-events-and-control.md) |
+| `2.5.0` | Arc 3b "Output Path" | stems **deferred on measurement** (the engine had nothing to split); convolution **closed** on ADR-002 scope; two dead-API defects fixed | [ADR-009](../architecture/adr-009-no-stems-yet.md) |
+| `2.5.1` | — | pulled naad 2.2.2 (its FFT convolution dropped its tail); corrected the assertion counts reported for 2.3.0/2.4.0/2.5.0 | CHANGELOG |
+| `2.6.0` | Arc 3c "Radiation Paths" | the exhaust becomes a quarter-wave waveguide and the combustion pulse train goes down it; cyrius 6.5.36 | [ADR-010](../architecture/adr-010-radiation-paths.md) |
 
-For a library whose thesis is *"RPM is the fundamental parameter"*, seven of ten
-synths contradict it. The causes are structural, not bugs: `motor`'s amplitude
-path has no RPM term at all, and `belt_drive`'s `squeal_amp = (1 - tension) * 0.3`
-has none either. Both are faithful ports — the oracle does the same — which is
-exactly why this needs an ADR rather than a patch.
+**Three corrections worth remembering**, because each was a claim this project
+made and later disproved with its own measurements:
 
-- [x] **ADR-005: acoustic divergence from the oracle.** The umbrella for this arc.
-- [x] An RPM-dependent loudness law for the seven synths that lack one.
-- [x] **Resonant-RPM combustion amplitude.** At RPMs where samples-per-cycle is an
-      integer (`5292000/rpm ∈ ℤ` at 44.1 kHz) the engine lands off-peak every
-      cycle and the thump loses up to two thirds of its amplitude; the f32
-      oracle's coarser rounding accidentally snapped the lattice onto the cycle.
-      Characterised in [state.md](state.md). Same ADR, same release.
-- [x] **NaN at the parameter boundary.** `f64_clamp` propagates it; guarding is
-      itself an audio change, so it belongs here.
-- [x] Seed aliasing the port introduced in `belt_drive` / `turbine` /
-      `forced_induction` (behavioural integer seeds that lose parameter
-      resolution) — decide the convention once and apply it uniformly.
+- **ADR-009's acceptance criterion is passed by a wire** (66.12% share, +0.743
+  autocorrelation with no delay, filter or resonance). It is a *routing* test and
+  must never be cited as evidence a radiation path exists. Corrected in ADR-010.
+- **ADR-009's tripwire never fired.** It was written so that a real duct would
+  break it; 2.6.0 built one and it still passed at −0.27 dB. A waveguide's
+  throughput is level-invariant under retuning — detuning a pipe moves its
+  *colour*, not its level. Retired and replaced.
+- **ADR-006 called stems "an API change, not a timbral one."** Exactly backwards,
+  and that single line routed the item through two wrong arcs before ADR-009
+  measured it.
 
-**Patch line `2.1.x`** — regressions the new goldens catch; per-synth loudness-law
-tuning that consumers report as too aggressive or too subtle.
+### Closed out of the shipped arcs
 
----
+- ~~12 compiled ELF binaries tracked in git~~ — untracked; `/build/` is in
+  `.gitignore` and `git ls-files build/` is empty.
+- ~~Source-body impulse responses need their own ADR~~ — **decided in ADR-009**:
+  keep the bandpass. ADR-002 forbids reverb (dhvani's) and spatialization
+  (goonj's), naad's type is a room model, cost is 21×–7161× a biquad, and
+  `cyrius distlib` concatenates `.cyr` **text** so the format cannot carry a
+  binary IR at all.
+- ~~Re-check the ADR-005 loudness law against the new duct~~ — **done during the
+  2.6.0 architecture choice**, and it decided it. The rejected inverting-comb
+  swung mono level −2.16 to +1.99 dB across 800–7000 rpm, which modulates the
+  loudness law; the shipped waveguide holds −0.13 to +0.78 dB.
 
-## Arc 2 — `2.2.0` "Depth"  ✅ SHIPPED
+### Open patch line: `2.6.x`
 
-> Released 2026-08-28 behind [ADR-006](../architecture/adr-006-acoustic-depth.md).
-> Five structural gaps closed; five goldens moved and two were **fixed** — the
-> clock golden never covered a tock, and HYBRID had no golden at all.
+The only patch line from a shipped arc with work still in it. Earlier ones
+(`2.1.x`–`2.5.x`) are closed.
 
-**Theme: the ten synths get acoustically richer.** Breadth stays frozen; this arc
-is about the machines already modelled sounding more like themselves.
-
-- [x] **Every gear-mesh whine in the library was a single pure sine.** gear,
-      transmission and differential now use a 3-partial additive mesh, and gear's
-      upper partials scale with the existing per-material `brightness`, so
-      material finally changes timbre (measured h2/h1: steel 0.546 → nylon 0.124).
-- [x] **`GH_ENGINE_HYBRID` was a gasoline engine.** It now renders an electric
-      drive: no combustion at all, a 2-partial EM whine at `(rpm/60) × 8` poles,
-      and the exhaust/intake beds pulled to 0.25.
-- [x] **Turbo and supercharger were spectrally identical.** Whine now sits at
-      blade-pass (10) and lobe-pass (3) respectively — measured ratio 3.34.
-- [x] **Chain link count was audibly inert.** A once-per-lap modulation at
-      `engage_freq / links` makes it audible.
-- [x] Clock tick and tock were the same sound. Odd beats are now softer and
-      shorter-decaying, an alternation rather than a decay.
-
-**Patch line `2.2.x`** — per-synth spectral tuning; golden refreshes.
-
----
-
-## Arc 2b — `2.3.0` "Depth II"  ✅ SHIPPED
-
-> Released 2026-08-28 behind [ADR-007](../architecture/adr-007-load-tilt-and-diesel.md).
-> Load now tilts the spectrum instead of moving a fader; diesel got its clatter;
-> the differential's tooth counts became individually audible. Six goldens moved;
-> the six synths that take no load are bit-identical to 2.2.0.
-
-- [x] **Load produced no spectral tilt** — and on the engine it went the *wrong
-      way* (centroid fell 8882 → 8690 Hz as load rose). A shared
-      `tilt(load, k) = 1 + k·load` now scales each synth's broadband term and not
-      its tonal one. Measured: motor 2078 → 2253 Hz, engine 8892 → 9031 Hz,
-      both monotonic. `tilt(0) = 1.0` exactly, so unloaded audio is unchanged.
-- [x] **Diesel was a retuned Gasoline** — three constants apart. It now has
-      injection clatter: a sharper impulse behind the main pulse, decaying 8×
-      faster. Measured centroid 9747 Hz vs gasoline's 8531 Hz.
-- [x] **Differential ring-revolution modulation.** 40/10 and 80/20 axles — same
-      4.0 ratio, different hardware — no longer render identically. Also makes
-      `sample_position` live in that module, where it had been vestigial.
-- [ ] ~~Turbine rotor slap and multi-spool~~ → **moved to Arc 4 (breadth).**
-      Blade slap is an impulsive phenomenon with its own physics and multi-spool
-      is a jet architecture; both are closer to new machines than to a deeper
-      turbine. That was the open question in ADR-006 and this is the answer.
-- [ ] ~~Source-body impulse responses~~ → **own ADR, not yet scheduled.**
-      ⚠ ADR-006's cost estimate was **wrong**: naad already ships a full
-      convolution engine (`naad_convolution_from_ir` / `_process_block`), so the
-      path exists. The real obstacle is that ghurni *already* models exhaust
-      resonance with a bandpass, so convolution would be a second, redundant
-      mechanism. The genuine question is whether to **replace** the bandpass —
-      an architectural change deserving its own ADR.
-
-**Patch line `2.3.x`** — load-tilt strength tuning; golden refreshes.
-
----
-
-## Arc 3 — `2.4.0` "Events & Control"  ✅ SHIPPED
-
-> Released 2026-08-28. 600 assertions (was 556), **goldens unchanged** — every
-> item here is additive or defaults to a no-op. See [ADR-008](../architecture/adr-008-events-and-control.md).
-
-**Theme: the control surface stops lying.**
-
-- [x] **Five of the eight declared `GH_EVENT_*` kinds are accepted and silently
-      discarded** — `STALL`, `REV_LIMITER_HIT`, `GEAR_SHIFT`, `STARTUP`,
-      `SHUTDOWN`. Constructors exist for all of them
-      (`ghurni_event_stall`, `ghurni_event_rev_limiter_hit`, …); only `engine` has
-      a `trigger_event` at all, and it implements three. The oracle ignored them
-      too, so this is an inherited product gap, not a port defect — but the
-      oracle's cover disappears in 2.0.4.
-      *All eight now do something. `GEAR_SHIFT` went to a new
-      `ghurni_transmission_trigger_event`, since a shift is not the engine's
-      business.*
-- [x] **Engine start / stop chain** — the sound consumers reach for first and the
-      one `STARTUP`/`SHUTDOWN` imply. *Both drive the collapse or climb through
-      the existing `smooth_rpm` smoother, so the ramp is click-free by
-      construction. `STALL` sputters out gated by noise; `SHUTDOWN` is smooth and
-      slower, so one reads as a failure and the other as deliberate.*
-- [x] **Clock has no speed control at all** — its tick rate cannot be set.
-      *`ghurni_clock_set_tick_rate` / `_tick_rate`, clamped 0.1..50 Hz. `set_rpm`
-      stays a deliberate no-op — an escapement is not a driven shaft.*
-- [x] **Gear, transmission and differential accept no load input**, though load is
-      what makes a drivetrain audible under strain. *All three take load now, with
-      the ADR-007 tilt. Default load 0, where both terms are exactly 1.0 — which
-      is why the goldens hold.*
-- [x] `GH_EVENT_*` and `GH_KIND_*` still violate the `name`/`from_name` rule that
-      2.0.2 fixed for `GhurniError`. *`GH_KIND_*` had neither half;
-      `MechanicalEvent` had only the forward one. Both complete.*
-- [x] **Differential drive/coast asymmetry** — needs a torque-direction input the
-      API does not have. Moved here from Arc 2 for the same reason. *Solved with a
-      separate `set_coasting` flag rather than by letting `load` go negative,
-      which would have changed what `load` means.*
-- [x] ~~`ghurni_differential_ratio` is dead API; `sample_position` is vestigial in
-      three synths.~~ **Both were already stale when written.** `_ratio` has been
-      called by `tests/oracle_pins.tcyr` since 2.0.3; `sample_position` is
-      vestigial in **two** synths, not three — `differential` became a live reader
-      in 2.3.0 with ring-revolution modulation. Only `transmission` and
-      `forced_induction` still write it without reading it, and both are one line
-      each. Folded into `2.4.x`.
-- [ ] **Per-component stems** → **moved to Arc 3b (`2.5.0`)**, with the
-      convolution question it pairs with. It is the one Arc 3 item not shipped:
-      the split is not the same across all ten synths (a clock has no intake) and
-      it grows the public surface by a third, so it needs a shape decision rather
-      than a per-synth improvisation.
-
-**Patch line `2.4.x`** — event-timing tuning; consumer-reported control gaps;
-retire the two remaining vestigial `sample_position` writes.
-
----
-
-## Arc 3b — `2.5.0` "Output Path"  ✅ SHIPPED (as a deferral, with the measurement)
-
-> Released 2026-08-28. 633 assertions (was 590; both figures corrected in 2.5.1), **goldens unchanged**, **zero new
-> public symbols**. See [ADR-009](../architecture/adr-009-no-stems-yet.md).
-
-**Theme: how a synth's sound leaves it — and the finding that it does not leave
-by the route this arc assumed.**
-
-- [ ] **Per-component stems** → **DEFERRAL REVIEWED AND ACCEPTED**; moved to
-      Arc 3c (`2.6.0`). This is a settled decision, not an open question — it was
-      put to review with the measurements below and agreed. Reopen it only if the
-      ADR-009 acceptance criterion is met, or if the measurements are shown wrong.
-      Four API designs were argued (three by signal character, one by radiation
-      path) and all four fail. Character taxonomies structurally cannot separate
-      exhaust from intake — `engine.cyr:527` and `:532` are the same operation on
-      the same noise source. The radiation-path taxonomy separates them correctly
-      and then hands the consumer **3.6% and 1.3% of the signal with none of its
-      periodicity**. Deleting BOTH aperture terms outright moves the engine by
-      **−0.211 dB** (gasoline) / **−0.099 dB** (diesel), against a ~1 dB JND.
-      The obvious repair was prototyped and fails too: routing combustion through
-      the exhaust body at 100% costs **−10.6 dB** and makes the exhaust path *less*
-      periodic than today's mono. A resonant biquad is a tone control; a pipe is a
-      resonant delay. **The blocker was never the API shape.**
-- [x] **Source-body separation** — decided: **keep the bandpass, do not add
-      convolution.** [ADR-002](../architecture/adr-002-scope-boundaries.md)
-      forbids reverb (dhvani's) and spatialization (goonj's); naad's type is
-      literally `ConvolutionReverb`, a room model. Cost measured at 21x-7161x a
-      biquad, and `cyrius distlib` concatenates `.cyr` TEXT so the format cannot
-      carry a binary IR. Closed, not deferred.
-- [x] **Two real defects found on the way**, both bit-identical at every golden:
-      `GhEngine_set_intake_resonance` was a **dead store** (measured: 0 of 4410
-      samples changed, vs 4410 of 4410 for the live exhaust control), and
-      transmission's ADR-007 load tilt was **computed and never read** — so the
-      `set_load` shipped in 2.4.0 was a pure fader, the exact behaviour ADR-007
-      exists to remove.
-- [x] ~~`sample_position` is vestigial in two synths~~ — **wrong, and closed.**
-      ADR-008 already narrowed this from three. Nothing *inside* transmission or
-      forced_induction reads it, but Cyrius has no visibility control, so the
-      accessors are public API returning samples-rendered. Deleting the write
-      would make a consumer read return 0 forever; deleting the accessor would be
-      a breaking change a MINOR may not make. Documented, not removed.
-
-**Patch line `2.5.x`** — ✅ **2.5.1 pulled the fixed naad (2.2.2).**
-
-> **Queued dependency fix — naad convolution.** While settling the convolution
-> question for this arc, `naad_convolution_process_block` (the FFT path) was
-> proven to **discard its tail**: it writes only `[0, block_len)` from the IFFT
-> result and keeps no overlap-add state, so a ring is truncated at every block
-> boundary. Proof, 4-tap all-ones IR with one impulse — sample path `1,1,1,1`,
-> block path `1, 1-1ULP, 0, 0`. The `_direct` fallback is correct; only the fast
-> path is broken, and the FFT path never touches `position`/`input_buffer`, so
-> the two APIs cannot be interleaved on one object.
->
-> naad's own suite misses it because
-> `tests/acoustics_convolution.tcyr::process_block_direct_matches_fft_path`
-> processes **one** block of 8 on a fresh object, and the tail only matters from
-> block two onward. The regression test must run at least two consecutive blocks.
->
-> ✅ DONE. Sequence ran as planned: 2.5.0 shipped → naad 2.2.2 fixed it with
-> overlap-save (naad ADR 0003) → ghurni 2.5.1 pulled it. ghurni audio unchanged,
-> as predicted, because ghurni calls no convolution symbol.
-> **ghurni calls no convolution symbol today**, so nothing shipping is affected;
-> this is a trap for whoever wires convolution up later, not a live bug.
-
----
-
-## Arc 3c — `2.6.0` "Radiation Paths"  ✅ SHIPPED (exhaust only)
-
-> Released 2026-08-28. 640 assertions (was 633), **3 of 28 goldens moved**
-> (gasoline, diesel, hybrid — all nine non-engine synths bit-identical).
-> cyrius 6.5.36. See [ADR-010](../architecture/adr-010-radiation-paths.md).
->
-> **The criterion below is MET and is no longer the blocker**: exhaust share
-> 3.59% → 64.3%, firing-period autocorrelation −0.040 → +0.717, with mono
-> autocorrelation *rising* 0.654 → 0.664 and level +0.21 dB. Muting the exhaust
-> now moves the engine −4.39 dB where 2.5.1 moved −0.11 dB.
->
-> ⚠ **But the criterion is passed by a wire** (66.12% / +0.743 with no delay, no
-> filter, no resonance), so it was NOT what justified the release. The evidence
-> that carries content is the odd-harmonic mode series and the boom depth, both
-> asserted in `tests/spectral.tcyr` and both mutation-verified to fail against
-> 2.5.1. ADR-009 is corrected in place.
->
-> **It was listened to before shipping** — A/B audio at a steady 3000 rpm and
-> over a 900→6500 rpm sweep, reviewed by ear and judged close to a real exhaust.
-> No metric here would have caught the alternative.
-
-**Theme: give the engine somewhere for the sound to come out of.** This is the
-release ADR-009's measurement points at, and stems ship as a *consequence* of it
-rather than before it.
-
-The acceptance criterion is a number, pinned in `tests/oracle_pins.tcyr` so this
-cannot be deferred a fifth time by inattention:
-
-> the engine's exhaust path must carry **>25% of mean-square energy** AND a
-> **positive firing-period autocorrelation exceeding today's mono (+0.597)**.
-
-- [x] **Model the exhaust as a resonant duct, not a bandpass.** A pipe closed at
-      one end resonates at odd harmonics of c/4L, and it must carry the
-      *combustion pulse train*, not a separate noise bed — that is what makes an
-      exhaust note an exhaust note. Candidate mechanisms: a resonant comb / delay
-      line with a reflection coefficient, or a small modal bank. Both are cheap
-      relative to convolution, which ADR-009 closed.
-- [ ] **Model the intake tract the same way** → **2.7.0.** Not prototyped, and
-      adding a second unmeasured resonator to the largest audio change in the
-      project's history is how you get a golden you cannot explain. (Helmholtz plenum + runner), so the
-      two apertures are genuinely different rather than two bandpasses on one
-      noise source.
-- [ ] **Then per-component stems** → **2.7.0.** The criterion is met and closed;
-      what blocks stems now is that the intake lane is still 1.3% of noise, and a
-      taxonomy keyed on radiation path would hand consumers two real lanes and
-      one fake — the exact failure ADR-009 refused. Re-derived once the intake
-      clears the same bar the exhaust just did. ADR-009's radiation-path rule is the taxonomy to start from — it was
-      the correct definition applied to a model that could not feed it.
-- [ ] Re-check the ADR-005 loudness law against the new duct: a resonant pipe has
-      its own RPM-dependent gain and may double-count.
-
-**Patch line `2.6.x`** — duct tuning per engine type; golden refreshes; the
-two-stroke expansion chamber (characterised, not papered over: it is a
-divergent-then-convergent cone pair, a different device, and misses the share bar
-at 21.9%).
+- [ ] **Duct tuning per engine type**, and golden refreshes if it moves them.
+      `GHURNI_DUCT_RAD_HZ = 520` in particular is an argued value, not a measured
+      one — it is what makes the model read as an exhaust *system* near the
+      ground rather than a bare pipe in free field, and it costs ~4.5 dB in the
+      45–180 Hz bands. Reviewed by ear and accepted for 2.6.0; revisit with a
+      second opinion rather than a second measurement.
+- [ ] **Two-stroke expansion chamber** — characterised, not papered over. A
+      two-stroke's chamber is a divergent-then-convergent cone pair whose whole
+      purpose is a positive reflection followed by a negative one; the shipped
+      quarter-wave model is the wrong device for it, and the two-stroke misses
+      the ADR-009 share bar at 21.9%.
 
 ---
 
