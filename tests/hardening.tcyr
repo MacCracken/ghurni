@@ -51,6 +51,7 @@ fn audio_all_finite(v) {
     }
     return 1;
 }
+# audio has energy — helper used by hardening.tcyr.
 fn audio_has_energy(v) {
     if (audio_all_finite(v) == 0) { return 0; }
     var n = vec_len(v);
@@ -335,7 +336,6 @@ ghurni_engine_trigger_event(e8, ghurni_event_knock(7));
 ghurni_engine_process_block(e8, kbuf);
 assert_eq(audio_has_energy(kbuf), 1, "knock re-arms after draining");
 
-
 # ================================================================
 test_group("port completion: items rust-old still held alone");
 # --- belt_drive noise seed must depend on TENSION, not just diameter ---
@@ -431,6 +431,7 @@ fn bs_chunked(kind, synth, total, chunk) {
     }
     return outv;
 }
+# bs first diff — helper used by hardening.tcyr.
 fn bs_first_diff(a, b) {
     var n = vec_len(a);
     var i = 0;
@@ -495,6 +496,7 @@ var bs_ca = bs_check(GH_KIND_CLOCK, bs_c1, "clock one-shot has energy");
 assert_eq(bs_first_diff(bs_ca, bs_chunked(GH_KIND_CLOCK, bs_c2, 4410, 441)), 0 - 1,
   "clock: chunked is bit-identical");
 
+# bs ratios — helper used by hardening.tcyr.
 fn bs_ratios() {
     var r = vec_new();
     vec_push(r, f64_from(3)); vec_push(r, f64_from(2)); vec_push(r, F64_ONE);
@@ -558,6 +560,7 @@ fn hr_zeros(n) {
     while (i < n) { vec_push(v, 0); i = i + 1; }
     return v;
 }
+# hr finite with — helper used by hardening.tcyr.
 fn hr_finite_with(exh, intk) {
     var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
     ghurni_engine_set_rpm(e, f64_from(3000));

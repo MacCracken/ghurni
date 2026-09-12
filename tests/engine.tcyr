@@ -25,6 +25,7 @@ fn audio_all_finite(v) {
     }
     return 1;
 }
+# audio has energy — helper used by engine.tcyr.
 fn audio_has_energy(v) {
     if (audio_all_finite(v) == 0) { return 0; }
     var n = vec_len(v);
@@ -35,6 +36,7 @@ fn audio_has_energy(v) {
     }
     return 0;
 }
+# audio energy — helper used by engine.tcyr.
 fn audio_energy(v) {
     var n = vec_len(v);
     var sum = 0;

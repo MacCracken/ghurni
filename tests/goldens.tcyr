@@ -153,7 +153,8 @@ var g_ratios = vec_new();
 vec_push(g_ratios, 3.5); vec_push(g_ratios, 2.1); vec_push(g_ratios, 1.4);
 golden(ghurni_transmission_synthesize(ghurni_transmission_new(g_ratios, 24, SR), f64_from(3000), 0.1),
   4410, 0 - 8614052655093267763, "transmission 3-speed @3000");
-golden(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), f64_from(5000), 0.8, 0.1),
+golden(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR),
+    f64_from(5000), 0.8, 0.1),
   4410, 0 - 254912951968716337, "turbo ratio 2.0 @5000 load 0.8");
 
 # ================================================================

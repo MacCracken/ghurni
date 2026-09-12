@@ -22,6 +22,7 @@ include "src/chain_drive.cyr"
 include "src/mixer.cyr"
 include "src/presets.cyr"
 
+# audio all finite — helper used by mixer.tcyr.
 fn audio_all_finite(v) {
     var n = vec_len(v);
     if (n == 0) { return 0; }
@@ -32,6 +33,7 @@ fn audio_all_finite(v) {
     }
     return 1;
 }
+# audio has energy — helper used by mixer.tcyr.
 fn audio_has_energy(v) {
     if (audio_all_finite(v) == 0) { return 0; }
     var n = vec_len(v);
@@ -42,6 +44,7 @@ fn audio_has_energy(v) {
     }
     return 0;
 }
+# audio all zero — helper used by mixer.tcyr.
 fn audio_all_zero(v) {
     var n = vec_len(v);
     var i = 0;
@@ -51,6 +54,7 @@ fn audio_all_zero(v) {
     }
     return 1;
 }
+# audio energy — helper used by mixer.tcyr.
 fn audio_energy(v) {
     var n = vec_len(v);
     var sum = 0;
@@ -62,6 +66,7 @@ fn audio_energy(v) {
     }
     return sum;
 }
+# zeros — helper used by mixer.tcyr.
 fn zeros(len) {
     var v = vec_new();
     var i = 0;
@@ -154,10 +159,14 @@ assert_eq((f64_ge(ratio, 0.5) == 1) && (f64_le(ratio, f64_from(2)) == 1), 1, "en
 
 # ================================================================
 test_group("presets produce audio");
-assert_eq(audio_has_energy(ghurni_engine_synthesize(ghurni_preset_v8_muscle_car(SR), f64_from(3000), 0.6, 0.5)), 1, "v8 energy");
-assert_eq(audio_has_energy(ghurni_engine_synthesize(ghurni_preset_diesel_truck(SR), f64_from(1500), 0.5, 0.5)), 1, "diesel truck energy");
-assert_eq(audio_all_finite(ghurni_motor_synthesize(ghurni_preset_electric_vehicle(SR), f64_from(8000), 0.5, 0.5)), 1, "EV valid");
-assert_eq(audio_all_finite(ghurni_transmission_synthesize(ghurni_preset_manual_5speed(SR), f64_from(3000), 0.3)), 1, "5-speed valid");
+assert_eq(audio_has_energy(ghurni_engine_synthesize(ghurni_preset_v8_muscle_car(SR), f64_from(3000), 0.6, 0.5)), 1,
+  "v8 energy");
+assert_eq(audio_has_energy(ghurni_engine_synthesize(ghurni_preset_diesel_truck(SR), f64_from(1500), 0.5, 0.5)), 1,
+  "diesel truck energy");
+assert_eq(audio_all_finite(ghurni_motor_synthesize(ghurni_preset_electric_vehicle(SR), f64_from(8000), 0.5, 0.5)), 1,
+  "EV valid");
+assert_eq(audio_all_finite(ghurni_transmission_synthesize(ghurni_preset_manual_5speed(SR), f64_from(3000), 0.3)), 1,
+  "5-speed valid");
 
 var rc = assert_summary();
 syscall(60, rc);

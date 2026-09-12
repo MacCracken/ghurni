@@ -5,7 +5,7 @@ description = "ghurni — mechanical sound synthesis (engines, gears, motors, tu
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/ghurni"
 language = "cyrius"
-cyrius = "6.5.36"
+cyrius = "6.6.3"
 
 [build]
 entry = "src/main.cyr"

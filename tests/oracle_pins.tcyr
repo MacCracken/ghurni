@@ -177,7 +177,8 @@ assert_gt(ghurni_differential_ratio(dif), f64_from(3), "ratio = ring/pinion > 3"
 assert_lt(ghurni_differential_ratio(dif), f64_from(4), "ratio = ring/pinion < 4");
 # mesh = (rpm/60) * pinion. 6000 rpm, 11 pinion teeth = 1100 Hz EXACTLY.
 # With ring (41) it would be 4100 -- so this number alone catches a swap.
-assert_eq(ghurni_differential_mesh_frequency(dif, f64_from(6000)), f64_from(1100), "mesh uses PINION: 6000/60*11 = 1100 Hz");
+assert_eq(ghurni_differential_mesh_frequency(dif, f64_from(6000)), f64_from(1100),
+  "mesh uses PINION: 6000/60*11 = 1100 Hz");
 assert_neq(ghurni_differential_mesh_frequency(dif, f64_from(6000)), f64_from(4100), "mesh is NOT ring teeth");
 # Clamps: ring 20..80, pinion 4..30.
 assert_eq(GhDifferential_ring_teeth(ghurni_differential_new(1, 11, SR)), 20, "ring clamps up to 20");
@@ -307,6 +308,7 @@ var R = vec_new();
 var pi2 = 0;
 while (pi2 < 512) { vec_push(L, 0); vec_push(R, 0); pi2 = pi2 + 1; }
 
+# chan energy — helper used by oracle_pins.tcyr.
 fn chan_energy(v) {
     var n = vec_len(v);
     var s = 0;
@@ -644,6 +646,7 @@ assert_eq(ghurni_is_finite(f64_clamp(f64_div(0, 0), 0, F64_ONE)), 0, "f64_clamp 
 
 # ================================================================
 test_group("NaN at the parameter boundary renders finite audio (ADR-005)");
+# all finite buf — helper used by oracle_pins.tcyr.
 fn all_finite_buf(v) {
     var n = vec_len(v);
     if (n == 0) { return 0; }
@@ -652,20 +655,35 @@ fn all_finite_buf(v) {
     return 1;
 }
 var NANV = f64_div(0, 0);
-assert_eq(all_finite_buf(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), NANV, 0.5, 0.05)), 1, "engine: NaN rpm");
-assert_eq(all_finite_buf(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), NANV, 0.05)), 1, "engine: NaN load");
-assert_eq(all_finite_buf(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), NANV, 0.05)), 1, "gear: NaN rpm");
-assert_eq(all_finite_buf(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), NANV, 0.5, 0.05)), 1, "motor: NaN rpm");
-assert_eq(all_finite_buf(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), f64_from(3000), NANV, 0.05)), 1, "motor: NaN load");
-assert_eq(all_finite_buf(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), NANV, 0.05)), 1, "turbine: NaN rpm");
-assert_eq(all_finite_buf(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), NANV, 0.05)), 1, "belt: NaN rpm");
-assert_eq(all_finite_buf(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), NANV, 0.5, 0.05)), 1, "forced: NaN rpm");
-assert_eq(all_finite_buf(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), f64_from(5000), NANV, 0.05)), 1, "forced: NaN load");
+assert_eq(all_finite_buf(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), NANV, 0.5, 0.05)), 1,
+  "engine: NaN rpm");
+assert_eq(all_finite_buf(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), NANV,
+      0.05)), 1,
+  "engine: NaN load");
+assert_eq(all_finite_buf(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), NANV, 0.05)), 1,
+  "gear: NaN rpm");
+assert_eq(all_finite_buf(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), NANV, 0.5, 0.05)), 1,
+  "motor: NaN rpm");
+assert_eq(all_finite_buf(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), f64_from(3000), NANV,
+      0.05)), 1,
+  "motor: NaN load");
+assert_eq(all_finite_buf(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), NANV, 0.05)), 1,
+  "turbine: NaN rpm");
+assert_eq(all_finite_buf(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), NANV, 0.05)), 1,
+  "belt: NaN rpm");
+assert_eq(all_finite_buf(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO,
+        f64_from(2), 0.3, SR), NANV, 0.5, 0.05)), 1,
+  "forced: NaN rpm");
+assert_eq(all_finite_buf(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_TURBO,
+        f64_from(2), 0.3, SR), f64_from(5000), NANV, 0.05)), 1,
+  "forced: NaN load");
 # A NaN construction parameter must not poison the object either.
-assert_eq(all_finite_buf(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(NANV, NANV, SR), f64_from(2000), 0.05)), 1, "belt: NaN diameter + tension");
+assert_eq(all_finite_buf(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(NANV, NANV, SR), f64_from(2000), 0.05)), 1,
+  "belt: NaN diameter + tension");
 
 # ================================================================
 test_group("seed resolution: float parameters reach the seed (ADR-005)");
+# streams differ — helper used by oracle_pins.tcyr.
 fn streams_differ(a, b) {
     var i = 0;
     var d = 0;
@@ -687,7 +705,8 @@ assert_eq(streams_differ(GhTurbine_noise_gen(ghurni_turbine_new(12, f64_from(600
 assert_eq(streams_differ(GhBeltDrive_noise_gen(ghurni_belt_drive_new(f64_from(120), 0.6, SR)),
     GhBeltDrive_noise_gen(ghurni_belt_drive_new(f64_from(120), 0.65, SR))), 1,
   "belt: tension 0.60 vs 0.65 decorrelate");
-assert_eq(streams_differ(GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR)),
+assert_eq(streams_differ(GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3,
+        SR)),
     GhForcedInduction_noise_gen(ghurni_forced_induction_new(GH_INDUCTION_TURBO, 2.05, 0.3, SR))), 1,
   "turbo: ratio 2.0 vs 2.05 decorrelate");
 # Determinism is preserved (ADR-003): identical parameters, identical stream.
@@ -779,6 +798,7 @@ fn ev_block(e) {
     ghurni_engine_process_block(e, b);
     return b;
 }
+# ev fresh — helper used by oracle_pins.tcyr.
 fn ev_fresh() {
     var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
     ghurni_engine_set_rpm(e, f64_from(3000));
@@ -930,6 +950,7 @@ fn br_render(e, n) {
     ghurni_engine_process_block(e, b);
     return b;
 }
+# br ndiff — helper used by oracle_pins.tcyr.
 fn br_ndiff(a, b) {
     var n = vec_len(a);
     var i = 0;
@@ -940,6 +961,7 @@ fn br_ndiff(a, b) {
     }
     return c;
 }
+# br engine — helper used by oracle_pins.tcyr.
 fn br_engine() {
     var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
     ghurni_engine_set_rpm(e, f64_from(3000));
@@ -1020,7 +1042,6 @@ assert_eq(br_ndiff(br_base, br_low_buf), 4363,
 var br_rms_low = br_rms(br_low, 44100);
 assert_gt(f64_div(br_rms_low, br_rms_default), 0.9,
   "a waveguide's throughput is level-invariant under retuning -- by design");
-
 
 var rc = assert_summary();
 syscall(60, rc);

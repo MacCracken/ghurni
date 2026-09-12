@@ -56,6 +56,7 @@ var FZ_NEG1 = 0xBFF0000000000000;
 var fz_fail = 0;
 var fz_checks = 0;
 
+# fz val — helper used by ghurni.fcyr.
 fn fz_val(i) {
     var k = i % 12;
     if (k == 0) { return 0; }
@@ -72,6 +73,7 @@ fn fz_val(i) {
     return f64_from(0 - 3000);
 }
 
+# fz int — helper used by ghurni.fcyr.
 fn fz_int(i) {
     var k = i % 10;
     if (k == 0) { return 0; }
@@ -86,6 +88,7 @@ fn fz_int(i) {
     return 127;
 }
 
+# fz check — helper used by ghurni.fcyr.
 fn fz_check(cond, what) {
     fz_checks = fz_checks + 1;
     if (cond == 0) {
@@ -118,6 +121,7 @@ fn fz_render(kind, synth, n, what) {
     return 0;
 }
 
+# Fuzz entry point — drives the harness below.
 fn main(): i64 {
     alloc_init();
     sakshi_set_level(0);

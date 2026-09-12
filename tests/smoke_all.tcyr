@@ -21,6 +21,7 @@ include "src/chain_drive.cyr"
 include "src/mixer.cyr"
 include "src/presets.cyr"
 
+# audio all finite — helper used by smoke_all.tcyr.
 fn audio_all_finite(v) {
     var n = vec_len(v);
     if (n == 0) { return 0; }
@@ -31,6 +32,7 @@ fn audio_all_finite(v) {
     }
     return 1;
 }
+# audio has energy — helper used by smoke_all.tcyr.
 fn audio_has_energy(v) {
     if (audio_all_finite(v) == 0) { return 0; }
     var n = vec_len(v);

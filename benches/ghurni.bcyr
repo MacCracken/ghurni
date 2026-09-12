@@ -16,6 +16,7 @@ include "lib/goonj.cyr"
 include "lib/naad.cyr"
 include "dist/ghurni.cyr"
 
+# Bench entry point — runs every benchmark in this file.
 fn main() {
     alloc_init();
     var SR = f64_from(44100);

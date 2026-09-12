@@ -46,6 +46,7 @@ alloc_init();
 var SR = f64_from(44100);
 var SPEC_N = 8192;
 
+# spec block — helper used by spectral.tcyr.
 fn spec_block() {
     var v = vec_new();
     var i = 0;
@@ -69,6 +70,7 @@ fn spec_peak_bin(v) {
     return bi;
 }
 
+# spec peak mag — helper used by spectral.tcyr.
 fn spec_peak_mag(v) {
     var mags = fft_magnitudes(v);
     var n = vec_len(mags);
@@ -197,6 +199,7 @@ fn bin_mag_at(v, hz) {
     if (b >= vec_len(mags)) { return 0; }
     return vec_get(mags, b);
 }
+# gear h2 ratio — helper used by spectral.tcyr.
 fn gear_h2_ratio(material) {
     var g = ghurni_gear_new(32, material, SR);
     ghurni_gear_set_rpm(g, f64_from(1500));
@@ -309,6 +312,7 @@ fn spec_centroid(v) {
     if (f64_le(den, 0) == 1) { return 0; }
     return f64_div(num, den);
 }
+# motor centroid at — helper used by spectral.tcyr.
 fn motor_centroid_at(load) {
     var m = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR);
     ghurni_motor_set_rpm(m, f64_from(3000));
@@ -326,6 +330,7 @@ assert_gt(mc_lo, f64_from(500), "motor centroid is a real measurement (not a vac
 assert_lt(mc_lo, mc_mid, "motor: more load is BRIGHTER (0.1 -> 0.5)");
 assert_lt(mc_mid, mc_hi, "motor: more load is BRIGHTER (0.5 -> 0.9)");
 
+# engine centroid at — helper used by spectral.tcyr.
 fn engine_centroid_at(load) {
     var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
     ghurni_engine_set_rpm(e, f64_from(3000));
@@ -389,6 +394,7 @@ fn spec_centroid_2blk(kind, synth) {
     ghurni_synth_process_block(kind, synth, b);
     return spec_centroid(b);
 }
+# tx centroid at — helper used by spectral.tcyr.
 fn tx_centroid_at(load) {
     var r = vec_new();
     vec_push(r, f64_from(3)); vec_push(r, f64_from(2)); vec_push(r, F64_ONE);
@@ -404,6 +410,7 @@ assert_gt(txc_lo, f64_from(500), "transmission centroid is a real measurement");
 assert_lt(txc_lo, txc_mid, "transmission: more load is BRIGHTER (0.1 -> 0.5)");
 assert_lt(txc_mid, txc_hi, "transmission: more load is BRIGHTER (0.5 -> 0.9)");
 
+# gear centroid at — helper used by spectral.tcyr.
 fn gear_centroid_at(load) {
     var g = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
     ghurni_gear_set_rpm(g, f64_from(1500));
@@ -415,6 +422,7 @@ var gc_hi = gear_centroid_at(0.9);
 assert_gt(gc_lo, f64_from(200), "gear centroid is a real measurement");
 assert_lt(gc_lo, gc_hi, "gear: more load is BRIGHTER");
 
+# diff centroid at — helper used by spectral.tcyr.
 fn diff_centroid_at(load) {
     var d = ghurni_differential_new(41, 11, SR);
     ghurni_differential_set_rpm(d, f64_from(3000));
@@ -426,6 +434,7 @@ var dc_hi = diff_centroid_at(0.9);
 assert_gt(dc_lo, f64_from(200), "differential centroid is a real measurement");
 assert_lt(dc_lo, dc_hi, "differential: more load is BRIGHTER");
 
+# fi centroid at — helper used by spectral.tcyr.
 fn fi_centroid_at(load) {
     var f = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR);
     ghurni_forced_induction_set_rpm(f, f64_from(5000));
