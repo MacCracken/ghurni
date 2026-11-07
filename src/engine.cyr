@@ -258,6 +258,10 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
     additive_set_partial(whine, 0, F64_ONE, F64_ONE);
     additive_set_partial(whine, 1, f64_from(2), 0.35);
 
+    # delay_line_new can return a negative code since naad 2.3.2.
+    var duct_line = delay_line_new(GHURNI_DUCT_MAX_DELAY);
+    if (ghurni_is_err(duct_line) == 1) { return ghurni_map_naad_error(duct_line); }
+
     var self = alloc(sizeof(GhEngine));
     GhEngine_set_engine_type(self, engine_type);
     GhEngine_set_cylinders(self, cyl);
@@ -290,7 +294,7 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
     GhEngine_set_exhaust_filter(self, exhaust_filter);
     GhEngine_set_intake_filter(self, intake_filter);
     GhEngine_set_whine_synth(self, whine);
-    GhEngine_set_duct_line(self, delay_line_new(GHURNI_DUCT_MAX_DELAY));
+    GhEngine_set_duct_line(self, duct_line);
     GhEngine_set_duct_loss_z(self, 0);
     GhEngine_set_duct_rad_z(self, 0);
     return self;

@@ -591,5 +591,17 @@ var hr_b = hr_zeros(2205);
 ghurni_engine_process_block(hr_e, hr_b);
 assert_eq(audio_has_energy(hr_b), 1, "a rejected resonance leaves the engine audible, not muted");
 
+# ================================================================
+test_group("engine_new: a refused delay line is an error (naad 2.3.2)");
+# delay_line_new can return a negative code since naad 2.3.2, past VEC_CAP_MAX.
+# The real length is a constant 2048, so force the refusal to prove the guard is
+# live: without it the code is stored as the duct pointer and faults on render.
+var duct_len = GHURNI_DUCT_MAX_DELAY;
+GHURNI_DUCT_MAX_DELAY = 0x10000001;
+var duct_refused = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+GHURNI_DUCT_MAX_DELAY = duct_len;
+assert_eq(duct_refused, GH_ERR_SYNTHESIS_FAILED, "refused duct line reaches the caller as an error");
+assert_eq(ghurni_is_err(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR)), 0, "the real length still builds");
+
 var rc = assert_summary();
 syscall(60, rc);

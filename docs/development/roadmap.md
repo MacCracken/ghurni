@@ -39,6 +39,7 @@ the index. Everything below is closed — nothing here is outstanding work.
 | `2.6.0` | Arc 3c "Radiation Paths" | the exhaust becomes a quarter-wave waveguide and the combustion pulse train goes down it; cyrius 6.5.36 | [ADR-010](../architecture/adr-010-radiation-paths.md) |
 | `2.6.2` | — | cyrius 6.6.20 and the naad 2.2.5 set; no golden moved, and audio differs by at most 8.9e-16; 28 doc comments; envelopes 12-32% slower because `f64_pow` got correct | CHANGELOG |
 | `2.7.0` | — | cyrius 6.7.9 and the naad 2.3.0 set; audio byte-identical to 2.6.2; ghurni's own set now needs cyrius 6.7.2 or later | CHANGELOG |
+| `2.7.1` | — | cyrius 6.7.18 and the newest tag of every dep; audio byte-identical to 2.7.0, floor stays 6.7.2; most synths 5-10% faster through naad; duct delay line now checked | CHANGELOG |
 
 **Three corrections worth remembering**, because each was a claim this project
 made and later disproved with its own measurements:

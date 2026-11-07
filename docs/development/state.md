@@ -5,12 +5,12 @@
 
 ## Version
 
-**2.7.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
+**2.7.1** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
 (ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007), a
 control surface that no longer lies (ADR-008), stems deferred on measurement with
 convolution closed (ADR-009), and a quarter-wave exhaust waveguide (ADR-010).
 Dependency set:
-cyrius 6.7.9 · naad 2.3.0 · hisab 3.4.0 · goonj 2.1.0 · sakshi 2.5.8.
+cyrius 6.7.18 · naad 2.3.3 · hisab 3.4.1 · goonj 2.3.1 · sakshi 2.5.10.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 
@@ -21,7 +21,7 @@ and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 non-naad fallback path, which ADR-004 drops. All 44 Rust integration tests are
 reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green.
 
-## Modules (`src/*.cyr`, 19 modules, 4,144 lines)
+## Modules (`src/*.cyr`, 19 modules, 4,148 lines)
 
 | Layer | Modules |
 |-------|---------|
@@ -30,9 +30,9 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (4,134 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (4,138 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 10 suites, 640 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 10 suites, 642 assertions, 0 failures)
 
 > Count with `cyrius test 2>&1 | grep -E '^[0-9]+ passed, [0-9]+ failed \([0-9]+ total\)$'`
 > and sum the leading numbers. Do NOT sum every `N passed` line: the run's final

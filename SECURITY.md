@@ -73,13 +73,13 @@ pinned to a git tag and recorded with its commit hash in `cyrius.lock`.
 
 | Dependency | Version | Purpose | Risk |
 |------------|---------|---------|------|
-| [naad](https://github.com/MacCracken/naad) | 2.3.0 | DSP primitives (oscillators, filters, noise, additive) | Same ecosystem; the only backend |
-| [hisab](https://github.com/MacCracken/hisab) | 3.4.0 | Math / geometry, referenced by naad's bundle | Same ecosystem; pure computation |
-| [goonj](https://github.com/MacCracken/goonj) | 2.1.0 | Acoustics, referenced by naad's bundle | Same ecosystem; pure computation |
-| [sakshi](https://github.com/MacCracken/sakshi) | 2.5.8 | Structured logging | Same ecosystem; writes to stderr |
-| cyrius toolchain | 6.7.9 | Compiler, pinned in `[package].cyrius` | Build-time |
+| [naad](https://github.com/MacCracken/naad) | 2.3.3 | DSP primitives (oscillators, filters, noise, additive) | Same ecosystem; the only backend |
+| [hisab](https://github.com/MacCracken/hisab) | 3.4.1 | Math / geometry, referenced by naad's bundle | Same ecosystem; pure computation |
+| [goonj](https://github.com/MacCracken/goonj) | 2.3.1 | Acoustics, referenced by naad's bundle | Same ecosystem; pure computation |
+| [sakshi](https://github.com/MacCracken/sakshi) | 2.5.10 | Structured logging | Same ecosystem; writes to stderr |
+| cyrius toolchain | 6.7.18 | Compiler, pinned in `[package].cyrius` | Build-time |
 
-The pinned set is the one naad 2.3.0 itself pins, so the vendored bundles agree
+The pinned set is the one naad 2.3.3 itself pins, so the vendored bundles agree
 with what each was built against. `cyrius deps --verify` re-checks the recorded
 hashes.
 
@@ -88,5 +88,5 @@ hashes.
 > ~9 significant digits, which corrupted an audio constant in ghurni 2.0.0.
 > ghurni now stores such constants as IEEE-754 bit patterns so an older
 > consumer toolchain cannot reintroduce it, but consumers should still be on
-> cyrius ≥ 6.5.28. Building the pinned set above needs cyrius ≥ 6.7.2, because
-> sakshi 2.5.8 declares `const`; older toolchains fail at compile time.
+> cyrius ≥ 6.5.28. Building the pinned set above needs cyrius ≥ 6.7.2; older
+> toolchains fail at compile time.

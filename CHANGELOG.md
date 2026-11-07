@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2026-11-07
+
+Toolchain and dependency release, onto the newest tag of everything. `cyrius` 6.7.9 ->
+**6.7.18**, `naad` 2.3.0 -> **2.3.3**, `hisab` 3.4.0 -> **3.4.1**, `goonj` 2.1.0 ->
+**2.3.1**, `sakshi` 2.5.8 -> **2.5.10**, with bayan 1.5.13 -> 1.11.1 from the 6.7.18
+snapshot and ganita staying 1.2.15. Each is its project's newest tag, and they agree:
+naad 2.3.3 pins the rest, and hisab 3.4.1 and goonj 2.3.1 pin exactly 6.7.18.
+
+**Rendered audio is byte-identical to 2.7.0, and the toolchain floor stays cyrius 6.7.2.**
+
+### Fixed
+
+- **`ghurni_engine_new` kept a refused delay line as its exhaust duct.** `delay_line_new`
+  can return a negative code since naad 2.3.2, and it was the one fallible naad
+  constructor there left unchecked. Unreachable at the constant 2048-sample length, so
+  no caller could hit it, but the code would have been stored as a pointer and faulted
+  on render. It now returns `GH_ERR_SYNTHESIS_FAILED`. `tests/hardening.tcyr` forces the
+  refusal, and that test fails with the guard removed.
+
+### Changed
+
+- **Most synths got faster without a line changing here.** naad 2.3.2 sped up
+  `additive_next_sample`, 183 -> 154 ns for three partials. `pow` did not change, so
+  the paths it dominates stay flat. Median of 3 alternating runs, 0-3% spread:
+
+  | Path | 6.7.9 | 6.7.18 | Change |
+  |---|---|---|---|
+  | `motor` 0.05 s | 600 us | 537 us | -10% |
+  | `transmission` 0.05 s | 650 us | 584 us | -10% |
+  | `turbine` 0.05 s | 804 us | 724 us | -10% |
+  | `gear` 0.05 s | 1,121 us | 1,039 us | -7% |
+  | `belt_drive` 2,205 samples | 533 us | 499 us | -6% |
+  | `mixer` 4 channels, 512 | 998 us | 942 us | -5.5% |
+
+  `engine`, `clock` and `forced_induction` are flat. These numbers do not use naad
+  2.3.3's new block forms: ghurni still calls the per-sample paths.
+- Compiled binaries grow about 41% for the same program, 2.71 MB to 3.82 MB. naad
+  records `dist/hisab.cyr` growing from 2.64 to 3.66 MB in this move.
+- `lib/` gains `simd`, `slice` and `unicode/`, pulled in by bayan 1.11 and goonj, and
+  loses `hashmap_fast`, which `lib sync` vendored through 6.7.9 and 6.7.18 no longer
+  counts in the declared footprint.
+
+### Verified
+
+- **Audio is byte-identical to 2.7.0** over the same sweep, 715 streams and 2,227,790
+  samples, with the duct guard in place.
+- **The language changes do not reach ghurni's results.** naad's review of 6.7.10 to
+  6.7.18 does not carry over, because it rests on naad having no float literals or type
+  annotations and ghurni has both. The sweep is the evidence here: every exercised path
+  renders the same bits, and everything compiles unchanged.
+- **The extreme-input sweep is unchanged.** All 294 cases behave the same on both
+  toolchains, output included, with no abort or hang and the same 113 clean refusals.
+- `lib/` is re-vendored from a regenerated lock: all 49 files are byte-identical to the
+  6.7.18 snapshot or to their tag's `dist/`, the four commit pins match origin, and `cyrius
+  deps --locked` confirms `lib/` and the lock are what the tags resolve.
+- **The toolchain floor is re-measured, not inherited.** Resolving the whole 2.7.1 set
+  from scratch builds and runs on 6.7.2, 6.7.3, 6.7.9, 6.7.17 and 6.7.18. 6.7.1 and 6.6.20
+  fail at compile time.
+- **The bundle still compiles for older consumers.** It builds and passes smoke under
+  6.6.3, the oldest toolchain carrying it (jalwa, through dhvani). dhvani's own
+  `tests/mechanical.tcyr` passes 10 of 10 on its 6.6.10 pin with this bundle resolved
+  through `cyrius deps`, on naad 2.2.4 / hisab 2.11.2.
+- `cyrius audit`, `cyrius fuzz` (1,628 checks), `cyrius fuzz --poison`, `cyrius deny`,
+  `cyrius distlib --check`, `cyrius coverage --min 65` and all five examples are clean.
+  Tests: **10 suites / 642 assertions**.
+
 ## [2.7.0] - 2026-11-07
 
 Onto the cyrius 6.7.x language minor. Toolchain and dependency release. `cyrius` 6.6.20
