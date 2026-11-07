@@ -22,7 +22,8 @@
 #   noise_new never errors, so its return is not checked.
 # - process_block sets the hum fundamental to min(em_freq, nyquist/3); the
 #   Rust ignored additive.set_fundamental's Result (`let _ = ...`), and so do
-#   we -- at rpm=0 em_freq is 0 (or the min may go negative), which is fine.
+#   we. At rpm=0 em_freq is 0, which naad refuses, so the old fundamental stays;
+#   the loudness law silences it there, so that is fine.
 # - serde: Motor held opaque naad backend pointers; deep #[derive(Serialize)]
 #   is dropped (only MotorType roundtrips, via ghurni_motortype_name/_from_name
 #   below).
@@ -47,6 +48,7 @@ fn ghurni_motortype_name(t) {
 # motortype_from_name(s) -- GH_MOTOR_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_motortype_from_name(s) {
+    if (s < GHURNI_MIN_VALID_PTR) { return (0 - 1); }
     if (streq(s, "DcBrushed") == 1)   { return GH_MOTOR_DC_BRUSHED; }
     if (streq(s, "AcInduction") == 1) { return GH_MOTOR_AC_INDUCTION; }
     if (streq(s, "Brushless") == 1)   { return GH_MOTOR_BRUSHLESS; }
@@ -176,14 +178,10 @@ fn ghurni_motor_synthesize(self, rpm, load, duration) {
 # process_block(out) -- fill `out` (vec<f64>) with motor sound, DC-block, and
 # advance the sample counter.
 fn ghurni_motor_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     ghurni_motor_process_block_naad(self, out);
-    var db = GhMotor_dc_blocker(self);
     var n = vec_len(out);
-    var i = 0;
-    while (i < n) {
-        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
-        i = i + 1;
-    }
+    ghurni_dcblocker_process_buffer(GhMotor_dc_blocker(self), out);
     GhMotor_set_sample_position(self, GhMotor_sample_position(self) + n);
     return 0;
 }

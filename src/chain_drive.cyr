@@ -112,14 +112,11 @@ fn ghurni_chain_drive_synthesize(self, rpm, duration) {
 # process_block(out) -- fill `out` (vec<f64>) with chain drive sound, DC-block,
 # and advance the sample counter.
 fn ghurni_chain_drive_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     ghurni_chain_drive_process_block_naad(self, out);
     var db = GhChainDrive_dc_blocker(self);
+    ghurni_dcblocker_process_buffer(db, out);
     var n = vec_len(out);
-    var i = 0;
-    while (i < n) {
-        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
-        i = i + 1;
-    }
     GhChainDrive_set_sample_position(self, GhChainDrive_sample_position(self) + n);
     return 0;
 }
@@ -136,11 +133,25 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
     var impact_filter = GhChainDrive_impact_filter(self);
     var base_pos = GhChainDrive_sample_position(self);
 
+    var f60 = f64_from(60);
+    var teeth_f = f64_from(GhChainDrive_sprocket_teeth(self));
+    var links_f = f64_from(GhChainDrive_links(self));
+    var last_s = 0x7FF8000000000001;
+    var engage_freq = 0;
+    var engage_period = 0;
+    var lap_period = 0;
+    var ch_gain = 0;
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
         var smooth = ghurni_smooth_next_value(smooth_rpm);
-        var engage_freq = ghurni_chain_drive_engagement_frequency(self, smooth);
+        if (smooth != last_s) {
+            last_s = smooth;
+            engage_freq = f64_mul(f64_div(smooth, f60), teeth_f);
+            engage_period = f64_div(sr, engage_freq);
+            lap_period = f64_mul(engage_period, links_f);
+            ch_gain = ghurni_rpm_gain(smooth, GHURNI_REF_RPM_CHAIN);
+        }
 
         if (f64_lt(engage_freq, F64_ONE) == 1) {
             vec_set(out, i, 0);
@@ -148,7 +159,6 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
             continue;
         }
 
-        var engage_period = f64_div(sr, engage_freq);
         var abs_pos = f64_from(base_pos + i);
         var phase = f64_div(ghurni_fmod(abs_pos, engage_period), engage_period);
 
@@ -170,7 +180,6 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
         #     lap_freq = engage_freq / links
         # A shallow amplitude modulation at that rate is what makes the link
         # count audible, and it is the slow "wobble" a worn chain has.
-        var lap_period = f64_mul(engage_period, f64_from(GhChainDrive_links(self)));
         var lap_phase = f64_div(ghurni_fmod(abs_pos, lap_period), lap_period);
         var lap_mod = f64_add(0.85, f64_mul(0.15, f64_cos(f64_mul(F64_TAU, lap_phase))));
 
@@ -178,7 +187,7 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
         # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
         # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
         var ch_sum = f64_mul(f64_add(impact, rattle), lap_mod);
-        vec_set(out, i, f64_mul(ch_sum, ghurni_rpm_gain(smooth, GHURNI_REF_RPM_CHAIN)));
+        vec_set(out, i, f64_mul(ch_sum, ch_gain));
         i = i + 1;
     }
     return 0;

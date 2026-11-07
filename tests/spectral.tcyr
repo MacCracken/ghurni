@@ -43,6 +43,12 @@ include "src/presets.cyr"
 
 alloc_init();
 
+# assert_gt and assert_lt compare raw i64s, so on an f64 a NaN passes whichever one
+# its sign bit favours: a STALL rendering 44100 NaN samples passed "kills the engine".
+fn assert_f_gt(a, b, name) { return assert_eq(f64_gt(a, b), 1, name); }
+# assert_f_lt(a, b, name) -- assert a < b as f64s.
+fn assert_f_lt(a, b, name) { return assert_eq(f64_lt(a, b), 1, name); }
+
 var SR = f64_from(44100);
 var SPEC_N = 8192;
 
@@ -111,7 +117,7 @@ ghurni_gear_process_block(g, gw);
 var gb = spec_block();
 ghurni_gear_process_block(g, gb);
 # Guard against a vacuous compare: there must BE a peak to find.
-assert_gt(spec_peak_mag(gb), 0.0001, "gear produced a real spectral peak");
+assert_f_gt(spec_peak_mag(gb), 0.0001, "gear produced a real spectral peak");
 assert_peak_at(gb, f64_from(800), "gear 32t @1500 rpm peaks at 800 Hz");
 # Frequency must SCALE with rpm -- this is the thesis, stated as an assertion.
 ghurni_gear_set_rpm(g, f64_from(3000));
@@ -138,7 +144,7 @@ var mw = spec_block();
 ghurni_motor_process_block(m, mw);
 var mb = spec_block();
 ghurni_motor_process_block(m, mb);
-assert_gt(spec_peak_mag(mb), 0.0001, "motor produced a real spectral peak");
+assert_f_gt(spec_peak_mag(mb), 0.0001, "motor produced a real spectral peak");
 assert_peak_at(mb, f64_from(200), "motor 8-pole @1500 rpm peaks at 200 Hz");
 # 4 poles at the same rpm must halve it.
 var m4 = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR);
@@ -158,7 +164,7 @@ var tw = spec_block();
 ghurni_turbine_process_block(t, tw);
 var tb = spec_block();
 ghurni_turbine_process_block(t, tb);
-assert_gt(spec_peak_mag(tb), 0.0001, "turbine produced a real spectral peak");
+assert_f_gt(spec_peak_mag(tb), 0.0001, "turbine produced a real spectral peak");
 assert_peak_at(tb, f64_from(1600), "turbine 12-blade @8000 rpm peaks at 1600 Hz");
 # 3-blade propeller at the same rpm = 400 Hz.
 var t3 = ghurni_turbine_new(3, 0, SR);
@@ -180,7 +186,7 @@ var dw = spec_block();
 ghurni_differential_process_block(d, dw);
 var db = spec_block();
 ghurni_differential_process_block(d, db);
-assert_gt(spec_peak_mag(db), 0.0001, "differential produced a real spectral peak");
+assert_f_gt(spec_peak_mag(db), 0.0001, "differential produced a real spectral peak");
 assert_peak_at(db, f64_from(550), "differential 11-pinion @3000 rpm peaks at 550 Hz");
 var ring_bin = spec_bin_for(f64_from(2050));
 var got_bin = spec_peak_bin(db);
@@ -216,13 +222,12 @@ var h2_steel = gear_h2_ratio(GH_GEAR_STEEL);      # brightness 0.9
 var h2_brass = gear_h2_ratio(GH_GEAR_BRASS);      # brightness 0.7
 var h2_iron  = gear_h2_ratio(GH_GEAR_CAST_IRON);  # brightness 0.5
 var h2_nylon = gear_h2_ratio(GH_GEAR_NYLON);      # brightness 0.2
-assert_gt(h2_steel, 0.4, "steel gear has a strong 2nd harmonic (it is not a sine)");
-assert_lt(h2_steel, h2_steel + 1, "reference read succeeded");
+assert_f_gt(h2_steel, 0.4, "steel gear has a strong 2nd harmonic (it is not a sine)");
 # Strictly ordered by brightness -- this is the property that makes material audible.
-assert_lt(h2_brass, h2_steel, "brass is duller than steel");
-assert_lt(h2_iron, h2_brass, "cast iron is duller than brass");
-assert_lt(h2_nylon, h2_iron, "nylon is the dullest");
-assert_lt(h2_nylon, 0.2, "nylon is close to a pure sine");
+assert_f_lt(h2_brass, h2_steel, "brass is duller than steel");
+assert_f_lt(h2_iron, h2_brass, "cast iron is duller than brass");
+assert_f_lt(h2_nylon, h2_iron, "nylon is the dullest");
+assert_f_lt(h2_nylon, 0.2, "nylon is close to a pure sine");
 # The FUNDAMENTAL must not move -- this is a timbre change, not a pitch change.
 var gsteel = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
 ghurni_gear_set_rpm(gsteel, f64_from(1500));
@@ -244,7 +249,7 @@ var hw = spec_block();
 ghurni_engine_process_block(hy, hw);
 var hb = spec_block();
 ghurni_engine_process_block(hy, hb);
-assert_gt(spec_peak_mag(hb), 0.0001, "hybrid produces a real spectral peak");
+assert_f_gt(spec_peak_mag(hb), 0.0001, "hybrid produces a real spectral peak");
 assert_peak_at(hb, f64_from(400), "hybrid @3000 rpm peaks at the 400 Hz EM whine");
 var hy2 = ghurni_engine_new(GH_ENGINE_HYBRID, 4, SR);
 ghurni_engine_set_rpm(hy2, f64_from(1500));
@@ -287,8 +292,8 @@ assert_gt(sc_bin, 0, "supercharger has a real peak");
 assert_gt(turbo_bin, sc_bin, "turbo whines HIGHER than a supercharger");
 # The ratio must be the blade:lobe ratio, 10/3 = 3.33, not merely "different".
 var fi_ratio = f64_div(f64_from(turbo_bin), f64_from(sc_bin));
-assert_gt(fi_ratio, f64_from(3), "turbo/supercharger ratio is about 10/3");
-assert_lt(fi_ratio, f64_from(4), "turbo/supercharger ratio is about 10/3");
+assert_f_gt(fi_ratio, f64_from(3), "turbo/supercharger ratio is about 10/3");
+assert_f_lt(fi_ratio, f64_from(4), "turbo/supercharger ratio is about 10/3");
 
 # ================================================================
 test_group("load tilts the SPECTRUM, not just the level (ADR-007)");
@@ -326,9 +331,9 @@ fn motor_centroid_at(load) {
 var mc_lo = motor_centroid_at(0.1);
 var mc_mid = motor_centroid_at(0.5);
 var mc_hi = motor_centroid_at(0.9);
-assert_gt(mc_lo, f64_from(500), "motor centroid is a real measurement (not a vacuous 0)");
-assert_lt(mc_lo, mc_mid, "motor: more load is BRIGHTER (0.1 -> 0.5)");
-assert_lt(mc_mid, mc_hi, "motor: more load is BRIGHTER (0.5 -> 0.9)");
+assert_f_gt(mc_lo, f64_from(500), "motor centroid is a real measurement (not a vacuous 0)");
+assert_f_lt(mc_lo, mc_mid, "motor: more load is BRIGHTER (0.1 -> 0.5)");
+assert_f_lt(mc_mid, mc_hi, "motor: more load is BRIGHTER (0.5 -> 0.9)");
 
 # engine centroid at — helper used by spectral.tcyr.
 fn engine_centroid_at(load) {
@@ -343,12 +348,12 @@ fn engine_centroid_at(load) {
 }
 var ec_lo = engine_centroid_at(0.1);
 var ec_hi = engine_centroid_at(0.9);
-assert_gt(ec_lo, f64_from(500), "engine centroid is a real measurement");
-assert_lt(ec_lo, ec_hi, "engine: more load is BRIGHTER, not duller");
+assert_f_gt(ec_lo, f64_from(500), "engine centroid is a real measurement");
+assert_f_lt(ec_lo, ec_hi, "engine: more load is BRIGHTER, not duller");
 
 # The tilt is exactly 1.0 at zero load, so an unloaded machine is untouched.
 assert_eq(ghurni_load_tilt(0), F64_ONE, "tilt(0) = 1.0 exactly -- unloaded audio is unchanged");
-assert_gt(ghurni_load_tilt(F64_ONE), F64_ONE, "tilt rises with load");
+assert_f_gt(ghurni_load_tilt(F64_ONE), F64_ONE, "tilt rises with load");
 assert_eq(ghurni_load_tilt(f64_div(0, 0)), F64_ONE, "NaN load -> tilt 1.0, never propagates");
 assert_eq(ghurni_load_tilt_k(0, f64_from(3)), F64_ONE, "tilt_k(0, k) = 1.0 for any k");
 
@@ -370,10 +375,10 @@ fn eng_centroid(ty) {
 }
 var c_diesel = eng_centroid(GH_ENGINE_DIESEL);
 var c_petrol = eng_centroid(GH_ENGINE_GASOLINE);
-assert_gt(c_petrol, f64_from(500), "gasoline centroid is a real measurement");
-assert_gt(c_diesel, c_petrol, "diesel is BRIGHTER than gasoline at the same rpm and load");
+assert_f_gt(c_petrol, f64_from(500), "gasoline centroid is a real measurement");
+assert_f_gt(c_diesel, c_petrol, "diesel is BRIGHTER than gasoline at the same rpm and load");
 # ...and by a margin that a mere resonance retune could not produce.
-assert_gt(f64_div(c_diesel, c_petrol), 1.05, "the diesel margin is substantial, not incidental");
+assert_f_gt(f64_div(c_diesel, c_petrol), 1.05, "the diesel margin is substantial, not incidental");
 
 # ================================================================
 test_group("EVERY load-taking synth gets brighter under load (ADR-007/ADR-009)");
@@ -406,9 +411,9 @@ fn tx_centroid_at(load) {
 var txc_lo = tx_centroid_at(0.1);
 var txc_mid = tx_centroid_at(0.5);
 var txc_hi = tx_centroid_at(0.9);
-assert_gt(txc_lo, f64_from(500), "transmission centroid is a real measurement");
-assert_lt(txc_lo, txc_mid, "transmission: more load is BRIGHTER (0.1 -> 0.5)");
-assert_lt(txc_mid, txc_hi, "transmission: more load is BRIGHTER (0.5 -> 0.9)");
+assert_f_gt(txc_lo, f64_from(500), "transmission centroid is a real measurement");
+assert_f_lt(txc_lo, txc_mid, "transmission: more load is BRIGHTER (0.1 -> 0.5)");
+assert_f_lt(txc_mid, txc_hi, "transmission: more load is BRIGHTER (0.5 -> 0.9)");
 
 # gear centroid at — helper used by spectral.tcyr.
 fn gear_centroid_at(load) {
@@ -419,8 +424,8 @@ fn gear_centroid_at(load) {
 }
 var gc_lo = gear_centroid_at(0.1);
 var gc_hi = gear_centroid_at(0.9);
-assert_gt(gc_lo, f64_from(200), "gear centroid is a real measurement");
-assert_lt(gc_lo, gc_hi, "gear: more load is BRIGHTER");
+assert_f_gt(gc_lo, f64_from(200), "gear centroid is a real measurement");
+assert_f_lt(gc_lo, gc_hi, "gear: more load is BRIGHTER");
 
 # diff centroid at — helper used by spectral.tcyr.
 fn diff_centroid_at(load) {
@@ -431,8 +436,8 @@ fn diff_centroid_at(load) {
 }
 var dc_lo = diff_centroid_at(0.1);
 var dc_hi = diff_centroid_at(0.9);
-assert_gt(dc_lo, f64_from(200), "differential centroid is a real measurement");
-assert_lt(dc_lo, dc_hi, "differential: more load is BRIGHTER");
+assert_f_gt(dc_lo, f64_from(200), "differential centroid is a real measurement");
+assert_f_lt(dc_lo, dc_hi, "differential: more load is BRIGHTER");
 
 # fi centroid at — helper used by spectral.tcyr.
 fn fi_centroid_at(load) {
@@ -443,8 +448,8 @@ fn fi_centroid_at(load) {
 }
 var fc_lo = fi_centroid_at(0.1);
 var fc_hi = fi_centroid_at(0.9);
-assert_gt(fc_lo, f64_from(200), "forced_induction centroid is a real measurement");
-assert_lt(fc_lo, fc_hi, "forced_induction: more load is BRIGHTER");
+assert_f_gt(fc_lo, f64_from(200), "forced_induction centroid is a real measurement");
+assert_f_lt(fc_lo, fc_hi, "forced_induction: more load is BRIGHTER");
 
 # ================================================================
 test_group("the exhaust duct is a QUARTER-WAVE PIPE, not a tone control (ADR-010)");
@@ -501,10 +506,10 @@ var dm_at200_when200 = duct_band(dm_200, f64_from(185), f64_from(215));
 var dm_at200_when400 = duct_band(dm_400, f64_from(185), f64_from(215));
 var dm_at400_when200 = duct_band(dm_200, f64_from(385), f64_from(415));
 var dm_at400_when400 = duct_band(dm_400, f64_from(385), f64_from(415));
-assert_gt(dm_at200_when200, 0, "band energy is a real measurement");
-assert_gt(dm_at200_when200, dm_at200_when400,
+assert_f_gt(dm_at200_when200, 0, "band energy is a real measurement");
+assert_f_gt(dm_at200_when200, dm_at200_when400,
   "200 Hz band is louder when the pipe IS tuned to 200 Hz");
-assert_gt(dm_at400_when400, dm_at400_when200,
+assert_f_gt(dm_at400_when400, dm_at400_when200,
   "400 Hz band is louder when the pipe IS tuned to 400 Hz");
 
 # --- 2. the series is ODD ---------------------------------------------------
@@ -515,8 +520,8 @@ assert_gt(dm_at400_when400, dm_at400_when200,
 var dm_250 = duct_render(f64_from(3300), f64_from(250));
 var dm_even = duct_band(dm_250, f64_from(480), f64_from(520));
 var dm_odd = duct_band(dm_250, f64_from(730), f64_from(770));
-assert_gt(dm_even, 0, "even-multiple band is a real measurement");
-assert_gt(dm_odd, dm_even,
+assert_f_gt(dm_even, 0, "even-multiple band is a real measurement");
+assert_f_gt(dm_odd, dm_even,
   "3*f1 is louder than 2*f1 -- the ODD series of a closed-open pipe");
 
 # --- 3. it booms where the physics says -------------------------------------
@@ -532,13 +537,13 @@ fn duct_mode_share(rpm_v) {
 }
 var dm_on = duct_mode_share(f64_from(2300));   # harmonic 3 ON the mode
 var dm_off = duct_mode_share(f64_from(2000));  # between harmonics
-assert_gt(dm_on, 0, "mode-band share is a real measurement");
+assert_f_gt(dm_on, 0, "mode-band share is a real measurement");
 # The bar is 1.6, chosen to DISCRIMINATE rather than merely to be true. Measured:
 # 2.5.1's bandpass gives 1.318 and the 2.6.0 duct gives 1.937, so a bare
 # "on > off" assertion passes on BOTH -- the source's own firing harmonic lands
 # on 230 Hz at 2300 rpm whether or not a pipe exists. Only the DEPTH of the boom
 # separates them, and 1.6 sits between the two with margin on each side.
-assert_gt(f64_div(dm_on, dm_off), 1.6,
+assert_f_gt(f64_div(dm_on, dm_off), 1.6,
   "the pipe BOOMS at 2300 rpm (firing harmonic 3 on the 230 Hz mode) -- and deeper than a bandpass can");
 
 var rc = assert_summary();

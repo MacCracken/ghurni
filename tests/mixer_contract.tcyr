@@ -1,0 +1,193 @@
+# mixer_contract.tcyr -- what the mixer must do to the audio (2.7.2).
+#
+# Before this suite, deleting all of ghurni_mixer_set_rpm, ignoring every gain, or
+# replacing the sum with an overwrite all stayed green: tests/mixer.tcyr only
+# checked that something finite came out. These compare mixer output, bit for bit,
+# against the same synths rendered alone.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+var SR = f64_from(44100);
+# zeros(n) -- a vec of n zero samples.
+fn zeros(n) { var v = vec_new(); var i = 0; while (i < n) { vec_push(v, 0); i = i + 1; } return v; }
+# first_diff(a, b) -- index of the first sample that differs, or -1.
+fn first_diff(a, b) {
+    var n = vec_len(a); var i = 0;
+    while (i < n) { if (vec_get(a, i) != vec_get(b, i)) { return i; } i = i + 1; }
+    return 0 - 1;
+}
+# solo_gear(rpm) -- a steel gear at rpm, rendered outside any mixer.
+fn solo_gear(rpm) { var g = ghurni_gear_new(32, GH_GEAR_STEEL, SR); ghurni_gear_set_rpm(g, rpm); return g; }
+# solo_motor(rpm) -- a brushless motor at rpm, rendered outside any mixer.
+fn solo_motor(rpm) { var g = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR); ghurni_motor_set_rpm(g, rpm); return g; }
+# solo_render(kind, s, n) -- n samples of one synth through the tag dispatcher.
+fn solo_render(kind, s, n) { var v = zeros(n); ghurni_synth_process_block(kind, s, v); return v; }
+# two(rpm) -- a mixer holding a gear and a motor at fixed gains.
+fn two(rpm) {
+    var m = ghurni_mixer_new();
+    ghurni_mixer_add_channel(m, "g", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+    ghurni_mixer_add_channel(m, "m", GH_KIND_MOTOR, ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR));
+    ghurni_mixer_set_rpm(m, rpm);
+    ghurni_mixer_set_channel_gain(m, 0, 0.25);
+    ghurni_mixer_set_channel_gain(m, 1, 0.5);
+    ghurni_mixer_set_master_gain(m, 0.5);
+    return m;
+}
+
+test_group("mono is the gain-weighted sum of independently rendered channels");
+var RPM = f64_from(2000);
+var a = solo_render(GH_KIND_GEAR, solo_gear(RPM), 512);
+var b = solo_render(GH_KIND_MOTOR, solo_motor(RPM), 512);
+var m1 = two(RPM);
+var got = zeros(512);
+ghurni_mixer_process_block(m1, got);
+var want = zeros(512);
+var i = 0;
+while (i < 512) {
+    vec_set(want, i, f64_add(f64_mul(vec_get(a, i), f64_mul(0.25, 0.5)), f64_mul(vec_get(b, i), f64_mul(0.5, 0.5))));
+    i = i + 1;
+}
+assert_eq(first_diff(got, want), 0 - 1, "mono == g0*m*a + g1*m*b, bit for bit, at the broadcast rpm");
+
+test_group("stereo is the same sum through the pan law");
+var m2 = two(RPM);
+ghurni_mixer_set_channel_pan(m2, 0, f64_neg(0.5));
+ghurni_mixer_set_channel_pan(m2, 1, 0.5);
+var l = zeros(512); var r = zeros(512);
+ghurni_mixer_process_block_stereo(m2, l, r);
+var ang0 = f64_mul(0.25, F64_PI_2);
+var ang1 = f64_mul(0.75, F64_PI_2);
+var wl = zeros(512); var wr = zeros(512);
+var g0 = f64_mul(0.25, 0.5);
+var g1 = f64_mul(0.5, 0.5);
+i = 0;
+while (i < 512) {
+    var wl_a = f64_mul(vec_get(a, i), f64_mul(f64_cos(ang0), g0));
+    var wl_b = f64_mul(vec_get(b, i), f64_mul(f64_cos(ang1), g1));
+    vec_set(wl, i, f64_add(wl_a, wl_b));
+    var wr_a = f64_mul(vec_get(a, i), f64_mul(f64_sin(ang0), g0));
+    var wr_b = f64_mul(vec_get(b, i), f64_mul(f64_sin(ang1), g1));
+    vec_set(wr, i, f64_add(wr_a, wr_b));
+    i = i + 1;
+}
+assert_eq(first_diff(l, wl), 0 - 1, "left == pan-law sum");
+assert_eq(first_diff(r, wr), 0 - 1, "right == pan-law sum");
+
+test_group("mute applies to stereo too");
+var m3 = two(RPM);
+ghurni_mixer_set_channel_muted(m3, 1, 1);
+ghurni_mixer_set_channel_pan(m3, 0, f64_neg(F64_ONE));
+ghurni_mixer_process_block_stereo(m3, l, r);
+i = 0;
+var only = zeros(512);
+while (i < 512) { vec_set(only, i, f64_mul(vec_get(a, i), g0)); i = i + 1; }
+assert_eq(first_diff(l, only), 0 - 1, "muted channel absent from stereo");
+
+test_group("new mixer + new channel defaults");
+var m4 = ghurni_mixer_new();
+assert_eq(GhMixer_master_gain(m4), F64_ONE, "master defaults to 1.0");
+ghurni_mixer_add_channel(m4, "g", GH_KIND_GEAR, solo_gear(RPM));
+var ch4 = vec_get(GhMixer_channels(m4), 0);
+assert_eq(GhMixerChannel_gain(ch4), F64_ONE, "gain defaults to 1.0");
+assert_eq(GhMixerChannel_pan(ch4), 0, "pan defaults to centre");
+assert_eq(GhMixerChannel_muted(ch4), 0, "unmuted by default");
+
+test_group("index == channel_count is out of range, on every setter");
+ghurni_mixer_set_channel_gain(m4, 1, 0.5);
+ghurni_mixer_set_channel_pan(m4, 1, 0.5);
+ghurni_mixer_set_channel_muted(m4, 1, 1);
+assert_eq(GhMixerChannel_gain(ch4), F64_ONE, "index == count did not write");
+assert_eq(GhMixerChannel_pan(ch4), 0, "index == count did not write");
+assert_eq(GhMixerChannel_muted(ch4), 0, "index == count did not write");
+
+test_group("set_rpm + rpm + sample_rate dispatch every kind");
+var ks = vec_new(); var ss = vec_new();
+var rat = vec_new(); vec_push(rat, f64_from(3)); vec_push(rat, f64_from(2));
+vec_push(ks, GH_KIND_ENGINE); vec_push(ss, ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR));
+vec_push(ks, GH_KIND_GEAR); vec_push(ss, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+vec_push(ks, GH_KIND_MOTOR); vec_push(ss, ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR));
+vec_push(ks, GH_KIND_TURBINE); vec_push(ss, ghurni_turbine_new(12, f64_from(600), SR));
+vec_push(ks, GH_KIND_TRANSMISSION); vec_push(ss, ghurni_transmission_new(rat, 24, SR));
+vec_push(ks, GH_KIND_DIFFERENTIAL); vec_push(ss, ghurni_differential_new(41, 11, SR));
+vec_push(ks, GH_KIND_FORCED_INDUCTION);
+vec_push(ss, ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.5, SR));
+vec_push(ks, GH_KIND_BELT_DRIVE); vec_push(ss, ghurni_belt_drive_new(f64_from(120), 0.6, SR));
+vec_push(ks, GH_KIND_CHAIN_DRIVE); vec_push(ss, ghurni_chain_drive_new(110, 16, SR));
+var mk = ghurni_mixer_new();
+i = 0;
+while (i < vec_len(ks)) { ghurni_mixer_add_channel(mk, "k", vec_get(ks, i), vec_get(ss, i)); i = i + 1; }
+ghurni_mixer_set_rpm(mk, f64_from(1234));
+i = 0;
+while (i < vec_len(ks)) {
+    assert_eq(
+        ghurni_synth_rpm(vec_get(ks, i), vec_get(ss, i)),
+        f64_from(1234),
+        "broadcast reached kind / rpm read back");
+    assert_eq(ghurni_synth_sample_rate(vec_get(ks, i), vec_get(ss, i)), SR, "sample_rate dispatched");
+    i = i + 1;
+}
+var ckk = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+assert_eq(ghurni_synth_sample_rate(GH_KIND_CLOCK, ckk), SR, "clock sample_rate dispatched");
+assert_gt(ghurni_synth_rpm(GH_KIND_CLOCK, ckk), 0, "clock rpm dispatched");
+
+test_group("shrinking the block renders exactly the shorter block");
+var m5 = ghurni_mixer_new();
+ghurni_mixer_add_channel(m5, "g", GH_KIND_GEAR, solo_gear(RPM));
+var long = zeros(1024);
+ghurni_gear_process_block(solo_gear(RPM), long);
+var b512 = zeros(512); var b256 = zeros(256); var c256 = zeros(256);
+ghurni_mixer_process_block(m5, b512);
+ghurni_mixer_process_block(m5, b256);
+ghurni_mixer_process_block(m5, c256);
+var rebuilt = zeros(1024);
+i = 0;
+while (i < 512) { vec_set(rebuilt, i, vec_get(b512, i)); i = i + 1; }
+i = 0;
+while (i < 256) { vec_set(rebuilt, 512 + i, vec_get(b256, i)); vec_set(rebuilt, 768 + i, vec_get(c256, i)); i = i + 1; }
+assert_eq(
+    first_diff(rebuilt, long),
+    0 - 1,
+    "512 + 256 + 256 == 1024: a short block advances the synth by exactly its length");
+
+test_group("mono clears a dirty caller buffer");
+var dirty = zeros(512);
+i = 0;
+while (i < 512) { vec_set(dirty, i, f64_from(7)); i = i + 1; }
+var m6 = two(RPM);
+ghurni_mixer_process_block(m6, dirty);
+assert_eq(first_diff(dirty, want), 0 - 1, "prior contents do not leak into the mix");
+
+test_group("gain setters floor at 0 and absorb NaN");
+var m7 = two(RPM);
+ghurni_mixer_set_master_gain(m7, f64_neg(F64_ONE));
+assert_eq(GhMixer_master_gain(m7), 0, "negative master floors at 0");
+ghurni_mixer_set_master_gain(m7, 0.5);
+ghurni_mixer_set_master_gain(m7, f64_div(0, 0));
+assert_eq(GhMixer_master_gain(m7), 0, "NaN master absorbed to 0");
+ghurni_mixer_set_channel_gain(m7, 0, f64_div(0, 0));
+assert_eq(GhMixerChannel_gain(vec_get(GhMixer_channels(m7), 0)), 0, "NaN channel gain absorbed to 0");
+
+test_group("presets propagate a failed constructor");
+assert_eq(ghurni_preset_v8_muscle_car(0), GH_ERR_INVALID_PARAMETER, "v8 @ 0 Hz is an error");
+assert_eq(ghurni_preset_diesel_truck(0), GH_ERR_INVALID_PARAMETER, "diesel @ 0 Hz is an error");
+
+var rc = assert_summary();
+syscall(60, rc);

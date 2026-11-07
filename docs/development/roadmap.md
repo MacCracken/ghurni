@@ -1,213 +1,220 @@
 # ghurni Roadmap — 2.x
 
 Organised as **arcs**: each minor (`2.N.0`) is one themed body of work, and each
-carries a **patch line** (`2.N.x`) for the follow-up that predictably lands after
-it ships. Nothing here is scheduled by date; the ordering is by dependency.
+carries a **patch line** (`2.N.x`) for the follow-up that predictably lands after it.
+Nothing here is scheduled by date; the order is by dependency. Shipped work is not
+listed here: it lives in [`CHANGELOG.md`](../../CHANGELOG.md) and the
+[ADRs](../architecture/).
 
-**Semver contract for this project** — the spine of the whole plan:
+**Semver contract for this project**, the spine of the whole plan:
 
 | | Allowed | Forbidden |
 |---|---|---|
-| `2.0.x` **patch** | bug fixes, tests, docs, CI, release hygiene, internal perf proved bit-identical | any new public `ghurni_*` symbol; **any change to rendered audio** |
-| `2.N.0` **minor** | new synths, new public functions, new parameters, deliberate audio changes | breaking an existing signature |
+| `2.N.x` **patch** | bug fixes, tests, docs, CI, release hygiene, internal perf proved bit-identical | any new public `ghurni_*` function; **any change to rendered audio on valid input** |
+| `2.N.0` **minor** | new synths, new public functions, new parameters, deliberate audio changes | breaking an existing signature or the meaning of an argument |
+| `3.0.0` **major** | the backlog at the end of this file | — |
 
-> A deliberate audio change also needs an **ADR**, because it diverges from the
-> parity oracle (CLAUDE.md). Both 2.0.1 and 2.0.2 shipped audio changes inside a
-> patch — justified each time (a miscompiled constant; a collapsed noise seed),
-> but the rule was bent twice. From 2.0.3 on it is enforced: if `cyrius test`
-> golden checksums move, it is not a patch.
+> A deliberate audio change also needs an **ADR**. The gate is mechanical: if a
+> golden checksum in `tests/goldens.tcyr` moves, it is not a patch. Goldens truncate
+> to 1e-6, so a patch also states its raw-bit difference against the last release
+> ([toolchain guide](../guides/toolchain-bump.md) §3).
 
 ---
 
-## Shipped
+## Now: `2.7.2` — P(-1) sweep
 
-Full detail lives in [`CHANGELOG.md`](../../CHANGELOG.md) and the ADRs; this is
-the index. Everything below is closed — nothing here is outstanding work.
+**Audit, hardening, optimization, refactor, security sweep and repair.** Four
+independent audits by module cluster, plus mechanical sweeps: all-zero and hostile
+values through every public function, refused allocations, per-block leaks, long runs
+and 294 extreme inputs. Every repair keeps valid audio byte-identical to 2.7.1, and
+everything whose fix would change audio is scheduled below rather than fixed here.
+Full record in the [CHANGELOG](../../CHANGELOG.md).
 
-| release | arc | what it was | record |
-|---|---|---|---|
-| `2.0.1` | — | toolchain + dependency catch-up | CHANGELOG |
-| `2.0.2` | — | P-1 audit / hardening / security sweep | CHANGELOG |
-| `2.0.3` | Arc 0 "Pin the Oracle" | golden checksums, spectral assertions, the fuzz harness and the CI gate chain — the deck-clearing that made the oracle deletable and the audio arcs safe | CHANGELOG |
-| `2.0.4` | Arc 0b "Delete the Oracle" | `rust-old/` retired; the correctness bar moved to the frozen suite | [retirement doc](rust-old-retirement.md) |
-| `2.1.0` | Arc 1 "Rest State" | one shared RPM loudness law (`2r/(r+1)`), plus the sample-integrated combustion pulse that closed the resonant-RPM notch | [ADR-005](../architecture/adr-005-rpm-loudness-law.md) |
-| `2.2.0` | Arc 2 "Depth" | 3-partial mesh tone, HYBRID as a real electric drive, turbo/blower orders, audible chain links, tick/tock asymmetry | [ADR-006](../architecture/adr-006-acoustic-depth.md) |
-| `2.3.0` | Arc 2b "Depth II" | load tilts the spectrum instead of moving a fader; diesel injection clatter; differential ring-revolution modulation | [ADR-007](../architecture/adr-007-load-tilt-and-diesel.md) |
-| `2.4.0` | Arc 3 "Events & Control" | five dead `GH_EVENT_*` kinds made real, drivetrain load inputs, clock speed control, the missing `name`/`from_name` halves | [ADR-008](../architecture/adr-008-events-and-control.md) |
-| `2.5.0` | Arc 3b "Output Path" | stems **deferred on measurement** (the engine had nothing to split); convolution **closed** on ADR-002 scope; two dead-API defects fixed | [ADR-009](../architecture/adr-009-no-stems-yet.md) |
-| `2.5.1` | — | pulled naad 2.2.2 (its FFT convolution dropped its tail); corrected the assertion counts reported for 2.3.0/2.4.0/2.5.0 | CHANGELOG |
-| `2.6.0` | Arc 3c "Radiation Paths" | the exhaust becomes a quarter-wave waveguide and the combustion pulse train goes down it; cyrius 6.5.36 | [ADR-010](../architecture/adr-010-radiation-paths.md) |
-| `2.6.2` | — | cyrius 6.6.20 and the naad 2.2.5 set; no golden moved, and audio differs by at most 8.9e-16; 28 doc comments; envelopes 12-32% slower because `f64_pow` got correct | CHANGELOG |
-| `2.7.0` | — | cyrius 6.7.9 and the naad 2.3.0 set; audio byte-identical to 2.6.2; ghurni's own set now needs cyrius 6.7.2 or later | CHANGELOG |
-| `2.7.1` | — | cyrius 6.7.18 and the newest tag of every dep; audio byte-identical to 2.7.0, floor stays 6.7.2; most synths 5-10% faster through naad; duct delay line now checked | CHANGELOG |
+---
 
-**Three corrections worth remembering**, because each was a claim this project
-made and later disproved with its own measurements:
+## `2.8.0` "Phase Continuity"
 
-- **ADR-009's acceptance criterion is passed by a wire** (66.12% share, +0.743
-  autocorrelation with no delay, filter or resonance). It is a *routing* test and
-  must never be cited as evidence a radiation path exists. Corrected in ADR-010.
-- **ADR-009's tripwire never fired.** It was written so that a real duct would
-  break it; 2.6.0 built one and it still passed at −0.27 dB. A waveguide's
-  throughput is level-invariant under retuning — detuning a pipe moves its
-  *colour*, not its level. Retired and replaced.
-- **ADR-006 called stems "an API change, not a timbral one."** Exactly backwards,
-  and that single line routed the item through two wrong arcs before ADR-009
-  measured it.
+**Theme: the defects that a patch could not fix, because fixing them changes audio.**
+All found by the 2.7.2 sweep, three of them independently by more than one auditor.
+This comes first because it is correctness, and because every later arc builds on
+the phase model it replaces.
 
-### Closed out of the shipped arcs
+- [ ] **Integrate phase instead of deriving it from absolute position.** Modulation
+      phase is `position × current frequency`, so an RPM ramp moves it by an amount
+      that grows with stream age. Measured: a minute into a stream the engine's
+      firing slots change 3,462 times during a 200 ms ramp where 19 are due, the
+      chain's impact train runs 6x too fast, and the differential's warble reaches
+      96 Hz instead of 16. Same shape in `engine` (crank angle), `gear` (ring
+      envelope), `clock` (beat grid), `differential` (ring revolution), `chain_drive`
+      and `belt_drive`. Moves every engine golden, so it needs the ADR.
+- [ ] **Clock ticks have a duration, not a share of the beat.** Decay and the tick
+      windows scale with the beat, so slowing a clock stretches every tick: 15 ms at
+      8 Hz, 208 ms at 0.1 Hz. Bit-identical at each type's default rate.
+- [ ] **A misfire skips the firing, not one sample.** Today the flag clears after one
+      sample and the rest of the combustion window still fires.
+- [ ] **HYBRID STARTUP drives one synth at two pitches.** The starter whir and the
+      electric whine share `whine_synth`, which advances at the sum of both.
+- [ ] **Ramp the block-stepped terms.** Loudness, load and coast step at block edges
+      on the transmission and differential, and `belt_drive` takes raw rpm: a step to
+      rpm 0 drops 30 dB inside 1 ms.
+- [ ] **Partials survive low sample rates.** Gear, motor and turbine build their
+      additive synth at 100 Hz, so below a 612 Hz rate naad zeroes partials for good.
+- [ ] **A negative ratio is a reverse gear**, not a 1 Hz mesh. `f64_abs` in
+      `output_rpm`.
+- [ ] Refactors that need new names, which a patch cannot add: a shared zero-fill
+      helper for the ten `synthesize` loops, one channel loop for mono and stereo
+      mixing, and a table for the four tag dispatchers.
 
-- ~~12 compiled ELF binaries tracked in git~~ — untracked; `/build/` is in
-  `.gitignore` and `git ls-files build/` is empty.
-- ~~Source-body impulse responses need their own ADR~~ — **decided in ADR-009**:
-  keep the bandpass. ADR-002 forbids reverb (dhvani's) and spatialization
-  (goonj's), naad's type is a room model, cost is 21×–7161× a biquad, and
-  `cyrius distlib` concatenates `.cyr` **text** so the format cannot carry a
-  binary IR at all.
-- ~~Re-check the ADR-005 loudness law against the new duct~~ — **done during the
-  2.6.0 architecture choice**, and it decided it. The rejected inverting-comb
-  swung mono level −2.16 to +1.99 dB across 800–7000 rpm, which modulates the
-  loudness law; the shipped waveguide holds −0.13 to +0.78 dB.
+**Patch line `2.8.x`**: golden refreshes and tuning after the phase change.
 
-### Open patch line: `2.6.x`
+---
 
-The only patch line from a shipped arc with work still in it. Earlier ones
-(`2.1.x`–`2.5.x`) are closed.
+## `2.9.0` "Intake & Stems"
 
+**Theme: finish the radiation model, then hand out the lanes.** Carried from the old
+Arc 3d and the 2.6.x patch line.
+
+- [ ] **Intake duct**: Helmholtz plenum plus runner, to the same bar the exhaust
+      cleared. An airbox is a duct too; that is what airbox resonance is.
+- [ ] **Per-component stems**, keyed on radiation path, once there are two real lanes.
+      ADR-009's taxonomy is the starting point.
 - [ ] **Duct tuning per engine type**, and golden refreshes if it moves them.
-      `GHURNI_DUCT_RAD_HZ = 520` in particular is an argued value, not a measured
-      one — it is what makes the model read as an exhaust *system* near the
-      ground rather than a bare pipe in free field, and it costs ~4.5 dB in the
-      45–180 Hz bands. Reviewed by ear and accepted for 2.6.0; revisit with a
-      second opinion rather than a second measurement.
-- [ ] **Two-stroke expansion chamber** — characterised, not papered over. A
-      two-stroke's chamber is a divergent-then-convergent cone pair whose whole
-      purpose is a positive reflection followed by a negative one; the shipped
-      quarter-wave model is the wrong device for it, and the two-stroke misses
-      the ADR-009 share bar at 21.9%.
+      `GHURNI_DUCT_RAD_HZ = 520` is an argued value, not a measured one; revisit with
+      a second opinion rather than a second measurement.
+- [ ] **Two-stroke expansion chamber**. A divergent-then-convergent cone pair whose
+      purpose is a positive reflection followed by a negative one. The quarter-wave
+      model is the wrong device for it, and the two-stroke misses the ADR-009 share
+      bar at 21.9%.
+- [ ] Let the duct energy split (`GHURNI_DUCT_DRIVE` / `_STRUCT`) survive a release in
+      consumers' hands before an occlusion curve is built on it.
+
+**Patch line `2.9.x`**: stem-level tuning.
 
 ---
 
-## Arc 3d — `2.7.0` "Intake & Stems"
+## `2.10.0` "Throughput"
 
-**Theme: finish the radiation model, then hand out the lanes.**
+**Theme: take what naad 2.3.x offers, once consumers can follow.** Every item here
+raises the consumer floor to naad 2.3.3 and cyrius 6.7.18, which dhvani (on naad 2.2.4
+and cyrius 6.6.10) has not reached. Schedule it once it has.
 
-- [ ] **Intake duct** — Helmholtz plenum + runner, to the same bar the exhaust
-      cleared. An airbox is a duct too; that is what airbox resonance IS.
-- [ ] **Per-component stems**, keyed on radiation path, once there are two real
-      lanes. ADR-009's taxonomy is the starting point — it was the correct
-      definition applied to a model that could not feed it.
-- [ ] Let the duct energy split (`GHURNI_DUCT_DRIVE` / `_STRUCT`) survive one
-      release in consumers' hands before an occlusion curve is built on it.
+- [ ] **naad block forms**: `noise_fill_buffer`, `filter_biquad_process_buffer`,
+      `additive_fill_buffer` and `osc_fill_buffer`, wherever the noise draw order and
+      per-sample parameters allow a block. naad holds each to its per-sample path
+      bit for bit, so this is a speed change only, and must be proved so here too.
+- [ ] **Presized output buffers.** `synthesize` grows its result one `vec_push` at a
+      time, so 2,205 samples allocate 65 KB for 17 KB of audio. `naad_vec_zeros`
+      (naad 2.3.2) is the presized vec this was blocked on.
+- [ ] **Envelope cost.** `naad_db_to_amplitude` is `f64_pow` per sample in clock, gear
+      and engine, and `f64_pow` doubled at cyrius 6.6.10. Any replacement must hold
+      the goldens.
 
-**Patch line `2.7.x`** — stem-level tuning.
+---
+
+## `2.11.0` "Vehicle Contact"
+
+**Theme: the largest single source gap.** Deliberately after the loudness law and the
+fuzz harness, so a new synth does not inherit old problems on day one.
+
+- [ ] **Brake system**: pad contact, disc scrape, ABS pulsing. The old roadmap
+      under-scoped this to squeal only.
+- [ ] **Tyre and wheel contact**: the other half of the contact patch. Check the
+      ADR-002 line against garjan before starting, since surface interaction may be
+      shared.
+
+**Patch line `2.11.x`**: per-synth tuning.
 
 ---
 
-## Arc 4 — `2.8.0` "New Mechanisms"
+## `2.12.0` "Small Mechanisms"
 
-**Theme: breadth.** Deliberately last: a new synth built before Arc 1's loudness
-law and Arc 0's fuzz harness would inherit both problems on day one.
+Ranked by reuse.
 
-Ranked by what a consumer hits first. The old roadmap's five are re-scoped:
-
-- [ ] **Brake system** — the largest single source gap, and the old roadmap
-      under-scoped it to *squeal only*. Pad contact, disc scrape, ABS pulsing.
-- [ ] **Tyre / wheel contact** — the other half of the vehicle contact patch,
-      absent from code and roadmap alike. Check the ADR-002 line against garjan
-      before starting (surface interaction may be shared).
-- [ ] **Ratchet / pawl / detent click train** — highest reuse-per-line item in the
-      whole list, and on no roadmap. Feeds handbrakes, winches, gear selectors,
-      clockwork.
-- [ ] **Pneumatic release / valve exhaust** — outranks the old roadmap's impact
-      wrench, and `forced_induction`'s blow-off valve is already the primitive.
-- [ ] **Hydraulic actuator** — the old roadmap picked the *pump*; consumers reach
-      for the *actuator* (extend, stall, relief).
-- [ ] **Bearings — as a wear/defect modifier, not a standalone synth.** BPFO/BPFI/
-      BSF/FTF sidebands belong on top of an existing rotating source. The old
-      roadmap had this in the wrong section.
-- [ ] **Compressors** — reciprocating chug, rotary/screw whine. Keep; note this is
-      the one item that layering nearly solves already.
-- [ ] **Stepper motor** — a fifth motor family whose sound is categorically unlike
-      the four that ship.
-- [ ] **Turbine rotor slap and multi-spool** — moved here from Arc 2b in 2.3.0.
-      Helicopter blade slap is impulsive and multi-spool is a jet architecture;
-      both are new machines rather than a deeper turbine.
-- [ ] Weapon actions / rotary cannon — large genre, zero coverage. Check the
-      garjan boundary first (the *impact* is theirs; the *action* is ours).
-
-**Patch line `2.8.x`** — per-synth tuning for the new mechanisms.
+- [ ] **Ratchet, pawl and detent click train**: highest reuse per line in the list.
+      Feeds handbrakes, winches, gear selectors and clockwork.
+- [ ] **Pneumatic release and valve exhaust**: `forced_induction`'s blow-off valve is
+      already the primitive.
+- [ ] **Hydraulic actuator**: extend, stall and relief. The old roadmap picked the
+      pump; consumers reach for the actuator.
+- [ ] **Stepper motor**: a fifth motor family, categorically unlike the four that ship.
 
 ---
+
+## `2.13.0` "Machine Families"
+
+- [ ] **Bearings, as a wear and defect modifier** on an existing rotating source:
+      BPFO, BPFI, BSF and FTF sidebands. Not a standalone synth.
+- [ ] **Compressors**: reciprocating chug, rotary and screw whine. Layering nearly
+      solves this already.
+- [ ] **Turbine rotor slap and multi-spool**: helicopter blade slap is impulsive and
+      multi-spool is a jet architecture; both are new machines, not a deeper turbine.
+- [ ] **Weapon actions and rotary cannon**: a large genre with no coverage. The
+      impact is garjan's; the action is ours.
+
+---
+
+## `3.0.0` backlog
+
+Each of these changes an existing signature or the meaning of an argument, so none
+can go in a minor.
+
+- **GEAR_SHIFT numbering.** `from` treats 0 as neutral, but `to` is a 0-based index
+  into the ratios, so the documented `gear_shift(1, 2)` selects third gear, top gear
+  is unreachable by event, and "shift to neutral" selects first. Fixing `to` changes
+  what every existing call means.
+- **Accessor visibility.** `#derive(accessors)` setters are public API (ADR-009) and
+  bypass every validation a real setter does: `GhEngine_set_sample_rate(e, 0)` renders
+  NaN for good. Hiding them needs language support, and it breaks callers.
+- **Checked handles.** A synth method given a failed constructor's code faults at the
+  null page. Checking `self` everywhere is the ADR-004 caller contract today, and
+  typed handles would replace it.
+- **Rust's serde wire form.** The JSON codecs write `{"kind":5,...}` with raw f64 bit
+  patterns, not Rust's externally tagged form. Matching Rust changes the format.
+- **Mixer configuration serde.** Rust serialized a channel's name, gain, pan and mute;
+  the port dropped it, which ADR-004 records as a scope cut.
+- **Leftover public names**: the ten `*_process_block_naad` halves of the Rust feature
+  split, and `ghurni_map_naad_error`, which ignores its argument.
+
+---
+
+## Upstream
+
+- **cyrius `#derive(Serialize)` reads past the NUL** on an unterminated key: its key
+  scan is `while (load8(json + p) != 34)`. ghurni stopped using the derive in 2.7.2.
+  Filed with cyrius as
+  `docs/development/issues/2026-11-07-derive-serialize-key-scan-reads-past-nul.md`.
+  ghurni can go back to the derive once that ships, if the strict reader is kept for
+  its validation.
 
 ## Dropped
 
 Removed with reasons, so they are not re-proposed:
 
-- **Doppler wrapper** — ADR-002 assigns it to goonj, and the old roadmap line
-  already conceded "or defer to goonj". Dropped.
-- **Parameter automation curves** — ADR-002 puts RTPC mapping in dhvani/kiran.
-- **Per-sample accessor hoisting** — measured in 2.0.2 on belt_drive: bit-identical
-  and **no measurable time win**. Not worth scheduling.
-- **"Raise reference coverage" as a goal** — kept as a CI *ratchet*
-  (`cyrius coverage --min`), not a target. Coverage is a floor, and 2.0.2's
-  post-mortem is the standing proof that a green suite can pin nothing.
-- **`cyrius vet` UNTRUST on `dist/ghurni.cyr`** — structural (it is the project's
-  own generated bundle, not a `[deps]`-resolved one) and there is no trust-list
-  mechanism in the manifest. Not a defect.
+- **Doppler wrapper**: ADR-002 assigns it to goonj.
+- **Parameter automation curves**: ADR-002 puts RTPC mapping in dhvani and kiran.
+- **Per-sample accessor hoisting as its own goal**: measured in 2.0.2 on belt_drive
+  as no win. 2.7.2 hoisted where it was measured to pay, in the engine.
+- **"Raise reference coverage" as a goal**: kept as a CI ratchet
+  (`cyrius coverage --min`), not a target. A green suite can pin nothing.
+- **`cyrius vet` UNTRUST on `dist/ghurni.cyr`**: structural, since it is the project's
+  own generated bundle, and the manifest has no trust list.
+- **Allocation-failure handling**: decided in
+  [ADR-011](../architecture/adr-011-allocation-failure.md) as fail-stop, on measurement.
 
-## Blocked upstream — not in any arc
+## Standing notes
 
-- **Presized output buffers.** `*_synthesize` grows one `vec_push` at a time
-  (~2× heap waste). The stdlib has no `vec_with_capacity`; this wants an upstream
-  `vec` API, not a reach into vec internals.
-- **The allocation-failure contract.** 15 unguarded `alloc()` sites, and no
-  sibling library checks either. Wants an ecosystem-wide decision.
-
-## Architectural notes
-
-- `sample_position` is an `i64` sample counter — no practical overflow.
-- Deterministic output depends on naad's `NoiseGenerator` seeding. Seeds derive
-  from constructor parameters; if you add a synth, make sure every seeded
-  parameter actually **reaches** the seed with enough resolution to matter — a
-  bare `f64_to` of a sub-unity parameter truncates to a constant, which is the
-  defect fixed twice already (forced_induction, belt_drive).
-- `dist/ghurni.cyr` is compiled by the **consumer's** toolchain, so anything
-  sensitive to compiler behaviour (long float literals in particular) must be
-  written in a form an older toolchain cannot get wrong.
-- Adding a synth touches eight places: the module, `traits.cyr`, both mixer
-  dispatchers, `add_channel`'s range check, `cyrius.cyml [lib].modules`, the test
-  suite, and the bench. Worth writing down as a checklist before Arc 4.
-
----
-
-## Moving the cyrius pin to 6.6.6
-
-**Current pin: `cyrius = "6.6.3"`.** Nothing must change first — pin bump and rebuild.
-
-**What was checked** (19 `.cyr` under `src/`; vendored `lib/` excluded):
-
-- **Windows write corruption: not a ghurni exposure.** `O_APPEND` / `O_TRUNC` appear **33
-  times, all inside the vendored `lib/` fold, zero in `src/`**. ghurni opens no files —
-  no `file_open` / `sys_open` / `file_read_all` / `file_exists` call site in `src/`.
-- **Struct copies / by-value struct params: nothing to change.** ghurni declares **15
-  `Gh*` structs** (`GhEngine`, `GhTransmission`, `GhMixerChannel`, …) and **not one** is a
-  by-value fn parameter, a fn return type, or a `var x: GhT = …` declaration — all are
-  heap-offset layouts reached by pointer. The two mixer dispatchers and `add_channel` pass
-  handles, not values, so the new deep-copy semantics change nothing.
-- **Also clean:** no `async fn`, no `operator` fn, no SIMD-returning fn, no fn mixing pair
-  and scalar returns, no `var` inside a top-level block (zero top-level `{` / `if (` /
-  `while (` at column 0), no raw `SYS_STATFS`, no `lib/regression.cyr` consumer, no `vec_*`
-  of ghurni's own, no duplicate top-level global, no symlink in `lib/`.
-- **Platform:** CI is `ubuntu-latest` only, no `CYRIUS_TARGET_*` branch in `src/`.
-
-**What it gains:** 6.6.5's aggregate-layout fix (silently wrong since 5.8.17) and the
-corrected ENTRY stack bases, plus 6.6.6's nine new refusals. **Not** a gain here: 6.6.4's
-≥64 KB string-literal fix — ghurni's longest literal is 64 bytes (`src/dsp.cyr`), measured.
-
-**Verify after bumping:** `cyrius deps` → `cyrius build` → `cyrius test` → `cyrius bench`
-→ **regenerate `dist/ghurni.cyr`**. ⚠ The *"compiled by the consumer's toolchain"* note in
-the section above is the live constraint on this bump: verify the regenerated bundle still
-compiles under the **oldest** pin in ghurni's consumer set — long float literals in
-particular — before tagging, not just under 6.6.6. Add the bump to the eight-place
-"adding a synth" checklist's sibling list, since `cyrius.cyml` is one of the places it touches.
+- **Three corrections to remember before the stems arc**, each a claim this project
+  made and later disproved: ADR-009's acceptance criterion is passed by a wire, so it
+  must never be cited as evidence a radiation path exists; ADR-009's tripwire never
+  fired, because a waveguide's throughput is level-invariant under retuning; and
+  ADR-006 called stems "an API change, not a timbral one", which is exactly backwards.
+- `sample_position` is an `i64` sample counter, with no practical overflow.
+- Deterministic output depends on naad's `NoiseGenerator` seeding. Every seeded
+  parameter must reach the seed with enough resolution to matter, and seeds that add
+  terms can collide, as the integration guide records.
+- `dist/ghurni.cyr` is compiled by the **consumer's** toolchain, so anything sensitive
+  to compiler behaviour, long float literals in particular, must be written in a form
+  an older toolchain cannot get wrong. Check the bundle on the oldest consumer pin
+  before every release.
+- Adding a synth: [docs/guides/adding-a-synth.md](../guides/adding-a-synth.md).
+  Moving the toolchain pin: [docs/guides/toolchain-bump.md](../guides/toolchain-bump.md).

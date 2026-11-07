@@ -2,7 +2,7 @@
 
 **ghurni** (Sanskrit: घूर्णि — rotation / spinning) — Mechanical sound synthesis for AGNOS, written in [Cyrius](https://github.com/MacCracken/cyrius).
 
-Procedural synthesis of engines, gears, motors, turbines, clocks, transmissions, differentials, forced induction, and belt/chain drives. Every sound is driven by rotational physics — RPM determines firing frequency, tooth mesh rate, blade pass frequency, and escapement timing. Built on [naad](https://github.com/MacCracken/naad) for audio synthesis primitives.
+Procedural synthesis of engines, gears, motors, turbines, clocks, transmissions, differentials, forced induction, and belt/chain drives. Every sound is driven by rotational physics — RPM determines firing frequency, tooth mesh rate and blade pass frequency, while a clock's escapement runs at its own tick rate. Built on [naad](https://github.com/MacCracken/naad) for audio synthesis primitives.
 
 > ghurni 2.x is the Cyrius port of the original Rust crate (1.0.0). That crate
 > served as the parity oracle and was retired in 2.0.4 — it is recoverable from
@@ -90,11 +90,11 @@ Measured by `cyrius bench` on the reference machine (see [`benches/ghurni.bcyr`]
 
 | Path | Cost |
 |------|------|
-| `ghurni_dcblocker_process` | ~20 ns / sample |
-| `ghurni_smooth_next_value` | ~15 ns / sample |
-| `ghurni_engine_synthesize` (gasoline 4-cyl, 0.05 s @ 44.1 kHz) | ~1.17 ms (**~43× real-time**) |
-| `ghurni_gear_synthesize` (steel, 0.05 s @ 44.1 kHz) | ~0.72 ms |
-| `ghurni_mixer_process_block` (4 channels × 512 samples) | ~1.15 ms |
+| `ghurni_dcblocker_process` | ~10 ns / sample |
+| `ghurni_smooth_next_value` | ~10 ns / sample |
+| `ghurni_engine_synthesize` (gasoline 4-cyl, 0.05 s @ 44.1 kHz) | ~1.30 ms (**~38× real-time**) |
+| `ghurni_gear_synthesize` (steel, 0.05 s @ 44.1 kHz) | ~1.13 ms |
+| `ghurni_mixer_process_block` (4 channels × 512 samples) | ~0.99 ms |
 
 Synthesis is deterministic: identical parameters and call sequence give
 bit-identical output ([ADR-003](docs/architecture/adr-003-deterministic-synthesis.md)).
@@ -122,6 +122,8 @@ Resolved from `cyrius.cyml` by `cyrius deps` into `lib/`. All are pinned to the 
 - [Architecture overview](docs/architecture/overview.md)
 - [Integration guide](docs/development/integration-guide.md)
 - [Testing guide](docs/guides/testing.md)
+- [Adding a synth](docs/guides/adding-a-synth.md)
+- [Moving the toolchain pin](docs/guides/toolchain-bump.md)
 - [Live port state](docs/development/state.md)
 - [ADRs](docs/architecture/)
 

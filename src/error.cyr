@@ -55,9 +55,9 @@ var GHURNI_NEG_INF = 0xFFF0000000000000;   # -inf
 # fractional digits BOTH fields overflowed and the literal compiled clean to a
 # different number -- this one to 0.598756873065743, 76.9x too small, which
 # flattened the gear/clock/engine ring-decay envelopes (10^(-x*S/20) at x=1:
-# 0.9334 instead of 0.00498). Fixed in cyrius 6.5.28, and ghurni now pins
-# 6.5.35 -- but `dist/ghurni.cyr` is compiled by the CONSUMER's toolchain, so
-# the hex form is what protects a consumer still on an older pin.
+# 0.9334 instead of 0.00498). Fixed in cyrius 6.5.28, but `dist/ghurni.cyr` is
+# compiled by the CONSUMER's toolchain, so the hex form is what protects a
+# consumer still on an older pin.
 var GHURNI_DB_SCALE = 0x4047069E2AA2AA5B;   # 20.0 / core::f32::consts::LOG10_E = 46.051701859880914
 
 # Lowest address a real heap pointer can have. Everything below is the null
@@ -73,6 +73,10 @@ var GHURNI_DB_SCALE = 0x4047069E2AA2AA5B;   # 20.0 / core::f32::consts::LOG10_E 
 # a channel index. The fuzz harness reaches it by feeding 100 as a synth, which
 # was accepted and dereferenced (SIGSEGV) before 2.0.3.
 var GHURNI_MIN_VALID_PTR = 65536;
+
+# IEEE-754 field masks, for the two per-sample tests that must stay integer ops.
+var GHURNI_F64_EXP_MASK = 0x7FF0000000000000;
+var GHURNI_F64_ABS_MASK = 0x7FFFFFFFFFFFFFFF;
 
 # 1 if `code` is an error (negative), 0 otherwise. A naad constructor that
 # fails returns a small negative ERR_* code; a success returns a large positive
@@ -104,6 +108,7 @@ fn ghurni_err_name(code) {
 # name/from_name round-trip with each other.
 #must_use
 fn ghurni_err_from_name(s) {
+    if (s < GHURNI_MIN_VALID_PTR) { return (0 - 99); }
     if (streq(s, "none") == 1)              { return GH_ERR_NONE; }
     if (streq(s, "invalid parameter") == 1) { return GH_ERR_INVALID_PARAMETER; }
     if (streq(s, "synthesis failed") == 1)  { return GH_ERR_SYNTHESIS_FAILED; }
@@ -159,4 +164,150 @@ fn ghurni_vec_copy(src) {
 #must_use
 fn ghurni_fmod(a, b) {
     return f64_sub(a, f64_mul(b, f64_floor(f64_div(a, b))));
+}
+
+# ================================================================
+# Strict reader for the flat JSON objects GhEvent, GhDcBlocker and
+# GhSmoothedParam serialize to (2.7.2). These three used #derive(Serialize), whose
+# generated scanner walks a key with `while (load8(json + p) != 34)` and never
+# stops at the NUL, so an unterminated key read past the end of the string and
+# could parse fields out of a neighbouring allocation. It also took `{}` as a
+# valid all-zero struct. This accepts exactly three integer members, each key
+# once, and nothing after the closing brace; every read stops at the NUL.
+# ================================================================
+fn GhJson_ws(json, p) {
+    var c = load8(json + p);
+    while ((c == 32) || (c == 10) || (c == 13) || (c == 9)) {
+        p = p + 1;
+        c = load8(json + p);
+    }
+    return p;
+}
+
+# Parse exactly n bytes at s as a decimal i64 into *dst. Returns 1, or 0 if the
+# span is empty, holds anything but an optional sign and digits, or overflows.
+# Accumulates negatively so INT64_MIN, a legal f64 bit pattern for -0.0, fits.
+fn GhJson_int_span(s, n, dst) {
+    var i = 0;
+    var neg = 0;
+    if ((n > 0) && (load8(s) == 45)) { neg = 1; i = 1; }
+    if (i >= n) { return 0; }
+    var lowest = 0 - 9223372036854775807 - 1;
+    var v = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        if ((c < 48) || (c > 57)) { return 0; }
+        var d = c - 48;
+        if (v < ((lowest + d) / 10)) { return 0; }
+        v = v * 10 - d;
+        i = i + 1;
+    }
+    if (neg == 0) {
+        if (v == lowest) { return 0; }
+        v = 0 - v;
+    }
+    store64(dst, v);
+    return 1;
+}
+
+# Which of k0..k2 the key at json+start (length n) names, or -1.
+fn GhJson_key_index(json, start, n, k0, k1, k2) {
+    if ((strlen(k0) == n) && (memeq(json + start, k0, n) == 1)) { return 0; }
+    if ((strlen(k1) == n) && (memeq(json + start, k1, n) == 1)) { return 1; }
+    if ((strlen(k2) == n) && (memeq(json + start, k2, n) == 1)) { return 2; }
+    return (0 - 1);
+}
+
+# Read `{"k0":int,"k1":int,"k2":int}`, members in any order, into vals[0..2].
+# Returns 1, or 0 on anything else.
+fn GhJson_read3(json, k0, k1, k2, vals) {
+    if (json < GHURNI_MIN_VALID_PTR) { return 0; }
+    var p = GhJson_ws(json, 0);
+    if (load8(json + p) != 123) { return 0; }
+    p = p + 1;
+    var seen = 0;
+    var count = 0;
+    while (count < 3) {
+        p = GhJson_ws(json, p);
+        if (load8(json + p) != 34) { return 0; }
+        p = p + 1;
+        var ks = p;
+        var c = load8(json + p);
+        while ((c != 34) && (c != 0)) {
+            p = p + 1;
+            c = load8(json + p);
+        }
+        if (c == 0) { return 0; }
+        var idx = GhJson_key_index(json, ks, p - ks, k0, k1, k2);
+        if (idx < 0) { return 0; }
+        if ((seen & (1 << idx)) != 0) { return 0; }
+        seen = seen | (1 << idx);
+        p = GhJson_ws(json, p + 1);
+        if (load8(json + p) != 58) { return 0; }
+        p = GhJson_ws(json, p + 1);
+        var vs = p;
+        c = load8(json + p);
+        while ((c == 45) || ((c >= 48) && (c <= 57))) {
+            p = p + 1;
+            c = load8(json + p);
+        }
+        if (GhJson_int_span(json + vs, p - vs, vals + idx * 8) == 0) { return 0; }
+        count = count + 1;
+        p = GhJson_ws(json, p);
+        c = load8(json + p);
+        if (count < 3) {
+            if (c != 44) { return 0; }
+        } else {
+            if (c != 125) { return 0; }
+        }
+        p = p + 1;
+    }
+    p = GhJson_ws(json, p);
+    if (load8(json + p) != 0) { return 0; }
+    return 1;
+}
+
+# The value Str for a key in a parsed pairs vec, or 0. Walks the pairs because no
+# one lookup call is both present in old bayan and undeprecated in new.
+fn GhJson_pair_value(pairs, key) {
+    var want = str_from(key);
+    var n = vec_len(pairs);
+    var i = 0;
+    while (i < n) {
+        var p = vec_get(pairs, i);
+        if (str_eq(bayan_json_key(p), want) == 1) { return bayan_json_value(p); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The same three members out of a parsed pairs vec (the _from_json form).
+fn GhJson_pairs3(pairs, k0, k1, k2, vals) {
+    if (pairs < GHURNI_MIN_VALID_PTR) { return 0; }
+    var v0 = GhJson_pair_value(pairs, k0);
+    var v1 = GhJson_pair_value(pairs, k1);
+    var v2 = GhJson_pair_value(pairs, k2);
+    if ((v0 == 0) || (v1 == 0) || (v2 == 0)) { return 0; }
+    if (GhJson_int_span(str_data(v0), str_len(v0), vals) == 0) { return 0; }
+    if (GhJson_int_span(str_data(v1), str_len(v1), vals + 8) == 0) { return 0; }
+    if (GhJson_int_span(str_data(v2), str_len(v2), vals + 16) == 0) { return 0; }
+    return 1;
+}
+
+# Write `{"k0":a,"k1":b,"k2":c}` to a str_builder.
+fn GhJson_write3(sb, k0, a, k1, b, k2, c) {
+    str_builder_add_cstr(sb, "{\"");
+    str_builder_add_cstr(sb, k0);
+    str_builder_add_cstr(sb, "\":");
+    str_builder_add_int(sb, a);
+    str_builder_add_cstr(sb, ",\"");
+    str_builder_add_cstr(sb, k1);
+    str_builder_add_cstr(sb, "\":");
+    str_builder_add_int(sb, b);
+    str_builder_add_cstr(sb, ",\"");
+    str_builder_add_cstr(sb, k2);
+    str_builder_add_cstr(sb, "\":");
+    str_builder_add_int(sb, c);
+    str_builder_add_cstr(sb, "}");
+    return 0;
 }

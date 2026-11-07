@@ -81,10 +81,22 @@ samples in place and never resizes it.
 
 ## Parameter Changes
 
-`ghurni_*_set_rpm` / `_set_load` are smoothed internally by `GhSmoothedParam`
-(a one-pole exponential approach), so changes take effect gradually over the
-next block instead of clicking. Read the smoothed value back with
-`ghurni_smooth_current`, and test for arrival with `ghurni_smooth_is_settled`.
+`set_rpm` drives a `GhSmoothedParam` (a one-pole exponential approach) on the engine,
+transmission, differential and chain, so their pitch changes gradually. The engine
+smooths load too, and forced induction has its own spool smoother. Read a smoothed
+value back with `ghurni_smooth_current`, and test for arrival with
+`ghurni_smooth_is_settled`.
+
+Not everything is smoothed. `gear`, `motor`, `turbine` and `belt_drive` take a new rpm
+at the next block, and on the transmission and differential the loudness, load and
+coast terms step once per block. A large change on those lands at a block edge and
+can click, so ramp it across several blocks.
+
+⚠ **Long RPM ramps.** Modulation phase is `position × current frequency`, not an
+integrated phase, so an RPM ramp moves it by an amount that grows with stream age. A
+minute into a stream the engine's firing order and the chain's impact rate are visibly
+wrong during a ramp, though steady speeds are correct. Fixing it changes audio, so it
+is scheduled for 2.8.0. See the [roadmap](roadmap.md).
 
 **Load** is 0..1 and drives both level and brightness — a machine working harder
 is louder *and* brighter ([ADR-007](../architecture/adr-007-load-tilt-and-diesel.md)).
@@ -171,11 +183,17 @@ layers over whatever the engine is doing.
 engine's business:
 
 ```cyrius
-# payload is (from, to); 0 on the `from` side means neutral
-ghurni_transmission_trigger_event(tx, ghurni_event_gear_shift(1, 2));
+# from first gear (1) to second gear (index 1)
+ghurni_transmission_trigger_event(tx, ghurni_event_gear_shift(1, 1));
 ```
 
-An out-of-range target gear is ignored, matching `ghurni_transmission_shift_to`.
+⚠ The two fields count differently. `from` treats 0 as neutral, so its gears start at
+1, but `to` is a 0-based **index into the ratios**, exactly as
+`ghurni_transmission_shift_to` takes it. So `to` is one below the gear's number, and
+there is no way to shift to neutral by event. An out-of-range target is ignored.
+
+Each event constructor allocates 24 bytes, and nothing frees it, so in a hot loop
+build an event once and trigger it as often as you need.
 
 Events round-trip by name in both directions, which is what you want for a
 save file or a level script:
@@ -224,6 +242,9 @@ ghurni_mixer_set_master_gain(mixer, 0.9);
 
 ghurni_mixer_set_rpm(mixer, f64_from(3000));   # broadcast to every channel
 
+# The mixer has no load path, and a turbo with load 0 is silent. Set it directly.
+ghurni_forced_induction_set_load(turbo, 0.8);
+
 ghurni_mixer_process_block(mixer, mono);
 ghurni_mixer_process_block_stereo(mixer, left, right);
 ```
@@ -260,9 +281,13 @@ var trans  = ghurni_preset_manual_5speed(f64_from(44100));
 
 Identical parameters and an identical call sequence produce bit-identical
 output ([ADR-003](../architecture/adr-003-deterministic-synthesis.md)). Noise
-seeds are derived from constructor parameters, so two instances that differ in
-any seeded parameter decorrelate — layer two turbos with different drive ratios
-and their hiss sums incoherently, as it should.
+seeds are derived from constructor parameters, so instances with different seeds
+decorrelate, and layered turbos' hiss sums incoherently, as it should.
+
+Different parameters do not guarantee a different seed, though. Seeds keep only part
+of a float and combine terms by addition, so nearby or offsetting values collide:
+belts of 120.1 and 120.9 mm share a stream, as do chains of (100, 30) and (101, 13).
+Vary a parameter by more than that if two layers must decorrelate.
 
 ## Logging
 

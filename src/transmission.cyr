@@ -5,7 +5,7 @@
 #
 # Requires (from the build/test unit): error.cyr (GH_ERR_*, ghurni_is_err),
 # logging.cyr, dsp.cyr (GhDcBlocker + validation + naad error map), smooth.cyr
-# (GhSmoothedParam) + the naad bundle (osc_*/noise_*/filter_biquad_*) + stdlib
+# (GhSmoothedParam) + the naad bundle (additive_*/noise_*/filter_biquad_*) + stdlib
 # alloc/vec/math. No `include` lines.
 #
 # PORT NOTES
@@ -30,11 +30,11 @@
 # field roles are documented here instead:
 #   ratios(vec<f64> gear ratios, index 0 = 1st gear)
 #   output_teeth(int 8..64, teeth on the output gear -> mesh frequency)
-#   current_gear(int, 0-indexed) sample_rate(f64) rpm(f64)
+#   current_gear(int, 0-indexed) sample_rate(f64) rpm(f64) load(f64 0..1)
 #   shift_remaining(int, samples of shift transient left)
 #   shift_duration_samples(int, = sr*0.2 -> 200ms) sample_position(int)
 #   mesh_rpm(ptr GhSmoothedParam) dc_blocker(ptr GhDcBlocker)
-#   mesh_osc(ptr naad Oscillator sine) noise_gen(ptr naad NoiseGenerator white)
+#   mesh_osc(ptr naad AdditiveSynth) noise_gen(ptr naad NoiseGenerator white)
 #   synchro_filter(ptr naad BiquadFilter band-pass 4000 Hz, q=3)
 # ================================================================
 #derive(accessors)
@@ -61,6 +61,7 @@ struct GhTransmission {
 # - sample_rate: audio sample rate in Hz.
 #must_use
 fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
+    if (ratios < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     var vsr = ghurni_validate_sample_rate(sample_rate);
     if (ghurni_is_err(vsr) == 1) { return vsr; }
 
@@ -70,7 +71,7 @@ fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
 
     var shift_duration_samples = f64_to(f64_mul(sample_rate, 0.2));   # 200ms shift
 
-    # naad backend: sine mesh oscillator + white noise + synchro band-pass.
+    # naad backend: mesh tone + white noise + synchro band-pass.
     # Mesh tone is a 3-partial ADDITIVE synth, not a pure sine (ADR-006): real
     # gear mesh has strong harmonics of the tooth-mesh frequency, and a single
     # sine is the one thing meshing gears never sound like.
@@ -131,9 +132,13 @@ fn ghurni_transmission_current_ratio(self) {
 
 # output_rpm() -- output shaft RPM = rpm / current_ratio.
 #must_use
-#inline
 fn ghurni_transmission_output_rpm(self) {
-    return f64_div(GhTransmission_rpm(self), ghurni_transmission_current_ratio(self));
+    # A ratio of 0 is a natural way to write neutral, and rpm/0 in the smoother's
+    # target used to freeze the mesh pitch for the life of the object. An unusable
+    # ratio leaves the output shaft undriven.
+    var out_rpm = f64_div(GhTransmission_rpm(self), ghurni_transmission_current_ratio(self));
+    if (ghurni_is_finite(out_rpm) == 0) { return 0; }
+    return out_rpm;
 }
 
 # synthesize(rpm, duration) -> vec<f64> or GH_ERR_*.
@@ -154,6 +159,7 @@ fn ghurni_transmission_synthesize(self, rpm, duration) {
 # naad synthesis inline (no separate _naad helper). Advances sample_position per
 # sample inside the loop (matching the Rust naad-backend arm).
 fn ghurni_transmission_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     # ADR-005 loudness gain uses the INPUT shaft rpm -- the speed the consumer
     # sets -- not `smooth_rpm`, which tracks OUTPUT rpm (rpm / current_ratio) and
     # would make loudness depend on the selected gear. That would be a different
@@ -172,15 +178,19 @@ fn ghurni_transmission_process_block(self, out) {
     var synchro_filter = GhTransmission_synchro_filter(self);
     var teeth = f64_from(GhTransmission_output_teeth(self));
     var shift_dur = f64_from(GhTransmission_shift_duration_samples(self));
+    var fund_hi = f64_div(nyquist, f64_from(3));
+    var f60 = f64_from(60);
+    var last_f = 0;
 
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
         var smooth_rpm = ghurni_smooth_next_value(mesh_rpm);
-        var mesh_freq = f64_mul(f64_div(smooth_rpm, f64_from(60)), teeth);
+        var mesh_freq = f64_mul(f64_div(smooth_rpm, f60), teeth);
 
         # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
-        additive_set_fundamental(mesh_osc, f64_clamp(mesh_freq, F64_ONE, f64_div(nyquist, f64_from(3))));
+        var fc = f64_clamp(mesh_freq, F64_ONE, fund_hi);
+        if (fc != last_f) { additive_set_fundamental(mesh_osc, fc); last_f = fc; }
         var mesh = f64_mul(f64_mul(additive_next_sample(mesh_osc), 0.15), tx_amp);
 
         # synchro whine during a shift: decaying band-passed noise envelope
@@ -207,13 +217,8 @@ fn ghurni_transmission_process_block(self, out) {
         var tx_sum = f64_add(mesh, f64_add(synchro, hiss));
         vec_set(out, i, f64_mul(tx_sum, tx_gain));
 
-        # VESTIGIAL: advanced every block, read by nothing in this module. Its only
-        # readers in the oracle were the non-naad fallback arms, which ADR-004 drops.
-        # Kept so the struct stays field-compatible with the oracle and with its nine
-        # siblings, where the counter IS live (engine/gear/motor/turbine/clock/belt/
-        # chain all derive phase from it). Do not remove without checking all ten.
-        # NOT vestigial, despite two roadmap generations saying so. Nothing INSIDE this
-        # module reads sample_position -- but Cyrius has no visibility control, so the
+        # Nothing INSIDE this module reads sample_position, but Cyrius has no visibility
+        # control, so the
         # #derive(accessors) pair is public API, and it returns a meaningful value: the
         # number of samples this synth has rendered. Deleting the write would make a
         # legitimate consumer read return 0 forever, and deleting the accessor would be a
@@ -224,16 +229,10 @@ fn ghurni_transmission_process_block(self, out) {
 
     # DC-block the whole buffer.
     var db = GhTransmission_dc_blocker(self);
-    var j = 0;
-    while (j < n) {
-        vec_set(out, j, ghurni_dcblocker_process(db, vec_get(out, j)));
-        j = j + 1;
-    }
+    ghurni_dcblocker_process_buffer(db, out);
     return 0;
 }
 
-# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
-#must_use
 # LOAD (2.4.0). A drivetrain under strain is louder and grittier than one
 # freewheeling. Both terms are EXACTLY 1.0 at load 0, the default, so an unloaded
 # synth renders bit-identically to 2.3.0 and the goldens do not move.
@@ -256,6 +255,7 @@ fn ghurni_transmission_load(self) { return GhTransmission_load(self); }
 # An out-of-range target is ignored rather than rejected, matching
 # ghurni_transmission_shift_to's own contract -- the oracle's `if let Some` shape.
 fn ghurni_transmission_trigger_event(self, event) {
+    if (event < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     if (GhEvent_kind(event) == GH_EVENT_GEAR_SHIFT) {
         ghurni_transmission_shift_to(self, GhEvent_arg1(event));
     }

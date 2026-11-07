@@ -60,10 +60,13 @@ fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
     if (ghurni_is_err(vsr) == 1) { return vsr; }
 
     var diameter = ghurni_finite_clamp(pulley_diameter, f64_from(20), f64_from(500));
-    var tens = ghurni_finite_clamp(tension, 0, F64_ONE);
+    # Non-finite tension means tight (1), not slack: ghurni_finite_clamp's `lo` is
+    # the loud end of this range, so a NaN would select a +30 dB squeal.
+    var tens = F64_ONE;
+    if (ghurni_is_finite(tension) == 1) { tens = ghurni_finite_clamp(tension, 0, F64_ONE); }
     var nyq = f64_mul(sample_rate, 0.49);
 
-    # Squeal frequency depends on belt speed and tension (2000..5000 Hz).
+    # Squeal frequency depends on tension only (2000..5000 Hz).
     var squeal_freq = f64_min(f64_add(f64_from(2000), f64_mul(f64_sub(F64_ONE, tens), f64_from(3000))), nyq);
 
     # naad backend: squeal oscillator + pink noise + band-pass flap filter.
@@ -104,6 +107,10 @@ fn ghurni_belt_drive_set_rpm(self, rpm) {
 
 # set_tension(tension) -- clamp to 0..1 (0 = slack/squealy, 1 = tight/quiet).
 fn ghurni_belt_drive_set_tension(self, tension) {
+    if (ghurni_is_finite(tension) == 0) {
+        GhBeltDrive_set_tension(self, F64_ONE);
+        return 0;
+    }
     GhBeltDrive_set_tension(self, ghurni_finite_clamp(tension, 0, F64_ONE));
     return 0;
 }
@@ -133,12 +140,12 @@ fn ghurni_belt_drive_synthesize(self, rpm, duration) {
 # synthesis is interleaved inline (mirrors the Rust); then DC-block and advance
 # the sample counter.
 fn ghurni_belt_drive_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     var smooth_rpm = GhBeltDrive_smooth_rpm(self);
     var rpm = GhBeltDrive_rpm(self);
-    # ADR-005 RPM loudness law. Computed once per block: this synth has no
-    # per-sample smoother, so its frequency terms are block-constant too.
-    # (belt_drive HAS a smoother but deliberately discards it -- see the note at
-    # the ghurni_smooth_next_value call below -- so the raw rpm is the right input.)
+    # ADR-005 RPM loudness law. Computed once per block from the raw rpm: belt_drive
+    # HAS a smoother but deliberately discards its value (see the note at the
+    # ghurni_smooth_next_value call below), so its frequency terms are block-constant.
     var rpm_gain = ghurni_rpm_gain(rpm, GHURNI_REF_RPM_BELT);
     ghurni_smooth_set_target(smooth_rpm, rpm);
 
@@ -198,10 +205,9 @@ fn ghurni_belt_drive_process_block(self, out) {
         var flap = filter_biquad_process_sample(flap_filter, raw_flap);
 
         # Periodic modulation at the belt rotation rate.
-        var abs_pos = f64_from(base_pos + i);
         var belt_mod = F64_ONE;
         if (belt_active == 1) {
-            belt_mod = f64_add(0.8, f64_mul(0.2, f64_sin(f64_mul(belt_omega, abs_pos))));
+            belt_mod = f64_add(0.8, f64_mul(0.2, f64_sin(f64_mul(belt_omega, f64_from(base_pos + i)))));
         }
 
         var bd_sum = f64_mul(f64_add(squeal, flap), belt_mod);
@@ -210,11 +216,7 @@ fn ghurni_belt_drive_process_block(self, out) {
     }
 
     var db = GhBeltDrive_dc_blocker(self);
-    var j = 0;
-    while (j < n) {
-        vec_set(out, j, ghurni_dcblocker_process(db, vec_get(out, j)));
-        j = j + 1;
-    }
+    ghurni_dcblocker_process_buffer(db, out);
     GhBeltDrive_set_sample_position(self, base_pos + n);
     return 0;
 }

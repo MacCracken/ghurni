@@ -19,9 +19,9 @@
 #   on success or a negative ERR_* code on bad params; ghurni_is_err()
 #   distinguishes them. new() maps any failure to GH_ERR_SYNTHESIS_FAILED
 #   (ports the Rust `.map_err(SynthesisFailed)`). noise_new never errors.
-# - The tick rate is fixed by clock type, not RPM-driven: set_rpm is a NO-OP and
-#   rpm() reports tick_rate*60 for interface compatibility (matches the Rust
-#   Synthesizer impl).
+# - The tick rate comes from the clock type and set_tick_rate (2.4.0), not from
+#   RPM: set_rpm is a NO-OP and rpm() reports tick_rate*60 for interface
+#   compatibility (matches the Rust Synthesizer impl).
 # - serde: Clock held opaque naad backend pointers; deep #[derive(Serialize)]
 #   is dropped (the integration tests only roundtrip ClockType + GhurniError,
 #   which ARE supported -- see ghurni_clocktype_name/_from_name below).
@@ -46,6 +46,7 @@ fn ghurni_clocktype_name(t) {
 # clocktype_from_name(s) -- GH_CLOCK_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_clocktype_from_name(s) {
+    if (s < GHURNI_MIN_VALID_PTR) { return (0 - 1); }
     if (streq(s, "Wristwatch") == 1)       { return GH_CLOCK_WRISTWATCH; }
     if (streq(s, "WallClock") == 1)        { return GH_CLOCK_WALL_CLOCK; }
     if (streq(s, "GrandfatherClock") == 1) { return GH_CLOCK_GRANDFATHER_CLOCK; }
@@ -94,7 +95,8 @@ fn ghurni_clock_resonance_for(clock_type) {
     return f64_from(800);
 }
 
-# ring decay time constant by clock type.
+# ring decay by clock type, as a fraction of a BEAT, not a time: a slower clock
+# has longer ticks. Scheduled to become a real time constant in 2.8.0.
 #must_use
 fn ghurni_clock_decay_for(clock_type) {
     if (clock_type == GH_CLOCK_WRISTWATCH)        { return 0.003; }
@@ -163,8 +165,10 @@ fn ghurni_clock_set_rpm(self, rpm) {
 # beat is inaudible; above it the ticks merge into a tone. Non-finite collapses
 # to the floor, per ghurni_finite_clamp.
 #
-# Changing the rate mid-stream moves the beat grid, because phase is derived from
-# the absolute sample position -- set it between blocks.
+# ⚠ Changing the rate mid-stream moves the beat grid, because phase is derived
+# from the absolute sample position, and setting it between blocks does not help:
+# a ramp from 1 to 2 Hz over 10 s, 100 s into a stream, ticks 17 to 38 times where
+# 15 are due, depending on block size. Integrated phase is scheduled for 2.8.0.
 fn ghurni_clock_set_tick_rate(self, ticks_per_second) {
     GhClock_set_tick_rate(self, ghurni_finite_clamp(ticks_per_second, 0.1, f64_from(50)));
     return 0;
@@ -191,14 +195,10 @@ fn ghurni_clock_synthesize(self, duration) {
 # process_block(out) -- fill `out` (vec<f64>) with clock sound, DC-block, and
 # advance the sample counter.
 fn ghurni_clock_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     ghurni_clock_process_block_naad(self, out);
-    var db = GhClock_dc_blocker(self);
     var n = vec_len(out);
-    var i = 0;
-    while (i < n) {
-        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
-        i = i + 1;
-    }
+    ghurni_dcblocker_process_buffer(GhClock_dc_blocker(self), out);
     GhClock_set_sample_position(self, GhClock_sample_position(self) + n);
     return 0;
 }
@@ -223,7 +223,9 @@ fn ghurni_clock_process_block_naad(self, out) {
     var i = 0;
     while (i < n) {
         var abs_pos = f64_from(base_pos + i);
-        var phase = f64_div(ghurni_fmod(abs_pos, tick_period), tick_period);
+        # Written out from ghurni_fmod so the one division serves phase and beat.
+        var beats = f64_div(abs_pos, tick_period);
+        var phase = f64_div(f64_sub(abs_pos, f64_mul(tick_period, f64_floor(beats))), tick_period);
 
         # TICK vs TOCK (ADR-006). An escapement alternates between two pallets,
         # and the two impacts are not the same sound -- that asymmetry is why the
@@ -232,7 +234,7 @@ fn ghurni_clock_process_block_naad(self, out) {
         # as a metronome rather than a mechanism. Even beats keep the original
         # timbre; odd beats are slightly softer and shorter-decaying, as the
         # lighter pallet impact is.
-        var beat = f64_to(f64_div(abs_pos, tick_period));
+        var beat = f64_to(beats);
         var beat_amp = amp;
         var beat_decay = decay;
         if ((beat % 2) == 1) {
@@ -264,7 +266,7 @@ fn ghurni_clock_process_block_naad(self, out) {
 }
 
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
-# rpm() reports tick_rate*60 as an equivalent "RPM"; the tick rate is fixed.
+# rpm() reports tick_rate*60 as an equivalent "RPM".
 #must_use
 fn ghurni_clock_rpm(self) {
     return f64_mul(GhClock_tick_rate(self), f64_from(60));

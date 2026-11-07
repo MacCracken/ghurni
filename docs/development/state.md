@@ -5,7 +5,7 @@
 
 ## Version
 
-**2.7.1** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
+**2.7.2** — Cyrius port, hardened and pinned, through a second P(-1) sweep (2.7.2); oracle retired; RPM loudness law
 (ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007), a
 control surface that no longer lies (ADR-008), stems deferred on measurement with
 convolution closed (ADR-009), and a quarter-wave exhaust waveguide (ADR-010).
@@ -21,7 +21,7 @@ and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 non-naad fallback path, which ADR-004 drops. All 44 Rust integration tests are
 reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green.
 
-## Modules (`src/*.cyr`, 19 modules, 4,148 lines)
+## Modules (`src/*.cyr`, 19 modules, 4,563 lines)
 
 | Layer | Modules |
 |-------|---------|
@@ -30,9 +30,9 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (4,138 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (4,552 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 10 suites, 642 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 15 suites, 1,013 assertions, 0 failures)
 
 > Count with `cyrius test 2>&1 | grep -E '^[0-9]+ passed, [0-9]+ failed \([0-9]+ total\)$'`
 > and sum the leading numbers. Do NOT sum every `N passed` line: the run's final
@@ -52,14 +52,19 @@ Bundle: `dist/ghurni.cyr` (4,138 lines, `cyrius distlib`).
 | `oracle_pins` | 2.0.3 — every value that lived only in `rust-old/`, derived from the oracle's source; extended each release since with the behaviour that release made real |
 | `goldens` | 2.0.3 — rendered-audio checksums; the gate that makes "a patch may not change audio" enforceable |
 | `spectral` | 2.0.3 — FFT peak assertions that audio sits where the RPM physics says it should |
+| `sweep_2_7_2` | 2.7.2 — every defect the second P(-1) sweep repaired, each shown to fail on 2.7.1 |
+| `mixer_contract` | 2.7.2 — mixer output against the synths rendered alone, bit for bit |
+| `recovery` | 2.7.2 — a bad value must not silence a synth for life |
+| `names_events` | 2.7.2 — every wire name both ways, GH_EVENT_* values, event shape |
+| `boundaries` | 2.7.2 — constructor codes, over-long synthesize, both ends of every clamp |
 
-`cyrius bench` (`benches/ghurni.bcyr`): DcBlocker ~8 ns/sample, smoother
-~9 ns/sample, engine/gear one-shot synthesis, the streaming 4-channel mixer
+`cyrius bench` (`benches/ghurni.bcyr`): DcBlocker ~10 ns/sample, smoother
+~10 ns/sample, engine/gear one-shot synthesis, the streaming 4-channel mixer
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
-`cyrius coverage`: 137/185 functions referenced (74%) — a floor, not a proof.
-Fuzz: `fuzz/ghurni.fcyr`, 1628 adversarial checks (`cyrius fuzz`).
+`cyrius coverage`: 155/203 functions referenced (76%) — a floor, not a proof.
+Fuzz: `fuzz/ghurni.fcyr`, 2,235 adversarial checks (`cyrius fuzz`, and `--poison` in CI).
 
 ## Deliberate divergences from `rust-old/`
 
@@ -101,6 +106,24 @@ Fuzz: `fuzz/ghurni.fcyr`, 1628 adversarial checks (`cyrius fuzz`).
   Note the behavioural form must still DEPEND on its float parameter: a bare
   `f64_to` of a sub-unity value truncates to a constant, which is the defect
   fixed in `forced_induction` and `belt_drive` (see the 2.0.2 CHANGELOG).
+
+### Added by the 2.7.2 P(-1) sweep
+
+Each refuses or sinks input Rust's types made unrepresentable, or corrects a value
+the oracle got wrong too. None changes valid audio.
+
+- **Sample rates below 1 Hz are refused.** An integer passed for an f64 is a subnormal.
+- **The JSON codecs are strict**: complete objects, each key once, in-range values. The
+  derived ones accepted `{}`, and Rust's serde would have refused it.
+- **Name strings, buffers, events and handles below the null page are refused**, where
+  Rust's types could not express them.
+- **Non-finite belt tension means tight, and non-finite pan means centre**, where
+  `ghurni_finite_clamp` would give the loud slack and hard-left ends.
+- **A synth may sit in only one mixer channel**, and channel names are copied, as
+  Rust's move and `String` made true.
+- **`ghurni_engine_rpm` reads the smoother's target**, so events that retarget it report
+  the speed the engine is heading to.
+- **A duration under one sample is an error.** Rust returned an empty vec.
 
 ### Added by the 2.0.2 P-1 sweep
 
@@ -144,9 +167,11 @@ cyrius build docs/examples/simple_engine.cyr build/ex_simple_engine && ./build/e
 
 `.github/workflows/{ci,release}.yml` use the cyrius toolchain (install from the
 `cyrius.cyml [package].cyrius` pin). As of 2.0.3 CI runs the full gate chain:
-`deps` → `build` → `test` → `distlib --check` → `audit` → `deny` → `fuzz` →
-`coverage --min` → build **and run** the examples. Release verifies VERSION/tag
-consistency and ships a source tarball + SHA256SUMS.
+`deps` → `deps --locked` → `build` → run the smoke binary → `test` →
+`distlib --check` → `audit` → `deny` → `fuzz` → `fuzz --poison` → `coverage --min` →
+build **and run** the examples. Release verifies VERSION/tag consistency and ships a
+source tarball + SHA256SUMS. Both workflows default to read-only and fetch the cyrius
+installer at the pinned tag (2.7.2).
 
 ⚠ **12 compiled ELF binaries (11 MB) are still tracked under `build/`** and ship
 in every release tarball. `.gitignore` covers them as of 2.0.3, but untracking
@@ -167,13 +192,14 @@ patch release.
 ## Known follow-ups
 
 - None outstanding for parity.
-- **Allocation failure is unhandled.** No `alloc()` result is null-checked
-  anywhere in the port, and no sibling library checks either. The contract wants
-  deciding ecosystem-wide rather than patching here alone.
-- **Presized output buffers.** Every `*_synthesize` grows its result one
-  `vec_push` at a time, so the doubling allocator burns ~2x the delivered heap.
-  The stdlib has no `vec_with_capacity`; this wants an upstream `vec` API rather
-  than reaching into the vec's internals.
+- **Allocation failure is fail-stop**, decided on measurement in ADR-011.
+- **Presized output buffers.** Every `*_synthesize` grows its result one `vec_push`
+  at a time, so the doubling allocator burns ~2x the delivered heap. naad 2.3.2's
+  `naad_vec_zeros` would fix it; scheduled for 2.10.0, when consumers reach naad 2.3.3.
+- **The 2.7.2 sweep's audio-changing findings**, scheduled in the roadmap for 2.8.0 and
+  3.0.0: phase from absolute position, beat-relative clock ticks, one-sample misfires,
+  the hybrid's shared starter synth, block-stepped terms, low-rate partials, reverse
+  gears and GEAR_SHIFT numbering.
 - **`cyrius vet` reports `dist/ghurni.cyr` as UNTRUST.** Structural: it is the
   project's own generated bundle, not a `[deps]`-resolved one, and there is no
   trust-list mechanism in the manifest. `cyrius deny` and `cyrius audit` both

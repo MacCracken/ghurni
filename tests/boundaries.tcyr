@@ -1,0 +1,129 @@
+# boundaries.tcyr -- every constructor, synthesize and clamp, by code and value (2.7.2).
+#
+# Checking only ghurni_is_err let the constructors' rate guards and seven of ten
+# synthesize length guards be deleted with the suite green. These assert the exact
+# code, and read the clamped value back.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+var SR = f64_from(44100);
+var HUGE = f64_mul(f64_mul(f64_from(1000000000), f64_from(1000000000)), f64_from(1000000));
+# rr(...) -- a short ratio vec for transmission constructors.
+fn rr() { var r = vec_new(); vec_push(r, f64_from(3)); vec_push(r, f64_from(2)); return r; }
+
+test_group("every constructor reports INVALID_PARAMETER for a bad rate, by code");
+var BAD = 0;
+assert_eq(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, BAD), GH_ERR_INVALID_PARAMETER, "engine");
+assert_eq(ghurni_gear_new(32, GH_GEAR_STEEL, BAD), GH_ERR_INVALID_PARAMETER, "gear");
+assert_eq(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, BAD), GH_ERR_INVALID_PARAMETER, "motor");
+assert_eq(ghurni_turbine_new(12, f64_from(600), BAD), GH_ERR_INVALID_PARAMETER, "turbine");
+assert_eq(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, BAD), GH_ERR_INVALID_PARAMETER, "clock");
+assert_eq(ghurni_transmission_new(rr(), 24, BAD), GH_ERR_INVALID_PARAMETER, "transmission");
+assert_eq(ghurni_differential_new(41, 11, BAD), GH_ERR_INVALID_PARAMETER, "differential");
+assert_eq(
+    ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.5, BAD),
+    GH_ERR_INVALID_PARAMETER,
+    "forced_induction");
+assert_eq(ghurni_belt_drive_new(f64_from(120), 0.6, BAD), GH_ERR_INVALID_PARAMETER, "belt");
+assert_eq(ghurni_chain_drive_new(110, 16, BAD), GH_ERR_INVALID_PARAMETER, "chain");
+
+test_group("every synthesize reports an over-long duration as an error, never an empty vec");
+assert_eq(
+    ghurni_is_err(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), f64_from(3000), 0.5, HUGE)),
+    1,
+    "motor");
+assert_eq(
+    ghurni_is_err(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), f64_from(3000), HUGE)),
+    1,
+    "turbine");
+assert_eq(
+    ghurni_is_err(ghurni_transmission_synthesize(ghurni_transmission_new(rr(), 24, SR), f64_from(3000), HUGE)),
+    1,
+    "transmission");
+assert_eq(
+    ghurni_is_err(ghurni_differential_synthesize(ghurni_differential_new(41, 11, SR), f64_from(3000), HUGE)),
+    1,
+    "differential");
+var fi_long = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.5, SR);
+assert_eq(ghurni_is_err(ghurni_forced_induction_synthesize(fi_long, f64_from(3000), 0.5, HUGE)), 1, "forced_induction");
+assert_eq(
+    ghurni_is_err(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(3000), HUGE)),
+    1,
+    "belt");
+assert_eq(
+    ghurni_is_err(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_from(3000), HUGE)),
+    1,
+    "chain");
+
+test_group("every rpm clamp, both ends, read back");
+# pin(kind, s, lo, hi, name) -- assert both ends of an rpm clamp by reading it back.
+fn pin(kind, s, lo, hi, name) {
+    ghurni_synth_set_rpm(kind, s, f64_neg(f64_from(5)));
+    assert_eq(ghurni_synth_rpm(kind, s), lo, name);
+    ghurni_synth_set_rpm(kind, s, f64_from(900000));
+    assert_eq(ghurni_synth_rpm(kind, s), hi, name);
+    return 0;
+}
+pin(GH_KIND_ENGINE, ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(100), f64_from(15000), "engine 100..15000");
+pin(GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR), F64_ONE, f64_from(50000), "gear 1..50000");
+pin(GH_KIND_MOTOR, ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), 0, f64_from(100000), "motor 0..100000");
+pin(GH_KIND_TURBINE, ghurni_turbine_new(12, f64_from(600), SR), F64_ONE, f64_from(200000), "turbine 1..200000");
+pin(GH_KIND_TRANSMISSION, ghurni_transmission_new(rr(), 24, SR), 0, f64_from(15000), "transmission 0..15000");
+pin(GH_KIND_DIFFERENTIAL, ghurni_differential_new(41, 11, SR), 0, f64_from(50000), "differential 0..50000");
+pin(
+    GH_KIND_FORCED_INDUCTION,
+    ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.5, SR),
+    0,
+    f64_from(15000),
+    "forced_induction 0..15000");
+pin(GH_KIND_BELT_DRIVE, ghurni_belt_drive_new(f64_from(120), 0.6, SR), 0, f64_from(20000), "belt 0..20000");
+pin(GH_KIND_CHAIN_DRIVE, ghurni_chain_drive_new(110, 16, SR), 0, f64_from(30000), "chain 0..30000");
+assert_eq(
+    ghurni_clock_rpm(ghurni_clock_new(GH_CLOCK_GRANDFATHER_CLOCK, SR)),
+    f64_from(60),
+    "grandfather clock reports 1 Hz as 60 rpm");
+
+test_group("setters and events reach the state that makes them audible");
+var bt = ghurni_belt_drive_new(f64_from(120), 0.6, SR);
+ghurni_belt_drive_set_tension(bt, 0.25);
+assert_eq(GhBeltDrive_tension(bt), 0.25, "set_tension writes tension");
+var tx = ghurni_transmission_new(rr(), 24, SR);
+ghurni_transmission_shift_to(tx, 1);
+assert_eq(GhTransmission_shift_remaining(tx), 8820, "a shift arms the 200 ms transient");
+var fx = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.5, SR);
+ghurni_forced_induction_set_load(fx, 0.8);
+ghurni_forced_induction_set_rpm(fx, f64_from(1000));
+var ft1 = ghurni_smooth_target(GhForcedInduction_spool_rpm(fx));
+ghurni_forced_induction_set_rpm(fx, f64_from(5000));
+assert_gt(ghurni_smooth_target(GhForcedInduction_spool_rpm(fx)), ft1, "set_rpm alone retargets the spool");
+var ee = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_trigger_event(ee, ghurni_event_stall());
+assert_eq(GhEngine_stall_remaining(ee), 26460, "STALL arms 0.6 s");
+ghurni_engine_trigger_event(ee, ghurni_event_shutdown());
+assert_eq(GhEngine_shutdown_remaining(ee), 70560, "SHUTDOWN arms 1.6 s");
+ghurni_engine_trigger_event(ee, ghurni_event_startup());
+assert_eq(GhEngine_startup_remaining(ee), 48510, "STARTUP arms 1.1 s");
+assert_eq(ghurni_smooth_target(GhEngine_smooth_rpm(ee)), f64_from(100), "STARTUP targets idle");
+ghurni_engine_trigger_event(ee, ghurni_event_rev_limiter_hit());
+assert_eq(GhEngine_rev_limit_remaining(ee), 15434, "REV_LIMITER arms 0.35 s (0.35 is inexact, truncates)");
+
+var rc = assert_summary();
+syscall(60, rc);

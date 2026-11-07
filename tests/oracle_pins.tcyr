@@ -36,6 +36,12 @@ include "src/presets.cyr"
 
 alloc_init();
 
+# assert_gt and assert_lt compare raw i64s, so on an f64 a NaN passes whichever one
+# its sign bit favours: a STALL rendering 44100 NaN samples passed "kills the engine".
+fn assert_f_gt(a, b, name) { return assert_eq(f64_gt(a, b), 1, name); }
+# assert_f_lt(a, b, name) -- assert a < b as f64s.
+fn assert_f_lt(a, b, name) { return assert_eq(f64_lt(a, b), 1, name); }
+
 var SR = f64_from(44100);
 
 # ================================================================
@@ -173,8 +179,8 @@ var dif = ghurni_differential_new(41, 11, SR);
 assert_eq(GhDifferential_ring_teeth(dif), 41, "ring teeth stored");
 assert_eq(GhDifferential_pinion_teeth(dif), 11, "pinion teeth stored");
 # 41/11 = 3.727272... ; assert the ordering rather than a repeating decimal.
-assert_gt(ghurni_differential_ratio(dif), f64_from(3), "ratio = ring/pinion > 3");
-assert_lt(ghurni_differential_ratio(dif), f64_from(4), "ratio = ring/pinion < 4");
+assert_f_gt(ghurni_differential_ratio(dif), f64_from(3), "ratio = ring/pinion > 3");
+assert_f_lt(ghurni_differential_ratio(dif), f64_from(4), "ratio = ring/pinion < 4");
 # mesh = (rpm/60) * pinion. 6000 rpm, 11 pinion teeth = 1100 Hz EXACTLY.
 # With ring (41) it would be 4100 -- so this number alone catches a swap.
 assert_eq(ghurni_differential_mesh_frequency(dif, f64_from(6000)), f64_from(1100),
@@ -199,7 +205,7 @@ var spin = vec_new();
 var si = 0;
 while (si < 44100) { vec_push(spin, 0); si = si + 1; }
 ghurni_forced_induction_process_block(fi, spin);
-assert_gt(ghurni_smooth_current(GhForcedInduction_spool_rpm(fi)), f64_from(5000), "spool is above the 5000 gate");
+assert_f_gt(ghurni_smooth_current(GhForcedInduction_spool_rpm(fi)), f64_from(5000), "spool is above the 5000 gate");
 ghurni_forced_induction_set_load(fi, 0.1);
 assert_eq(GhForcedInduction_bov_active(fi), 1, "BOV fires on a sharp drop at high spool");
 assert_eq(GhForcedInduction_bov_remaining(fi), 6615, "BOV burst = 0.15 s = 6615 samples");
@@ -234,8 +240,8 @@ var s4 = 0;
 while (s4 < 44100) { vec_push(spin4, 0); s4 = s4 + 1; }
 ghurni_forced_induction_process_block(fi4, spin4);
 var spool4 = ghurni_smooth_current(GhForcedInduction_spool_rpm(fi4));
-assert_gt(spool4, f64_from(1000), "fixture spool really did spin up (not a vacuous check)");
-assert_lt(spool4, f64_from(5000), "fixture spool sits BELOW the 5000 gate");
+assert_f_gt(spool4, f64_from(1000), "fixture spool really did spin up (not a vacuous check)");
+assert_f_lt(spool4, f64_from(5000), "fixture spool sits BELOW the 5000 gate");
 ghurni_forced_induction_set_load(fi4, 0.1);
 assert_eq(GhForcedInduction_bov_active(fi4), 0, "no BOV below the 5000 spool gate");
 
@@ -321,16 +327,16 @@ ghurni_mixer_set_channel_pan(mx, 0, f64_neg(F64_ONE));
 ghurni_mixer_process_block_stereo(mx, L, R);
 var eL_left = chan_energy(L);
 var eR_left = chan_energy(R);
-assert_gt(eL_left, 0, "hard-left: left channel has signal (not a vacuous compare)");
-assert_gt(eL_left, eR_left, "pan -1 puts energy in LEFT (cos), not right");
-assert_lt(eR_left, f64_mul(eL_left, 0.000001), "pan -1 leaves right effectively silent");
+assert_f_gt(eL_left, 0, "hard-left: left channel has signal (not a vacuous compare)");
+assert_f_gt(eL_left, eR_left, "pan -1 puts energy in LEFT (cos), not right");
+assert_f_lt(eR_left, f64_mul(eL_left, 0.000001), "pan -1 leaves right effectively silent");
 
 ghurni_mixer_set_channel_pan(mx, 0, F64_ONE);
 ghurni_mixer_process_block_stereo(mx, L, R);
 var eL_right = chan_energy(L);
 var eR_right = chan_energy(R);
-assert_gt(eR_right, eL_right, "pan +1 puts energy in RIGHT (sin)");
-assert_lt(eL_right, f64_mul(eR_right, 0.000001), "pan +1 leaves left effectively silent");
+assert_f_gt(eR_right, eL_right, "pan +1 puts energy in RIGHT (sin)");
+assert_f_lt(eL_right, f64_mul(eR_right, 0.000001), "pan +1 leaves left effectively silent");
 
 # Centre: equal power, and each side at cos(PI/4) -- so per-side ENERGY is half
 # the hard-panned side's. That is the -3 dB centre convention.
@@ -338,10 +344,10 @@ ghurni_mixer_set_channel_pan(mx, 0, 0);
 ghurni_mixer_process_block_stereo(mx, L, R);
 var eL_mid = chan_energy(L);
 var eR_mid = chan_energy(R);
-assert_gt(eL_mid, 0, "centre pan: real signal present");
+assert_f_gt(eL_mid, 0, "centre pan: real signal present");
 var mid_ratio = f64_div(eL_mid, eR_mid);
-assert_gt(mid_ratio, 0.999, "centre pan is equal-power (L/R ratio ~ 1)");
-assert_lt(mid_ratio, 1.001, "centre pan is equal-power (L/R ratio ~ 1)");
+assert_f_gt(mid_ratio, 0.999, "centre pan is equal-power (L/R ratio ~ 1)");
+assert_f_lt(mid_ratio, 1.001, "centre pan is equal-power (L/R ratio ~ 1)");
 
 # ================================================================
 test_group("process_block_stereo leaves the longer buffer's tail untouched");
@@ -469,8 +475,8 @@ ghurni_smooth_set_target(sm, F64_ONE);
 var steps = 0;
 while (steps < 44100) { ghurni_smooth_next_value(sm); steps = steps + 1; }
 var after_tau = ghurni_smooth_current(sm);
-assert_gt(after_tau, 0.63, "after one tau, ~63% of the way (lower bound)");
-assert_lt(after_tau, 0.633, "after one tau, ~63% of the way (upper bound)");
+assert_f_gt(after_tau, 0.63, "after one tau, ~63% of the way (lower bound)");
+assert_f_lt(after_tau, 0.633, "after one tau, ~63% of the way (upper bound)");
 assert_eq(ghurni_smooth_is_settled(sm), 0, "one tau is NOT settled");
 # t <= 0 or sr <= 0 -> coeff 0 -> snaps instantly.
 var sm0 = ghurni_smooth_new(0, 0, SR);
@@ -570,45 +576,45 @@ assert_eq(rest_rms(ghurni_forced_induction_synthesize(
 # --- rest is a small fraction of running, for the synths with an rpm floor ---
 var m_rest = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), 0, 0.5, 0.1));
 var m_run  = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), f64_from(3000), 0.5, 0.1));
-assert_gt(m_run, 0.01, "motor running produces real signal (not a vacuous compare)");
-assert_lt(m_rest, f64_mul(m_run, 0.05), "motor at rest is under 5% of running");
+assert_f_gt(m_run, 0.01, "motor running produces real signal (not a vacuous compare)");
+assert_f_lt(m_rest, f64_mul(m_run, 0.05), "motor at rest is under 5% of running");
 
 var b_rest = rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), 0, 0.1));
 var b_run  = rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(2000), 0.1));
-assert_gt(b_run, 0.01, "belt running produces real signal");
-assert_lt(b_rest, f64_mul(b_run, 0.05), "belt at rest is under 5% of running");
+assert_f_gt(b_run, 0.01, "belt running produces real signal");
+assert_f_lt(b_rest, f64_mul(b_run, 0.05), "belt at rest is under 5% of running");
 
 var g_rest = rest_rms(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), 0, 0.1));
 var g_run  = rest_rms(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(1500), 0.1));
-assert_gt(g_run, 0.01, "gear running produces real signal");
-assert_lt(g_rest, f64_mul(g_run, 0.05), "gear at rest is under 5% of running (1 rpm floor)");
+assert_f_gt(g_run, 0.01, "gear running produces real signal");
+assert_f_lt(g_rest, f64_mul(g_run, 0.05), "gear at rest is under 5% of running (1 rpm floor)");
 
 var t_rest = rest_rms(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), 0, 0.1));
 var t_run  = rest_rms(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(600), SR), f64_from(8000), 0.1));
-assert_gt(t_run, 0.01, "turbine running produces real signal");
-assert_lt(t_rest, f64_mul(t_run, 0.05), "turbine at rest is under 5% of running (1 rpm floor)");
+assert_f_gt(t_run, 0.01, "turbine running produces real signal");
+assert_f_lt(t_rest, f64_mul(t_run, 0.05), "turbine at rest is under 5% of running (1 rpm floor)");
 
 var e_rest = rest_rms(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), 0, 0.5, 0.1));
 var e_run  = rest_rms(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), 0.5, 0.1));
-assert_gt(e_run, 0.005, "engine running produces real signal");
-assert_lt(e_rest, f64_mul(e_run, 0.2), "engine at rest is well under running (100 rpm idle floor)");
+assert_f_gt(e_run, 0.005, "engine running produces real signal");
+assert_f_lt(e_rest, f64_mul(e_run, 0.2), "engine at rest is well under running (100 rpm idle floor)");
 
 # --- MONOTONIC: faster must not be quieter. Three synths failed this before. ---
 var m_lo = rest_rms(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 4, SR), f64_from(300), 0.5, 0.1));
-assert_lt(m_lo, m_run, "motor: 300 rpm is quieter than 3000");
+assert_f_lt(m_lo, m_run, "motor: 300 rpm is quieter than 3000");
 var c_lo = rest_rms(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_from(300), 0.1));
 var c_hi = rest_rms(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_from(3000), 0.1));
-assert_lt(c_lo, c_hi, "chain_drive: 300 rpm is quieter than 3000");
+assert_f_lt(c_lo, c_hi, "chain_drive: 300 rpm is quieter than 3000");
 var b_lo = rest_rms(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.6, SR), f64_from(200), 0.1));
-assert_lt(b_lo, b_run, "belt_drive: 200 rpm is quieter than 2000");
+assert_f_lt(b_lo, b_run, "belt_drive: 200 rpm is quieter than 2000");
 var g_lo = rest_rms(ghurni_gear_synthesize(ghurni_gear_new(32, GH_GEAR_STEEL, SR), f64_from(150), 0.1));
-assert_lt(g_lo, g_run, "gear: 150 rpm is quieter than 1500");
+assert_f_lt(g_lo, g_run, "gear: 150 rpm is quieter than 1500");
 
 # --- clock is EXEMPT: a fixed-rate escapement, not RPM-driven (ADR-005) ---
 var ck_a = rest_rms(ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR), 0.2));
 var ck_b = rest_rms(ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR), 0.2));
 assert_eq(ck_a, ck_b, "clock is deterministic");
-assert_gt(ck_a, 0.001, "clock ticks regardless of rpm -- deliberately exempt from the law");
+assert_f_gt(ck_a, 0.001, "clock ticks regardless of rpm -- deliberately exempt from the law");
 
 # ================================================================
 test_group("ghurni_rpm_gain: the law itself (ADR-005)");
@@ -617,15 +623,15 @@ assert_eq(ghurni_rpm_gain(0, REF), 0, "gain(0) = 0 exactly");
 assert_eq(ghurni_rpm_gain(REF, REF), F64_ONE, "gain(ref) = 1.0 EXACTLY -- nominal audio is unchanged");
 # 2r/(r+1): r=0.5 -> 0.6667, r=2 -> 1.3333
 var half = ghurni_rpm_gain(f64_from(750), REF);
-assert_gt(half, 0.6666, "gain(ref/2) ~ 0.6667");
-assert_lt(half, 0.6667, "gain(ref/2) ~ 0.6667");
+assert_f_gt(half, 0.6666, "gain(ref/2) ~ 0.6667");
+assert_f_lt(half, 0.6667, "gain(ref/2) ~ 0.6667");
 var dbl = ghurni_rpm_gain(f64_from(3000), REF);
-assert_gt(dbl, 1.3333, "gain(2*ref) ~ 1.3333");
-assert_lt(dbl, 1.3334, "gain(2*ref) ~ 1.3333");
+assert_f_gt(dbl, 1.3333, "gain(2*ref) ~ 1.3333");
+assert_f_lt(dbl, 1.3334, "gain(2*ref) ~ 1.3333");
 # Monotonic and bounded by GHURNI_RPM_GAIN_MAX.
-assert_lt(ghurni_rpm_gain(f64_from(150), REF), ghurni_rpm_gain(f64_from(750), REF), "monotonic (low)");
-assert_lt(ghurni_rpm_gain(f64_from(3000), REF), ghurni_rpm_gain(f64_from(30000), REF), "monotonic (high)");
-assert_lt(ghurni_rpm_gain(f64_from(100000000), REF), GHURNI_RPM_GAIN_MAX, "saturates below the +6 dB ceiling");
+assert_f_lt(ghurni_rpm_gain(f64_from(150), REF), ghurni_rpm_gain(f64_from(750), REF), "monotonic (low)");
+assert_f_lt(ghurni_rpm_gain(f64_from(3000), REF), ghurni_rpm_gain(f64_from(30000), REF), "monotonic (high)");
+assert_f_lt(ghurni_rpm_gain(f64_from(100000000), REF), GHURNI_RPM_GAIN_MAX, "saturates below the +6 dB ceiling");
 # NaN sink -- f64_clamp propagates NaN, this absorbs it.
 assert_eq(ghurni_rpm_gain(f64_div(0, 0), REF), 0, "NaN rpm -> 0");
 assert_eq(ghurni_rpm_gain(GHURNI_POS_INF, REF), 0, "+inf rpm -> 0");
@@ -736,7 +742,7 @@ var ch60b = ghurni_chain_drive_synthesize(ghurni_chain_drive_new(60, 16, SR), f6
 assert_eq(buf_differs(ch60, ch60b), 0, "identical link counts stay bit-identical");
 # The lap modulation must not silence the chain or push it non-finite.
 assert_eq(all_finite_buf(ch60), 1, "lap-modulated chain is finite");
-assert_gt(rest_rms(ch60), 0.001, "lap-modulated chain still has energy");
+assert_f_gt(rest_rms(ch60), 0.001, "lap-modulated chain still has energy");
 
 # ================================================================
 test_group("clock tick and tock differ (ADR-006)");
@@ -761,14 +767,14 @@ var b0 = beat_peak(ck, 0);
 var b1 = beat_peak(ck, 1);
 var b2 = beat_peak(ck, 2);
 var b3 = beat_peak(ck, 3);
-assert_gt(b0, 0.05, "beat 0 is a real impact (not a vacuous compare)");
-assert_gt(b1, 0.05, "beat 1 is a real impact");
+assert_f_gt(b0, 0.05, "beat 0 is a real impact (not a vacuous compare)");
+assert_f_gt(b1, 0.05, "beat 1 is a real impact");
 # Odd beats (tocks) are the lighter pallet: softer than the ticks either side.
-assert_lt(b1, b0, "tock is softer than the tick before it");
-assert_lt(b1, b2, "tock is softer than the tick after it");
-assert_lt(b3, b2, "the pattern repeats: beat 3 is softer than beat 2");
+assert_f_lt(b1, b0, "tock is softer than the tick before it");
+assert_f_lt(b1, b2, "tock is softer than the tick after it");
+assert_f_lt(b3, b2, "the pattern repeats: beat 3 is softer than beat 2");
 # ...and it is an ALTERNATION, not a decay: tick 2 is not weaker than tick 0.
-assert_gt(b2, f64_mul(b0, 0.9), "ticks stay at tick level -- this alternates, it does not fade");
+assert_f_gt(b2, f64_mul(b0, 0.9), "ticks stay at tick level -- this alternates, it does not fade");
 
 # ================================================================
 test_group("differential: ring and pinion counts are individually audible (ADR-007)");
@@ -784,7 +790,7 @@ assert_eq(buf_differs(d_a, d_b), 1, "40/10 and 80/20 sound different despite the
 var d_a2 = ghurni_differential_synthesize(ghurni_differential_new(40, 10, SR), f64_from(3000), 0.3);
 assert_eq(buf_differs(d_a, d_a2), 0, "identical tooth counts stay bit-identical");
 assert_eq(all_finite_buf(d_a), 1, "ring-modulated differential is finite");
-assert_gt(rest_rms(d_a), 0.001, "ring-modulated differential still has energy");
+assert_f_gt(rest_rms(d_a), 0.001, "ring-modulated differential still has energy");
 
 # ================================================================
 test_group("all 8 MechanicalEvent kinds now DO something (ADR-008)");
@@ -806,20 +812,20 @@ fn ev_fresh() {
     return e;
 }
 var ev_base = ev_block(ev_fresh());
-assert_gt(rest_rms(ev_base), 0.01, "baseline engine is loud (not a vacuous compare)");
+assert_f_gt(rest_rms(ev_base), 0.01, "baseline engine is loud (not a vacuous compare)");
 
 var e_stall = ev_fresh();
 ghurni_engine_trigger_event(e_stall, ghurni_event_stall());
 var b_stall = ev_block(e_stall);
 assert_eq(buf_differs(ev_base, b_stall), 1, "STALL changes the render");
-assert_lt(rest_rms(b_stall), f64_mul(rest_rms(ev_base), 0.2), "STALL kills the engine");
+assert_f_lt(rest_rms(b_stall), f64_mul(rest_rms(ev_base), 0.2), "STALL kills the engine");
 
 var e_rev = ev_fresh();
 ghurni_engine_trigger_event(e_rev, ghurni_event_rev_limiter_hit());
 var b_rev = ev_block(e_rev);
 assert_eq(buf_differs(ev_base, b_rev), 1, "REV_LIMITER_HIT changes the render");
 # A limiter CHOPS rather than mutes: still loud, but not identical.
-assert_gt(rest_rms(b_rev), f64_mul(rest_rms(ev_base), 0.5), "rev limiter chops, it does not mute");
+assert_f_gt(rest_rms(b_rev), f64_mul(rest_rms(ev_base), 0.5), "rev limiter chops, it does not mute");
 
 var e_up = ev_fresh();
 ghurni_engine_trigger_event(e_up, ghurni_event_startup());
@@ -830,7 +836,7 @@ var e_dn = ev_fresh();
 ghurni_engine_trigger_event(e_dn, ghurni_event_shutdown());
 var b_dn = ev_block(e_dn);
 assert_eq(buf_differs(ev_base, b_dn), 1, "SHUTDOWN changes the render");
-assert_lt(rest_rms(b_dn), f64_mul(rest_rms(ev_base), 0.2), "SHUTDOWN winds the engine down");
+assert_f_lt(rest_rms(b_dn), f64_mul(rest_rms(ev_base), 0.2), "SHUTDOWN winds the engine down");
 
 # GEAR_SHIFT belongs to the TRANSMISSION, not the engine.
 var ev_ratios = vec_new();
@@ -859,7 +865,7 @@ ghurni_gear_set_load(g_loaded, 0.9);
 assert_eq(ghurni_gear_load(g_loaded), 0.9, "gear load reads back");
 var ld_g1 = ghurni_gear_synthesize(g_loaded, f64_from(1500), 0.2);
 assert_eq(buf_differs(ld_g0, ld_g1), 1, "a loaded gear sounds different");
-assert_gt(rest_rms(ld_g1), rest_rms(ld_g0), "a loaded gear is LOUDER");
+assert_f_gt(rest_rms(ld_g1), rest_rms(ld_g0), "a loaded gear is LOUDER");
 # Clamps and NaN.
 ghurni_gear_set_load(g_loaded, f64_from(5));
 assert_eq(ghurni_gear_load(g_loaded), F64_ONE, "gear load clamps to 1");
@@ -882,7 +888,7 @@ ghurni_differential_set_coasting(df_coast, 1);
 assert_eq(ghurni_differential_coasting(df_coast), 1, "coasting flag reads back");
 var b_coast = ghurni_differential_synthesize(df_coast, f64_from(3000), 0.2);
 assert_eq(buf_differs(b_drive, b_coast), 1, "drive and coast sound different");
-assert_lt(rest_rms(b_coast), rest_rms(b_drive), "the coast flank is quieter than the drive flank");
+assert_f_lt(rest_rms(b_coast), rest_rms(b_drive), "the coast flank is quieter than the drive flank");
 # Any non-zero is treated as coasting.
 ghurni_differential_set_coasting(df_coast, 7);
 assert_eq(ghurni_differential_coasting(df_coast), 1, "any non-zero means coasting");
@@ -1027,7 +1033,7 @@ fn br_rms(e, n) {
     return f64_sqrt(f64_div(acc, f64_from(n)));
 }
 var br_rms_default = br_rms(br_engine(), 44100);
-assert_gt(br_rms_default, 0.02, "baseline engine is loud (not a vacuous compare)");
+assert_f_gt(br_rms_default, 0.02, "baseline engine is loud (not a vacuous compare)");
 var br_low = br_engine();
 GhEngine_set_exhaust_resonance(br_low, f64_from(60));
 var br_low_buf = br_render(br_low, 4410);
@@ -1040,7 +1046,7 @@ assert_eq(br_ndiff(br_base, br_low_buf), 4363,
 # And the level is NOT the thing that moves -- pinned so the retired tripwire's
 # premise cannot be reintroduced by someone reading only its old message.
 var br_rms_low = br_rms(br_low, 44100);
-assert_gt(f64_div(br_rms_low, br_rms_default), 0.9,
+assert_f_gt(f64_div(br_rms_low, br_rms_default), 0.9,
   "a waveguide's throughput is level-invariant under retuning -- by design");
 
 var rc = assert_summary();

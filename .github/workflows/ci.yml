@@ -11,6 +11,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only by default. Nothing in CI writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: Build & Test
@@ -24,26 +28,39 @@ jobs:
         # the pin and hand it to the canonical upstream installer, which
         # fetches + lays out $HOME/.cyrius/{bin,lib}. Do NOT hand-roll
         # curl+tar+cp — scripts/install.sh is the supported entry point
-        # (matches prani / naad).
+        # (matches prani / naad). It is fetched at the PINNED tag, not main: the
+        # installer runs with this job's token in reach, so the script deserves
+        # the same pinning as the actions above.
         run: |
           set -e
           CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          printf '%s' "$CYRIUS_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "cyrius pin is not a plain version: $CYRIUS_VERSION"; exit 1; }
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+          curl -sSf "https://raw.githubusercontent.com/MacCracken/cyrius/$CYRIUS_VERSION/scripts/install.sh" | \
             CYRIUS_VERSION="$CYRIUS_VERSION" sh
           echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
 
       - name: Resolve dependencies
         run: cyrius deps
 
+      - name: Vendored lib/ is what the tags resolve
+        # lib/ is committed, so a hand-edited bundle would otherwise ship.
+        # --locked resolves the tags and compares, writing nothing.
+        run: cyrius deps --locked
+
       - name: Build
         run: |
           mkdir -p build
           cyrius build src/main.cyr build/${{ github.event.repository.name }}
 
+      - name: Run the smoke entry
+        # `cyrius test` does not run src/main.cyr, so this is the only thing
+        # that executes the dist bundle the way a consumer does.
+        run: ./build/${{ github.event.repository.name }}
+
       - name: Test
-        # Bare `cyrius test` picks up the [build] entry AND auto-discovers
-        # tests/*.tcyr — the whole behavioural-parity suite.
+        # Bare `cyrius test` auto-discovers tests/*.tcyr.
         run: cyrius test
 
       - name: Bundle is in sync with src/
@@ -68,6 +85,11 @@ jobs:
           test -n "$(ls fuzz/*.fcyr 2>/dev/null)" || {
             echo "no fuzz harness found in fuzz/ -- cyrius fuzz would pass vacuously"; exit 1; }
           cyrius fuzz
+
+      - name: Fuzz under allocator poison
+        # Same harness with guard zones and poisoned allocations, so an overwrite
+        # stops the run where the plain fuzz would carry on.
+        run: cyrius fuzz --poison
 
       - name: Coverage ratchet
         # A FLOOR, not a target. Coverage is not a correctness proof -- 2.0.1

@@ -12,8 +12,9 @@ include "lib/goonj.cyr"
 include "lib/naad.cyr"
 include "dist/ghurni.cyr"
 
-# Smoke entry: constructs each synth family, renders a short block through the
-# mixer, and exits 0. `cyrius test` runs this alongside the .tcyr suites.
+# Smoke entry: constructs an engine and a gear, renders a short block through the
+# mixer, and exits 0 only if the audio is finite. `cyrius test` does not run this;
+# CI builds it and runs it as its own step.
 fn main() {
     alloc_init();
 

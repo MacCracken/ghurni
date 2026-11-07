@@ -24,7 +24,6 @@
 # GhDcBlocker_to_json / _from_json_str -- ports the Rust `#[derive(Serialize,
 # Deserialize)]` on DcBlocker. Roundtrip tested in tests/foundations.tcyr.
 #derive(accessors)
-#derive(Serialize)
 struct GhDcBlocker {
     x_prev: i64;
     y_prev: i64;
@@ -39,12 +38,11 @@ struct GhDcBlocker {
 # validate_sample_rate. Cyrius has no visibility control -- the flat distlib
 # namespace exposes it -- so it must survive a direct call with a bad rate.
 #
-# A non-positive rate needs no special case: TAU*10/0 is +inf, 1 - inf is -inf,
-# and the clamp floors it at 0.9, which is a stable pole. NaN is the one value
-# the oracle's expression cannot absorb, because f64_clamp PROPAGATES NaN where
-# f64_max/f64_min would swallow it -- an unguarded NaN rate poisons r and every
-# sample that ever passes through the filter. Treat it as the degenerate case
-# the clamp already handles.
+# A non-positive rate needs no special case of its own: the clamp lands it on a
+# stable pole (0.9 at a rate of 0, 0.9999 at a small negative one). NaN and -Inf
+# are the values the clamp cannot be trusted with, because f64_clamp PROPAGATES
+# NaN where f64_max/f64_min would swallow it, and an unguarded NaN r poisons every
+# sample that ever passes through the filter. Those take the guard below.
 #must_use
 fn ghurni_dcblocker_new(sample_rate) {
     var b = alloc(sizeof(GhDcBlocker));
@@ -58,22 +56,44 @@ fn ghurni_dcblocker_new(sample_rate) {
 }
 
 # process(x) -- one sample. y = x - x_prev + r*y_prev; then shift state.
-#inline
+#
+# Two guards on y, which is the only feedback state here (2.7.2). A non-finite y
+# used to latch for the life of the filter, so one bad sample silenced the output
+# for good: the sample and the state are both zeroed instead. A subnormal y is
+# flushed, because r*y otherwise sticks a few hundred ulps above zero and never
+# reaches it. Exact zeros are left alone so -0.0 keeps its sign, which is what
+# keeps every normal sample bit-identical.
 fn ghurni_dcblocker_process(b, x) {
     var y = f64_add(f64_sub(x, GhDcBlocker_x_prev(b)), f64_mul(GhDcBlocker_r(b), GhDcBlocker_y_prev(b)));
+    var e = y & GHURNI_F64_EXP_MASK;
+    if (e == GHURNI_F64_EXP_MASK) { y = 0; x = 0; }
+    elif ((e == 0) && ((y & GHURNI_F64_ABS_MASK) != 0)) { y = 0; }
     GhDcBlocker_set_x_prev(b, x);
     GhDcBlocker_set_y_prev(b, y);
     return y;
 }
 
-# process_buffer(samples) -- DC-block a vec of f64 samples in place.
+# process_buffer(samples) -- DC-block a vec of f64 samples in place. The same
+# arithmetic as process(), with the state in locals for the length of the block.
 fn ghurni_dcblocker_process_buffer(b, samples) {
     var n = vec_len(samples);
+    var r = GhDcBlocker_r(b);
+    var x_prev = GhDcBlocker_x_prev(b);
+    var y_prev = GhDcBlocker_y_prev(b);
     var i = 0;
     while (i < n) {
-        vec_set(samples, i, ghurni_dcblocker_process(b, vec_get(samples, i)));
+        var x = vec_get(samples, i);
+        var y = f64_add(f64_sub(x, x_prev), f64_mul(r, y_prev));
+        var e = y & GHURNI_F64_EXP_MASK;
+        if (e == GHURNI_F64_EXP_MASK) { y = 0; x = 0; }
+        elif ((e == 0) && ((y & GHURNI_F64_ABS_MASK) != 0)) { y = 0; }
+        vec_set(samples, i, y);
+        x_prev = x;
+        y_prev = y;
         i = i + 1;
     }
+    GhDcBlocker_set_x_prev(b, x_prev);
+    GhDcBlocker_set_y_prev(b, y_prev);
     return 0;
 }
 
@@ -84,6 +104,52 @@ fn ghurni_dcblocker_reset(b) {
     return 0;
 }
 
+# Serde. Fields travel as exact f64 bit patterns in decimal. Anything that could
+# not have come from a real blocker is refused: a non-finite state never leaves,
+# and an r outside the constructor's own clamp is unstable or does no blocking.
+# to_json(ptr, sb) -> 0 or GH_ERR_*.
+fn GhDcBlocker_to_json(ptr, sb) {
+    if ((ptr < GHURNI_MIN_VALID_PTR) || (sb < GHURNI_MIN_VALID_PTR)) { return GH_ERR_INVALID_PARAMETER; }
+    return GhJson_write3(
+        sb,
+        "x_prev",
+        GhDcBlocker_x_prev(ptr),
+        "y_prev",
+        GhDcBlocker_y_prev(ptr),
+        "r",
+        GhDcBlocker_r(ptr));
+}
+
+# Build a blocker from three read fields, or GH_ERR_INVALID_PARAMETER.
+fn GhDcBlocker_from_vals(vals) {
+    var x = load64(vals);
+    var y = load64(vals + 8);
+    var r = load64(vals + 16);
+    if ((ghurni_is_finite(x) == 0) || (ghurni_is_finite(y) == 0)) { return GH_ERR_INVALID_PARAMETER; }
+    if ((f64_ge(r, 0.9) == 0) || (f64_le(r, 0.9999) == 0)) { return GH_ERR_INVALID_PARAMETER; }
+    var b = alloc(sizeof(GhDcBlocker));
+    GhDcBlocker_set_x_prev(b, x);
+    GhDcBlocker_set_y_prev(b, y);
+    GhDcBlocker_set_r(b, r);
+    return b;
+}
+
+# from_json_str(json) -> ptr or GH_ERR_INVALID_PARAMETER.
+#must_use
+fn GhDcBlocker_from_json_str(json) {
+    var vals[24];
+    if (GhJson_read3(json, "x_prev", "y_prev", "r", &vals) == 0) { return GH_ERR_INVALID_PARAMETER; }
+    return GhDcBlocker_from_vals(&vals);
+}
+
+# from_json(pairs) -> ptr or GH_ERR_INVALID_PARAMETER.
+#must_use
+fn GhDcBlocker_from_json(pairs) {
+    var vals[24];
+    if (GhJson_pairs3(pairs, "x_prev", "y_prev", "r", &vals) == 0) { return GH_ERR_INVALID_PARAMETER; }
+    return GhDcBlocker_from_vals(&vals);
+}
+
 # ================================================================
 # Validation. Rust returned Result<()>; the port returns GH_ERR_NONE (0) on
 # success or GH_ERR_INVALID_PARAMETER, logging a warning first (ports the
@@ -91,7 +157,10 @@ fn ghurni_dcblocker_reset(b) {
 # ================================================================
 #must_use
 fn ghurni_validate_sample_rate(sample_rate) {
-    if (f64_le(sample_rate, 0) == 1) {
+    # The floor is 1 Hz, not 0. An INTEGER passed by mistake (44100 for
+    # f64_from(44100)) is a positive finite subnormal, and so is every rate that
+    # divides phase into Inf: both constructed a synth that rendered NaN for life.
+    if (f64_lt(sample_rate, F64_ONE) == 1) {
         ghurni_log_warn("ghurni: invalid sample rate (must be positive and finite)");
         return GH_ERR_INVALID_PARAMETER;
     }
@@ -234,8 +303,10 @@ var GHURNI_LOAD_TILT_ENGINE = 3.0;
 # non-finite, for the life of the object. The oracle had the same hole, so this
 # is a deliberate divergence, not a transliteration fix.
 #
-# Non-finite collapses to `lo`, which is the "off" end for every parameter this
-# guards: rpm -> stopped (or the synth's idle floor), load -> 0, tension -> 0.
+# Non-finite collapses to `lo`, which is the "off" end for rpm (stopped, or the
+# synth's idle floor) and load (0). It is NOT the safe end of every range: belt
+# tension 0 is the loud slack squeal and pan -1 is hard left, so those two check
+# ghurni_is_finite themselves.
 #must_use
 fn ghurni_finite_clamp(x, lo, hi) {
     if (ghurni_is_finite(x) == 0) { return lo; }
@@ -253,7 +324,9 @@ fn ghurni_rpm_gain(rpm, ref_rpm) {
     if (f64_le(ref_rpm, 0) == 1) { return 0; }
     if (f64_le(rpm, 0) == 1) { return 0; }
     var r = f64_div(rpm, ref_rpm);
-    return f64_div(f64_mul(f64_from(2), r), f64_add(r, F64_ONE));
+    var two_r = f64_mul(f64_from(2), r);
+    if (ghurni_is_finite(two_r) == 0) { return GHURNI_RPM_GAIN_MAX; }
+    return f64_div(two_r, f64_add(r, F64_ONE));
 }
 
 # Reference RPMs -- each mechanism's typical operating speed (ADR-005). Chosen

@@ -165,6 +165,99 @@ golden(ghurni_chain_drive_synthesize(ghurni_chain_drive_new(110, 16, SR), f64_fr
   4410, 298399442787342447, "chain 110 links 16t @3000");
 
 # ================================================================
+test_group("golden: control paths (2.7.2)");
+# Values recorded from the 2.7.1 render. Goldens used to cover only default
+# configurations, so 55 of 176 decimal literals could be doubled with the suite
+# green: every event level, every load and shift term. Events and load are the
+# paths a phase-integration change (2.8.0) will touch first, so they are pinned now.
+fn g_zeros(n) { var v = vec_new(); var i = 0; while (i < n) { vec_push(v, 0); i = i + 1; } return v; }
+# g_event(kind, a0) -- one block of a 4-cylinder engine just after the event.
+fn g_event(kind, a0) {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    ghurni_engine_set_load(e, 0.6);
+    ghurni_engine_process_block(e, g_zeros(2048));
+    ghurni_engine_trigger_event(e, ghurni_event_new(kind, a0, 0));
+    var o = g_zeros(4410);
+    ghurni_engine_process_block(e, o);
+    return o;
+}
+golden(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_TWO_STROKE, 2, SR), f64_from(5000), 0.7, 0.1),
+  4410, 1886428946148788853, "two-stroke 2cyl @5000 load 0.7");
+golden(g_event(GH_EVENT_BACKFIRE, 1), 4410, 0 - 4256336386691945894, "engine event BACKFIRE");
+golden(g_event(GH_EVENT_MISFIRE, 1), 4410, 0 - 7084327365825789876, "engine event MISFIRE");
+golden(g_event(GH_EVENT_KNOCK, 1), 4410, 0 - 7963611181796064589, "engine event KNOCK");
+golden(g_event(GH_EVENT_STALL, 1), 4410, 0 - 1717189687344370483, "engine event STALL");
+golden(g_event(GH_EVENT_REV_LIMITER_HIT, 1), 4410, 7244547223148626005, "engine event REV_LIMITER_HIT");
+golden(g_event(GH_EVENT_STARTUP, 1), 4410, 0 - 1590342024195677929, "engine event STARTUP");
+golden(g_event(GH_EVENT_SHUTDOWN, 1), 4410, 7720993068312565588, "engine event SHUTDOWN");
+var gg = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_gear_set_load(gg, 0.7);
+golden(ghurni_gear_synthesize(gg, f64_from(1500), 0.1), 4410, 1377788477134072868, "gear under load");
+golden(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_DC_BRUSHED, 8, SR), f64_from(4000), 0.5, 0.1),
+  4410, 0 - 4199621990139548193, "brushed motor");
+golden(ghurni_motor_synthesize(ghurni_motor_new(GH_MOTOR_AC_INDUCTION, 8, SR), f64_from(4000), 0.5, 0.1),
+  4410, 1625132178302510588, "induction motor");
+golden(
+  ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_WRISTWATCH, SR), F64_ONE),
+  44100,
+  994560110193977063,
+  "wristwatch");
+golden(
+  ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR), F64_ONE),
+  44100,
+  0 - 8271398183188355428,
+  "wall clock");
+golden(
+  ghurni_clock_synthesize(ghurni_clock_new(GH_CLOCK_POCKET_WATCH, SR), F64_ONE),
+  44100,
+  0 - 3731309146167166317,
+  "pocket watch");
+var gt = ghurni_transmission_new(g_ratios, 24, SR);
+ghurni_transmission_set_rpm(gt, f64_from(3000));
+ghurni_transmission_set_load(gt, 0.7);
+ghurni_transmission_process_block(gt, g_zeros(1024));
+ghurni_transmission_shift_to(gt, 2);
+var gto = g_zeros(4410);
+ghurni_transmission_process_block(gt, gto);
+golden(gto, 4410, 1057045606240660093, "transmission shift under load");
+var gd = ghurni_differential_new(41, 11, SR);
+ghurni_differential_set_rpm(gd, f64_from(3000));
+ghurni_differential_set_load(gd, 0.7);
+ghurni_differential_set_coasting(gd, 1);
+var gdo = g_zeros(4410);
+ghurni_differential_process_block(gd, gdo);
+golden(gdo, 4410, 4177860167889335151, "differential loaded and coasting");
+golden(ghurni_forced_induction_synthesize(ghurni_forced_induction_new(GH_INDUCTION_SUPERCHARGER, f64_from(2), 0.3, SR),
+    f64_from(5000), 0.8, 0.1),
+  4410, 0 - 5187097507001423249, "supercharger");
+var gf = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.05, SR);
+ghurni_forced_induction_set_rpm(gf, f64_from(5000));
+ghurni_forced_induction_set_load(gf, 0.8);
+ghurni_forced_induction_process_block(gf, g_zeros(8192));
+ghurni_forced_induction_trigger_bov(gf);
+var gfo = g_zeros(4410);
+ghurni_forced_induction_process_block(gf, gfo);
+golden(gfo, 4410, 8998718775305890894, "blow-off valve");
+golden(ghurni_belt_drive_synthesize(ghurni_belt_drive_new(f64_from(120), 0.05, SR), f64_from(2000), 0.1),
+  4410, 0 - 8072621952443161537, "slack belt");
+var gm = ghurni_mixer_new();
+ghurni_mixer_add_channel(gm, "a", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+ghurni_mixer_add_channel(gm, "b", GH_KIND_MOTOR, ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR));
+ghurni_mixer_set_rpm(gm, f64_from(2000));
+ghurni_mixer_set_channel_gain(gm, 0, 0.5);
+ghurni_mixer_set_channel_pan(gm, 1, 0.5);
+ghurni_mixer_set_master_gain(gm, 0.8);
+var gmo = g_zeros(4410);
+ghurni_mixer_process_block(gm, gmo);
+golden(gmo, 4410, 1022597843000704931, "mixer mono, gain and master");
+var gml = g_zeros(4410);
+var gmr = g_zeros(4410);
+ghurni_mixer_process_block_stereo(gm, gml, gmr);
+golden(gml, 4410, 2618789759692434452, "mixer left, through the pan law");
+golden(gmr, 4410, 3444679867906830671, "mixer right, through the pan law");
+
+# ================================================================
 test_group("golden: the checksum itself is sensitive");
 # A golden suite whose hash cannot tell two buffers apart is worse than none.
 # These prove the function reacts to magnitude, to ORDER, and to length.

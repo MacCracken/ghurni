@@ -2,12 +2,13 @@
 # Ports rust-old/src/smooth.rs (SmoothedParam). Prevents clicks when RPM / load
 # change mid-block by exponentially approaching the target. Was a `pub` type.
 #
-# Requires (from the build/test unit): stdlib alloc + math (F64_ONE, f64_*
-# builtins). The module file has no `include` lines.
+# Requires (from the build/test unit): error.cyr (ghurni_is_finite, GhJson_*) +
+# stdlib alloc + math (F64_ONE, f64_* builtins). The module file has no `include`
+# lines.
 #
-# serde: SmoothedParam was Serialize/Deserialize; RESTORED via #derive(Serialize)
-# (f64 fields typed i64 for lossless bit-pattern serialization). Auto-generates
-# GhSmoothedParam_to_json / _from_json_str.
+# serde: SmoothedParam was Serialize/Deserialize. Hand-written since 2.7.2 (the
+# derived scanner overran an unterminated key); f64 fields travel as exact bit
+# patterns. See the strict reader in error.cyr.
 
 # is_settled tolerance: 1e-6 (Rust used the literal 1e-6, not f32::EPSILON).
 var GHURNI_SMOOTH_SETTLE = 0.000001;   # 1e-6
@@ -19,7 +20,6 @@ var GHURNI_SMOOTH_SETTLE = 0.000001;   # 1e-6
 #   coeff   : one-pole coefficient exp(-1/(smooth_time_s*sample_rate)), or 0
 # ================================================================
 #derive(accessors)
-#derive(Serialize)
 struct GhSmoothedParam {
     current: i64;
     target: i64;
@@ -43,23 +43,35 @@ fn ghurni_smooth_new(initial, smooth_time_s, sample_rate) {
     if ((f64_gt(smooth_time_s, 0) == 1) && (f64_gt(sample_rate, 0) == 1)) {
         coeff = f64_exp(f64_neg(f64_div(F64_ONE, f64_mul(smooth_time_s, sample_rate))));
     }
-    GhSmoothedParam_set_current(p, initial);
-    GhSmoothedParam_set_target(p, initial);
+    # A non-finite start could never leave `current`: it is a feedback value.
+    var start = initial;
+    if (ghurni_is_finite(start) == 0) { start = 0; }
+    GhSmoothedParam_set_current(p, start);
+    GhSmoothedParam_set_target(p, start);
     GhSmoothedParam_set_coeff(p, coeff);
     return p;
 }
 
-# set_target(v) -- set the value to smoothly approach.
+# set_target(v) -- set the value to smoothly approach. A non-finite target is
+# ignored, as the mixer and synth setters ignore an out-of-range value.
 fn ghurni_smooth_set_target(p, target) {
+    if (ghurni_is_finite(target) == 0) { return 0; }
     GhSmoothedParam_set_target(p, target);
     return 0;
 }
 
 # next_value() -- advance one sample: current = target + coeff*(current-target).
-#inline
+#
+# Two guards on the result, which feeds back (2.7.2). A finite step can overflow
+# (+f64::MAX toward -f64::MAX), and Inf then stays forever, so a non-finite result
+# lands on the target. A smoother heading to 0 is a pure geometric decay that sticks
+# in subnormals and never arrives, so those flush. Exact zeros keep their sign.
 fn ghurni_smooth_next_value(p) {
     var target = GhSmoothedParam_target(p);
     var cur = f64_add(target, f64_mul(GhSmoothedParam_coeff(p), f64_sub(GhSmoothedParam_current(p), target)));
+    var e = cur & GHURNI_F64_EXP_MASK;
+    if (e == GHURNI_F64_EXP_MASK) { cur = target; }
+    elif ((e == 0) && ((cur & GHURNI_F64_ABS_MASK) != 0)) { cur = 0; }
     GhSmoothedParam_set_current(p, cur);
     return cur;
 }
@@ -87,4 +99,49 @@ fn ghurni_smooth_target(p) {
 fn ghurni_smooth_is_settled(p) {
     var d = f64_abs(f64_sub(GhSmoothedParam_current(p), GhSmoothedParam_target(p)));
     return f64_lt(d, GHURNI_SMOOTH_SETTLE);
+}
+
+# Serde. Fields travel as exact f64 bit patterns in decimal. Refuses a non-finite
+# value, and a coeff outside [0, 1], which would be unstable.
+# to_json(ptr, sb) -> 0 or GH_ERR_*.
+fn GhSmoothedParam_to_json(ptr, sb) {
+    if ((ptr < GHURNI_MIN_VALID_PTR) || (sb < GHURNI_MIN_VALID_PTR)) { return GH_ERR_INVALID_PARAMETER; }
+    return GhJson_write3(
+        sb,
+        "current",
+        GhSmoothedParam_current(ptr),
+        "target",
+        GhSmoothedParam_target(ptr),
+        "coeff",
+        GhSmoothedParam_coeff(ptr));
+}
+
+# Build a smoother from three read fields, or GH_ERR_INVALID_PARAMETER.
+fn GhSmoothedParam_from_vals(vals) {
+    var cur = load64(vals);
+    var tgt = load64(vals + 8);
+    var coeff = load64(vals + 16);
+    if ((ghurni_is_finite(cur) == 0) || (ghurni_is_finite(tgt) == 0)) { return GH_ERR_INVALID_PARAMETER; }
+    if ((f64_ge(coeff, 0) == 0) || (f64_le(coeff, F64_ONE) == 0)) { return GH_ERR_INVALID_PARAMETER; }
+    var p = alloc(sizeof(GhSmoothedParam));
+    GhSmoothedParam_set_current(p, cur);
+    GhSmoothedParam_set_target(p, tgt);
+    GhSmoothedParam_set_coeff(p, coeff);
+    return p;
+}
+
+# from_json_str(json) -> ptr or GH_ERR_INVALID_PARAMETER.
+#must_use
+fn GhSmoothedParam_from_json_str(json) {
+    var vals[24];
+    if (GhJson_read3(json, "current", "target", "coeff", &vals) == 0) { return GH_ERR_INVALID_PARAMETER; }
+    return GhSmoothedParam_from_vals(&vals);
+}
+
+# from_json(pairs) -> ptr or GH_ERR_INVALID_PARAMETER.
+#must_use
+fn GhSmoothedParam_from_json(pairs) {
+    var vals[24];
+    if (GhJson_pairs3(pairs, "current", "target", "coeff", &vals) == 0) { return GH_ERR_INVALID_PARAMETER; }
+    return GhSmoothedParam_from_vals(&vals);
 }

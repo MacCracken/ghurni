@@ -5,6 +5,192 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.2] - 2026-11-07
+
+**P(-1) sweep: audit, hardening, optimization, refactor, security sweep and repair.**
+Four independent audits by module cluster, each required to reproduce a defect before
+reporting it, plus mechanical sweeps of the whole public surface. Every defect whose fix
+keeps valid audio is fixed here. The ones whose fix would change it are scheduled for
+2.8.0 and 3.0.0 instead.
+
+**Rendered audio on valid input is byte-identical to 2.7.1**, over three raw-bit
+sweeps and about 10.6M samples: every synth, engine event, preset and mixer path, every
+setter mid-stream at three sample rates and varied block sizes, and a dense drivetrain
+sweep. No golden moved, and 22 new ones were recorded from the 2.7.1 render.
+
+### Fixed — memory safety and crashes
+
+- **`GhEvent_from_json_str` read past the end of its string.** An unterminated key ran
+  `#derive(Serialize)`'s scanner past the NUL and into the next allocation, and
+  reproduced, it parsed `kind = 3` out of a neighbouring buffer. The derive is gone from
+  `GhEvent`, `GhDcBlocker` and `GhSmoothedParam`, and the same names are hand-written
+  over one strict reader: every read stops at the NUL, each key appears exactly once,
+  the values are integers, and nothing may follow the closing brace. The fault is in
+  cyrius's generator, filed there as
+  `docs/development/issues/2026-11-07-derive-serialize-key-scan-reads-past-nul.md`.
+- **Every `*_from_name` faulted on a null or an error code.** Rust's `&str` could not be
+  null. All eight now return their not-found value.
+- **A failed result passed on faulted.** A failed `synthesize` or parse returns a
+  negative code, so passing it on is reachable. Every `process_block`, both
+  `trigger_event`s, `set_firing_order`, `transmission_new`, the mixer and the four tag
+  dispatchers now refuse it with `GH_ERR_INVALID_PARAMETER`.
+- **`ghurni_engine_compute_even_firing` ended the process** on a large count, because it
+  was public here where Rust kept it private behind a clamped caller. It clamps to 1..16.
+- **A failed parse looked like success.** The JSON readers return 0 on failure no longer;
+  they return `GH_ERR_INVALID_PARAMETER`, as the rest of the library does.
+
+### Fixed — wrong output and persistent damage
+
+- **A restart after STALL or SHUTDOWN could click at up to +60 dB.** As rpm collapses,
+  the integrated combustion pulse divides one ulp by a step of about 1e-21, and the
+  result latched in the exhaust duct's loop. Reproduced on 2.7.1: duct state 261 where
+  1.2 is normal, and 7 of 100 restarts peaking above full scale, the worst at 33. The
+  exact pulse lies in [0, 2], since the envelope is at most 1 and the window at most two
+  steps wide, so it is clamped there. Only rounding ever escapes that bound, so valid
+  audio cannot move. Now: duct state 1.2, 0 of 100 restarts over 1.0.
+- **An integer sample rate built a synth that rendered NaN for life.** `44100` passed
+  where `f64_from(44100)` belongs is a positive subnormal, which passed validation. So
+  did any rate below 1 Hz. `ghurni_validate_sample_rate` now refuses below 1 Hz.
+- **The mixer leaked its scratch buffers whenever the block size changed**: 16 MB over
+  500 alternations of two channels. It reuses them in place now, at 0 bytes.
+- **One NaN or Inf latched in a smoother or the DC blocker for good.** A non-finite
+  target or start is ignored, a finite step that overflows lands on the target, and a
+  non-finite DC-blocker output clears its state. A stray sample used to silence a synth
+  for the rest of its life.
+- **A gear ratio of 0, a natural way to write neutral, froze the mesh pitch for good.**
+  So did NaN or an integer pushed by mistake. An unusable ratio now leaves the shaft
+  undriven.
+- **A finite firing offset of 1e60 rendered Inf for good.** `ghurni_fmod` loses its range
+  that far out. Offsets beyond ±1e6 degrees, or non-finite ones, leave the order
+  unchanged.
+- **`+Inf` channel or master gain rendered a whole block non-finite**, and NaN or ±Inf
+  pan went hard left. Non-finite gain is now 0 and non-finite pan is centre.
+- **NaN belt tension chose the loudest setting**, a +30 dB squeal, because
+  `ghurni_finite_clamp`'s low end is slack. It means tight now. A `+Inf` turbine duct
+  built a duct oscillator at 0.49 of the sample rate; it now means no duct, as NaN did.
+- **`ghurni_engine_rpm` reported a speed the engine was not at** after STALL, SHUTDOWN
+  or STARTUP: 3000 two seconds into a stall. It reads the smoother's target.
+- **`ghurni_rpm_gain` escaped its documented 2.0 ceiling** on finite input.
+- **The tag dispatchers reported success for an unknown tag**, and
+  `ghurni_synth_process_block` discarded the synth's own error code.
+- **One synth could sit in two mixer channels**, stepping twice per block. Rust moved the
+  `Box`. `add_channel` refuses the second.
+- **A channel kept the caller's name pointer**, so reusing the buffer renamed the
+  channel. The name is copied.
+- **`set_firing_order` leaked 152 bytes per call.** It overwrites in place.
+- **Smoothers and the DC blocker stuck in subnormals** after decaying toward 0, costing
+  up to 23% on the affected synths on this Zen 3 and more on CPUs with a slower
+  subnormal path. They now reach exactly 0. Exact zeros keep their sign, which is what
+  keeps every normal sample bit-identical.
+
+### Security — CI and release
+
+- `ci.yml` had no `permissions` block, and `release.yml` granted `contents: write` to
+  the CI gate as well. Both default to read now; only the publishing job writes.
+- **The cyrius installer was fetched from `main`** while the toolchain itself was pinned,
+  so the script that runs with the job's token in reach was the one thing not pinned. It
+  is fetched at the pinned tag, after a check that the pin is a plain version.
+- **The changelog step put the tag inside an awk program as source text.** A legal tag
+  name ran a command through it, reproduced. The tag now goes in as data. Low severity:
+  the version check that runs first rejects any tag that is not the version, and pushing
+  a tag needs write access already.
+- CI also runs `cyrius deps --locked`, `cyrius fuzz --poison`, and the smoke binary, which
+  `cyrius test` never ran.
+
+### Changed
+
+- **Engine rendering is 8 to 11% faster**, and the mixer and forced induction about 5%,
+  all bit-identical. The engine evaluates `ghurni_fmod` directly on the two ranges where
+  its result is exact, and hoists per-sample constants. Transmission, differential, chain
+  and forced induction skip work while the smoothed rpm is unchanged. All ten synths now
+  share `ghurni_dcblocker_process_buffer`, which had no caller. The new per-sample guards
+  cost about 1 ns on the DC blocker and smoother. Median of 3 alternating runs:
+
+  | Path | 2.7.1 | 2.7.2 | Change |
+  |---|---|---|---|
+  | `engine_process_block` 4096 | 3,417 us | 3,055 us | -11% |
+  | `engine` 0.05 s | 1,419 us | 1,303 us | -8% |
+  | `mixer` 4 channels, 512 | 1,040 us | 992 us | -5% |
+  | `forced_induction` 0.05 s | 263 us | 251 us | -5% |
+  | DC blocker, smoother | 9 ns | 10 ns | +1 ns |
+
+- **Error codes**: a sample rate below 1 Hz now fails with `GH_ERR_INVALID_PARAMETER`
+  (-1) on every constructor. Some used to return `GH_ERR_SYNTHESIS_FAILED` (-2) from naad.
+- **New top-level names, which are not API**: the `GhJson_*` reader, the three
+  `Gh*_from_vals` builders, and `GHURNI_F64_EXP_MASK`, `GHURNI_F64_ABS_MASK` and
+  `GHURNI_FIRING_OFFSET_MAX`. Cyrius has no visibility control. No `ghurni_*` function
+  was added.
+- **Raw bits change only on input that was already broken**: the stall tail above, engine
+  sample rates of 1e20 and up (the same pulse rounding), samples below 2.2e-308, and the
+  `+Inf` duct.
+- `#inline` came off the four functions the compiler ignored it on, and two stray
+  `#must_use` lines that bound to `set_load` are gone, so the build has no warnings.
+
+### Tests
+
+- **10 suites / 642 assertions -> 15 suites / 1,013.** New: `sweep_2_7_2` (every repair,
+  each shown to fail on 2.7.1), `mixer_contract`, `recovery`, `names_events` and
+  `boundaries`.
+- **The suite could not see the mixer.** Deleting all of `ghurni_mixer_set_rpm`, ignoring
+  every gain, or overwriting instead of summing all stayed green. `mixer_contract`
+  compares mixer output bit for bit against the synths rendered alone.
+- **A STALL rendering 44,100 NaN samples passed.** `assert_gt` and `assert_lt` compare
+  raw i64s, so a NaN passes whichever its sign bit favours. The 95 float comparisons now
+  compare as floats; none was hiding a failure.
+- **22 new goldens**, recorded from the 2.7.1 render: every engine event, two-stroke,
+  two more motor types, three more clock types, load on gear, transmission and differential, a
+  shift, blow-off, supercharger, a slack belt, and the mixer's gain and pan law. The audit
+  found 55 of 176 decimal literals could be doubled with the suite green.
+- **Every repair was reverted one at a time** in a scratch copy, 35 in all, and the suite
+  caught each one. The first run let four through, and they were the useful part: the
+  JSON overrun only proves itself against an unmapped page, so the test now places each
+  prefix there.
+- Fuzz: 1,628 -> 2,235 checks, now including every event kind, hostile firing orders and
+  ratios, every truncation and one-byte corruption of a JSON document, and non-finite
+  rpm and load. That last was exempted as "a documented open item" since before 2.1.0
+  fixed it.
+
+### Docs
+
+- [ADR-011](docs/architecture/adr-011-allocation-failure.md): a refused allocation is
+  fail-stop, on measurement. That closes the item the roadmap carried as blocked upstream.
+- New guides: [adding a synth](docs/guides/adding-a-synth.md), which takes 22 steps where
+  the roadmap counted eight, and [moving the toolchain pin](docs/guides/toolchain-bump.md).
+- The roadmap is reorganized: completed work removed, arcs `2.8.0` through `2.13.0`, and
+  a `3.0.0` backlog.
+- Corrected the integration guide (smoothing, GEAR_SHIFT numbering, the silent turbo
+  through the mixer, seed collisions), `SECURITY.md` (the attack surface, and limits it
+  did not admit), and the source comments that described code as it used to be.
+
+### Not fixed: changes audio, scheduled
+
+[Roadmap](docs/development/roadmap.md) `2.8.0`: phase is position × current frequency, so
+RPM ramps scramble the engine's firing order and the chain's impact rate a minute into a
+stream; clock ticks lengthen as the rate drops; a misfire skips one sample; HYBRID STARTUP
+drives one synth at two pitches; block-stepped terms click; partials vanish below a 612 Hz
+sample rate; a negative ratio plays a 1 Hz mesh. `3.0.0`: GEAR_SHIFT's `to` is 0-based while
+`from` is 1-based, so top gear cannot be reached by event.
+
+### Verified
+
+- **API sweep**: all 177 public functions with all-zero arguments, then with a live object
+  and 11 hostile values each. 2,113 cases, no hang. All-zero faults went from 115 to 87,
+  all in the null page; process aborts on hostile values from 5 to 0; functions leaving
+  non-finite output from 3 to 0.
+- **Refused allocation**: 690 cases, 0 silently wrong, 0 hangs, faults at offset 16 at most.
+- **Real-time path**: 0 bytes per block on every synth and on the mixer at any mix of
+  block sizes. No denormal slowdown over 120 s at rest.
+- **294 extreme inputs**: no abort or hang. 34 changed behaviour: 28 report the clearer
+  error code and 6 sub-1 Hz rates are now refused. 16 more changed output only, all in the
+  regions listed under *Changed*.
+- **Consumers**: the 2.7.2 regression suite passes 138 of 138 against the bundle on cyrius
+  6.6.3 with naad 2.2.2, the oldest toolchain carrying it. dhvani's `tests/mechanical.tcyr`
+  passes 10 of 10 on its 6.6.10 pin. The dependency set is unchanged from 2.7.1, so its
+  6.7.2 floor stands.
+- `cyrius audit`, `cyrius fuzz`, `cyrius fuzz --poison`, `cyrius deny`,
+  `cyrius distlib --check`, `cyrius deps --locked`, `cyrius coverage --min 65` (76%, from
+  73%) and all five examples are clean.
+
 ## [2.7.1] - 2026-11-07
 
 Toolchain and dependency release, onto the newest tag of everything. `cyrius` 6.7.9 ->

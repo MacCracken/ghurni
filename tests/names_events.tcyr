@@ -1,0 +1,147 @@
+# names_events.tcyr -- wire names, numeric ids and event shape (2.7.2).
+#
+# Enum names and GH_EVENT_* values are a serde contract, and most had no test:
+# deleting an arm of a name map survived 57 times.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+var SR = f64_from(44100);
+
+test_group("every enum variant: literal wire name both ways, and its numeric value");
+# pin_kind(id, nm) -- the kind name and its inverse.
+fn pin_kind(id, nm) {
+    assert_streq(ghurni_kind_name(id), nm, nm);
+    assert_eq(ghurni_kind_from_name(nm), id, nm);
+    return 0;
+}
+# pin_event(id, nm) -- the event name and its inverse.
+fn pin_event(id, nm) {
+    assert_streq(ghurni_event_name(id), nm, nm);
+    assert_eq(ghurni_event_from_name(nm), id, nm);
+    return 0;
+}
+# pin_engine(id, nm) -- the engine type name and its inverse.
+fn pin_engine(id, nm) {
+    assert_streq(ghurni_enginetype_name(id), nm, nm);
+    assert_eq(ghurni_enginetype_from_name(nm), id, nm);
+    return 0;
+}
+# pin_gear(id, nm) -- the gear material name and its inverse.
+fn pin_gear(id, nm) {
+    assert_streq(ghurni_gearmaterial_name(id), nm, nm);
+    assert_eq(ghurni_gearmaterial_from_name(nm), id, nm);
+    return 0;
+}
+# pin_motor(id, nm) -- the motor type name and its inverse.
+fn pin_motor(id, nm) {
+    assert_streq(ghurni_motortype_name(id), nm, nm);
+    assert_eq(ghurni_motortype_from_name(nm), id, nm);
+    return 0;
+}
+# pin_clock(id, nm) -- the clock type name and its inverse.
+fn pin_clock(id, nm) {
+    assert_streq(ghurni_clocktype_name(id), nm, nm);
+    assert_eq(ghurni_clocktype_from_name(nm), id, nm);
+    return 0;
+}
+# pin_ind(id, nm) -- the induction type name and its inverse.
+fn pin_ind(id, nm) {
+    assert_streq(ghurni_inductiontype_name(id), nm, nm);
+    assert_eq(ghurni_inductiontype_from_name(nm), id, nm);
+    return 0;
+}
+pin_kind(0, "Engine"); pin_kind(1, "Gear"); pin_kind(2, "Motor"); pin_kind(3, "Turbine"); pin_kind(4, "Clock");
+pin_kind(5, "Transmission");
+pin_kind(6, "Differential");
+pin_kind(7, "ForcedInduction");
+pin_kind(8, "BeltDrive");
+pin_kind(9, "ChainDrive");
+pin_event(0, "Backfire"); pin_event(1, "Misfire"); pin_event(2, "Knock"); pin_event(3, "Stall");
+pin_event(4, "RevLimiterHit"); pin_event(5, "GearShift"); pin_event(6, "Startup"); pin_event(7, "Shutdown");
+pin_engine(0, "Gasoline"); pin_engine(1, "Diesel"); pin_engine(2, "TwoStroke"); pin_engine(3, "Hybrid");
+pin_gear(GH_GEAR_STEEL, "Steel");
+pin_gear(GH_GEAR_CAST_IRON, "CastIron");
+pin_gear(GH_GEAR_BRASS, "Brass");
+pin_gear(GH_GEAR_NYLON, "Nylon");
+pin_motor(GH_MOTOR_DC_BRUSHED, "DcBrushed");
+pin_motor(GH_MOTOR_AC_INDUCTION, "AcInduction");
+pin_motor(GH_MOTOR_BRUSHLESS, "Brushless");
+pin_motor(GH_MOTOR_SERVO, "Servo");
+pin_clock(GH_CLOCK_WRISTWATCH, "Wristwatch");
+pin_clock(GH_CLOCK_WALL_CLOCK, "WallClock");
+pin_clock(GH_CLOCK_GRANDFATHER_CLOCK, "GrandfatherClock");
+pin_clock(GH_CLOCK_POCKET_WATCH, "PocketWatch");
+pin_ind(GH_INDUCTION_TURBO, "Turbo"); pin_ind(GH_INDUCTION_SUPERCHARGER, "Supercharger");
+
+test_group("event constructors build the variant they name");
+assert_eq(GhEvent_kind(ghurni_event_backfire()), GH_EVENT_BACKFIRE, "backfire");
+assert_eq(GhEvent_kind(ghurni_event_misfire(2)), GH_EVENT_MISFIRE, "misfire");
+assert_eq(GhEvent_arg0(ghurni_event_misfire(2)), 2, "misfire cylinder");
+assert_eq(GhEvent_kind(ghurni_event_knock(2)), GH_EVENT_KNOCK, "knock");
+assert_eq(GhEvent_arg0(ghurni_event_knock(2)), 2, "knock cylinder");
+assert_eq(GhEvent_kind(ghurni_event_stall()), GH_EVENT_STALL, "stall");
+assert_eq(GhEvent_kind(ghurni_event_rev_limiter_hit()), GH_EVENT_REV_LIMITER_HIT, "rev limiter");
+assert_eq(GhEvent_kind(ghurni_event_startup()), GH_EVENT_STARTUP, "startup");
+assert_eq(GhEvent_kind(ghurni_event_shutdown()), GH_EVENT_SHUTDOWN, "shutdown");
+
+test_group("validators and the smoother guard both directions");
+assert_eq(ghurni_validate_sample_rate(f64_neg(F64_ONE)), GH_ERR_INVALID_PARAMETER, "negative rate rejected");
+assert_eq(ghurni_validate_sample_rate(f64_div(0, 0)), GH_ERR_INVALID_PARAMETER, "NaN rate rejected");
+assert_eq(ghurni_validate_duration(f64_div(0, 0)), GH_ERR_INVALID_PARAMETER, "NaN duration rejected");
+assert_eq(ghurni_validate_duration(GHURNI_POS_INF), GH_ERR_INVALID_PARAMETER, "inf duration rejected");
+assert_eq(GhSmoothedParam_coeff(ghurni_smooth_new(0, f64_neg(F64_ONE), SR)), 0, "negative tau -> coeff 0, not exp(+x)");
+assert_eq(GhSmoothedParam_coeff(ghurni_smooth_new(0, 0.05, f64_neg(F64_ONE))), 0, "negative rate -> coeff 0");
+var sn = ghurni_smooth_new(0, F64_ONE, SR);
+ghurni_smooth_set_target(sn, 0.0000005);
+assert_eq(ghurni_smooth_is_settled(sn), 1, "0.5e-6 away is settled");
+ghurni_smooth_set_target(sn, 0.0000015);
+assert_eq(ghurni_smooth_is_settled(sn), 0, "1.5e-6 away is not");
+
+test_group("knock is audible for its whole envelope, not one sample");
+# knock_block(armed) -- one block of a 4-cylinder engine, with or without a knock.
+fn knock_block(armed) {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    if (armed == 1) { ghurni_engine_trigger_event(e, ghurni_event_knock(1)); }
+    var b = vec_new(); var i = 0;
+    while (i < 4410) { vec_push(b, 0); i = i + 1; }
+    ghurni_engine_process_block(e, b);
+    return b;
+}
+var ka = knock_block(0); var kb = knock_block(1);
+var firstd = 0 - 1; var lastd = 0 - 1; var ki = 0;
+while (ki < 4410) {
+    if (vec_get(ka, ki) != vec_get(kb, ki)) { if (firstd < 0) { firstd = ki; } lastd = ki; }
+    ki = ki + 1;
+}
+assert_gte(firstd, 0, "a knock changes the render at all");
+assert_lte(firstd, 8, "from the first samples");
+assert_gt(lastd, firstd, "and past the first sample");
+var ke = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_trigger_event(ke, ghurni_event_knock(1));
+assert_eq(vec_get(GhEngine_knock_remaining(ke), 1), 882, "20 ms at 44.1 kHz");
+var kv = vec_new(); ki = 0;
+while (ki < 1000) { vec_push(kv, 0); ki = ki + 1; }
+ghurni_engine_process_block(ke, kv);
+assert_eq(vec_get(GhEngine_knock_remaining(ke), 1), 0, "the envelope ran to completion");
+
+var rc = assert_summary();
+syscall(60, rc);

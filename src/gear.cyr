@@ -6,7 +6,7 @@
 #
 # Requires (from the build/test unit): error.cyr (GH_ERR_*, GHURNI_DB_SCALE,
 # ghurni_is_err, ghurni_fmod), logging.cyr, dsp.cyr (GhDcBlocker + validation +
-# naad error map) + the naad bundle (osc_*/noise_*/filter_biquad_*/
+# naad error map) + the naad bundle (additive_*/noise_*/filter_biquad_*/
 # naad_db_to_amplitude) + stdlib alloc/vec/math. No `include` lines.
 #
 # PORT NOTES
@@ -45,6 +45,7 @@ fn ghurni_gearmaterial_name(t) {
 # gearmaterial_from_name(s) -- GH_GEAR_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_gearmaterial_from_name(s) {
+    if (s < GHURNI_MIN_VALID_PTR) { return (0 - 1); }
     if (streq(s, "Steel") == 1)    { return GH_GEAR_STEEL; }
     if (streq(s, "CastIron") == 1) { return GH_GEAR_CAST_IRON; }
     if (streq(s, "Brass") == 1)    { return GH_GEAR_BRASS; }
@@ -57,9 +58,10 @@ fn ghurni_gearmaterial_from_name(s) {
 # pointers (dc blocker / naad objects), all i64-wide.
 # NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
 # field roles are documented here instead:
-#   teeth(int 4+) material(int GH_GEAR_*) resonance(f64 Hz) decay(f64 s)
+#   teeth(int 4+) material(int GH_GEAR_*) resonance(f64 Hz)
+#   decay(f64, a fraction of a mesh cycle, despite the oracle's name decay_s)
 #   brightness(f64) sample_rate(f64) rpm(f64) load(f64 0..1) sample_position(int)
-#   dc_blocker(ptr GhDcBlocker) mesh_osc(ptr naad Oscillator)
+#   dc_blocker(ptr GhDcBlocker) mesh_osc(ptr naad AdditiveSynth)
 #   noise_gen(ptr naad NoiseGenerator) resonance_filter(ptr naad BiquadFilter)
 # ================================================================
 #derive(accessors)
@@ -107,7 +109,7 @@ fn ghurni_gear_new(teeth, material, sample_rate) {
     var nyq = f64_mul(sample_rate, 0.49);
     var initial_mesh_freq = f64_min(f64_from(100), nyq);
 
-    # naad backend: sine mesh oscillator + white noise + band-pass resonance.
+    # naad backend: mesh tone + white noise + band-pass resonance.
     # Mesh tone is a 3-partial ADDITIVE synth, not a pure sine (ADR-006). Real
     # spur-gear mesh has strong harmonics of the tooth-mesh frequency; a single
     # sine is the one thing a meshing gear never sounds like. The 2nd and 3rd
@@ -171,14 +173,10 @@ fn ghurni_gear_synthesize(self, rpm, duration) {
 # process_block(out) -- fill `out` (vec<f64>) with gear mesh sound, DC-block,
 # and advance the sample counter.
 fn ghurni_gear_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     ghurni_gear_process_block_naad(self, out);
-    var db = GhGear_dc_blocker(self);
     var n = vec_len(out);
-    var i = 0;
-    while (i < n) {
-        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
-        i = i + 1;
-    }
+    ghurni_dcblocker_process_buffer(GhGear_dc_blocker(self), out);
     GhGear_set_sample_position(self, GhGear_sample_position(self) + n);
     return 0;
 }
@@ -212,7 +210,8 @@ fn ghurni_gear_process_block_naad(self, out) {
         var mesh = f64_mul(f64_mul(additive_next_sample(mesh_osc), amp), 0.5);
 
         var abs_pos = f64_from(base_pos + i);
-        var mesh_phase = ghurni_fmod(f64_div(f64_mul(abs_pos, mesh_freq), sr), F64_ONE);
+        var mesh_cycles = f64_div(f64_mul(abs_pos, mesh_freq), sr);
+        var mesh_phase = f64_sub(mesh_cycles, f64_floor(mesh_cycles));   # fmod by 1, exactly
         var ring_env = F64_ONE;
         if (f64_lt(mesh_phase, 0.05) == 0) {
             ring_env = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(mesh_phase), decay), GHURNI_DB_SCALE));

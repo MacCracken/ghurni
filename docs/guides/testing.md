@@ -30,6 +30,11 @@ Each `tests/*.tcyr` file includes the `src/*.cyr` modules it needs directly
 | `hardening` | the P-1 regression suite — every defect fixed in 2.0.2, plus bit-identical block-size independence for all ten synths and hostile input on the engine resonance setters |
 | `oracle_pins` | every constant and contract the retired Rust oracle used to prove, each citing its source line; extended each release with the behaviour that release made real |
 | `goldens` | rendered-audio checksums — the gate that makes "a patch may not change audio" enforceable |
+| `sweep_2_7_2` | every defect the 2.7.2 P(-1) sweep repaired, each shown to fail on 2.7.1 |
+| `mixer_contract` | mixer output compared bit for bit against the synths rendered alone |
+| `recovery` | a bad value (NaN rpm, load, tension) must not silence a synth for life |
+| `names_events` | every enum's wire name both ways, the GH_EVENT_* values, event constructors |
+| `boundaries` | each constructor's error code, over-long synthesize, both ends of every clamp |
 | `spectral` | FFT assertions that audio lands where the RPM physics says — peak frequencies, load brightening for every load-taking synth, and the exhaust duct's odd-harmonic series and boom depth |
 
 ## Writing Assertions That Are Worth Having
@@ -80,6 +85,15 @@ If it passes there, it is measuring something else.
   forced-induction seed test compared rendered audio from two drive ratios — but
   drive ratio also sets the compressor speed, so the audio differed even with
   the seed defect reintroduced. It had to pull from the noise generator directly.
+
+**Compare floats as floats.** `assert_gt` and `assert_lt` compare raw i64s, so on an
+f64 a NaN passes whichever its sign bit favours: a STALL rendering 44,100 NaN samples
+passed "STALL kills the engine" until 2.7.2. Use `assert_f_gt` / `assert_f_lt`, or
+`assert_eq(f64_lt(a, b), 1, ...)`.
+
+**A refusal is not proof that nothing was read.** An overrun can still end in a
+refusal. To prove a parser stops at the NUL, put the input against an unmapped page,
+as `tests/sweep_2_7_2.tcyr` does.
 
 ## Mutation-Check Every New Assertion
 

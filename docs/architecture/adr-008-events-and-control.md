@@ -109,7 +109,8 @@ Both were carried forward from a survey and are no longer true:
 - **"`sample_position` is vestigial in three synths."** Two, not three:
   `differential` became a live reader in 2.3.0 when ring-revolution modulation
   landed. Only `transmission` and `forced_induction` still write it without
-  reading it.
+  reading it. *(Corrected in the 2.7.2 sweep: `motor` and `turbine` never read it
+  for phase either. The count was four.)*
 
 ## Deferred: per-component stems
 

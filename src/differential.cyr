@@ -6,7 +6,7 @@
 #
 # Requires (from the build/test unit): error.cyr (GH_ERR_*, ghurni_is_err),
 # dsp.cyr (GhDcBlocker + validation + naad error map), smooth.cyr
-# (GhSmoothedParam) + the naad bundle (osc_*/noise_*/filter_biquad_*) + stdlib
+# (GhSmoothedParam) + the naad bundle (additive_*/noise_*/filter_biquad_*) + stdlib
 # alloc/vec/math. No `include` lines.
 #
 # PORT NOTES
@@ -28,9 +28,9 @@
 # NOTE: struct bodies must NOT contain inline `#` comments (parser limitation);
 # field roles are documented here instead:
 #   ring_teeth(int, clamp 20..80) pinion_teeth(int, clamp 4..30)
-#   sample_rate(f64) rpm(f64) sample_position(int)
+#   sample_rate(f64) rpm(f64) sample_position(int) load(f64 0..1) coasting(int 0/1)
 #   smooth_rpm(ptr GhSmoothedParam) dc_blocker(ptr GhDcBlocker)
-#   whine_osc(ptr naad Oscillator) noise_gen(ptr naad NoiseGenerator)
+#   whine_osc(ptr naad AdditiveSynth) noise_gen(ptr naad NoiseGenerator)
 #   resonance_filter(ptr naad BiquadFilter)
 # ================================================================
 #derive(accessors)
@@ -71,7 +71,7 @@ fn ghurni_differential_new(ring_teeth, pinion_teeth, sample_rate) {
     # Resonant frequency of the differential housing.
     var housing_resonance = f64_min(f64_from(2500), nyquist);
 
-    # naad backend: sine whine oscillator + white noise + high-Q band-pass.
+    # naad backend: whine tone + white noise + high-Q band-pass.
     # Mesh tone is a 3-partial ADDITIVE synth, not a pure sine (ADR-006): real
     # hypoid mesh has strong harmonics of the tooth-mesh frequency, and a single
     # sine is the one thing meshing gears never sound like.
@@ -138,6 +138,7 @@ fn ghurni_differential_synthesize(self, rpm, duration) {
 # and advance the sample counter. The naad synthesis core is inlined here (as in
 # the Rust oracle).
 fn ghurni_differential_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     var smooth_rpm = GhDifferential_smooth_rpm(self);
     ghurni_smooth_set_target(smooth_rpm, GhDifferential_rpm(self));
     var nyquist = f64_mul(GhDifferential_sample_rate(self), 0.49);
@@ -159,25 +160,34 @@ fn ghurni_differential_process_block(self, out) {
         df_tilt = f64_mul(df_tilt, 1.6);
     }
 
+    var f60 = f64_from(60);
+    var pinion_f = f64_from(GhDifferential_pinion_teeth(self));
+    var p_over_r = f64_div(pinion_f, f64_from(GhDifferential_ring_teeth(self)));
+    var fund_hi = f64_div(nyquist, f64_from(3));
+    var last_s = 0x7FF8000000000001;
+    var ring_step = 0;
+    var df_gain = 0;
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
         var smooth = ghurni_smooth_next_value(smooth_rpm);
-        var mesh_freq = ghurni_differential_mesh_frequency(self, smooth);
+        if (smooth != last_s) {
+            last_s = smooth;
+            var rps = f64_div(smooth, f60);
+            additive_set_fundamental(whine_osc, f64_clamp(f64_mul(rps, pinion_f), F64_ONE, fund_hi));
+            ring_step = f64_div(f64_mul(rps, p_over_r), sr_d);
+            df_gain = ghurni_rpm_gain(smooth, GHURNI_REF_RPM_DIFFERENTIAL);
+        }
 
         # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
-        additive_set_fundamental(whine_osc, f64_clamp(mesh_freq, F64_ONE, f64_div(nyquist, f64_from(3))));
         # RING-REVOLUTION MODULATION (ADR-007). The driveshaft turns the PINION,
         # so the ring gear turns slower by the axle ratio: ring_rev_freq =
         # (rpm/60) * pinion/ring. Ring-gear runout and eccentricity therefore
         # modulate the whine once per RING revolution -- the slow warble a worn
         # or badly-shimmed diff has, and the reason ring and pinion counts are
         # both audible rather than only their ratio.
-        var ring_rev = f64_mul(f64_div(smooth, f64_from(60)),
-          f64_div(f64_from(GhDifferential_pinion_teeth(self)),
-            f64_from(GhDifferential_ring_teeth(self))));
         var abs_pos_d = f64_from(base_pos_d + i);
-        var ring_phase = ghurni_fmod(f64_mul(f64_div(ring_rev, sr_d), abs_pos_d), F64_ONE);
+        var ring_phase = ghurni_fmod(f64_mul(ring_step, abs_pos_d), F64_ONE);
         var ring_mod = f64_add(0.88, f64_mul(0.12, f64_cos(f64_mul(F64_TAU, ring_phase))));
         var whine = f64_mul(f64_mul(f64_mul(additive_next_sample(whine_osc), 0.2), ring_mod), df_amp);
 
@@ -189,24 +199,18 @@ fn ghurni_differential_process_block(self, out) {
         # ADR-005 RPM loudness law: 0 at rest, exactly 1.0 at the reference
         # speed (so nominal audio is unchanged), monotonic, +6 dB ceiling.
         var df_sum = f64_add(whine, f64_add(ring, noise_sample));
-        vec_set(out, i, f64_mul(df_sum, ghurni_rpm_gain(smooth, GHURNI_REF_RPM_DIFFERENTIAL)));
+        vec_set(out, i, f64_mul(df_sum, df_gain));
         i = i + 1;
     }
 
     var db = GhDifferential_dc_blocker(self);
-    var j = 0;
-    while (j < n) {
-        vec_set(out, j, ghurni_dcblocker_process(db, vec_get(out, j)));
-        j = j + 1;
-    }
+    ghurni_dcblocker_process_buffer(db, out);
     # LIVE as of 2.3.0: the ring-revolution modulation reads this for absolute
     # time. It was vestigial (written, never read) in every release before.
     GhDifferential_set_sample_position(self, GhDifferential_sample_position(self) + n);
     return 0;
 }
 
-# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
-#must_use
 # LOAD (2.4.0). A drivetrain under strain is louder and grittier than one
 # freewheeling. Both terms are EXACTLY 1.0 at load 0, the default, so an unloaded
 # synth renders bit-identically to 2.3.0 and the goldens do not move.

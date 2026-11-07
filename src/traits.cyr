@@ -8,9 +8,9 @@
 # trait objects "remain a library pattern, not compiler-native").
 #
 # The port replaces the trait object with a (kind, pointer) pair: each synth
-# instance is tagged with its GH_KIND_* discriminant, and a small dispatcher
-# (ghurni_synth_process_block / ghurni_synth_set_rpm, defined in mixer.cyr where
-# the heterogeneity actually lives) switches on the tag to call the concrete
+# instance is tagged with its GH_KIND_* discriminant, and four small dispatchers
+# (ghurni_synth_process_block, _set_rpm, _rpm and _sample_rate, defined in mixer.cyr
+# where the heterogeneity actually lives) switch on the tag to call the concrete
 # synth's method. These constants are the shared vocabulary between the synth
 # modules, the mixer, and consumers building heterogeneous synth collections.
 #
@@ -47,9 +47,11 @@ fn ghurni_kind_name(kind) {
 }
 
 # Inverse of ghurni_kind_name. Returns -1 for an unknown name, which every
-# GH_KIND_*-taking function rejects (ghurni_mixer_add_channel range-checks it).
+# GH_KIND_*-taking function refuses: add_channel, process_block and set_rpm return
+# GH_ERR_INVALID_PARAMETER, and the two getters return 0.
 #must_use
 fn ghurni_kind_from_name(s) {
+    if (s < GHURNI_MIN_VALID_PTR) { return (0 - 1); }
     if (streq(s, "Engine") == 1)          { return GH_KIND_ENGINE; }
     if (streq(s, "Gear") == 1)            { return GH_KIND_GEAR; }
     if (streq(s, "Motor") == 1)           { return GH_KIND_MOTOR; }

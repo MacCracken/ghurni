@@ -1,0 +1,443 @@
+# sweep_2_7_2.tcyr -- every defect the 2.7.2 P(-1) sweep repaired.
+#
+# Each group here fails or crashes on 2.7.1. Nothing in this file may move audio
+# on valid input: tests/goldens.tcyr and the raw-bit sweep are what prove that.
+#
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+var SR = f64_from(44100);
+var NANV = f64_div(0, 0);
+var F64MAX = 0x7FEFFFFFFFFFFFFF;
+# zeros(n) -- a vec of n zero samples.
+fn zeros(n) { var v = vec_new(); var i = 0; while (i < n) { vec_push(v, 0); i = i + 1; } return v; }
+# absmax(v) -- the largest absolute sample in v.
+fn absmax(v) {
+    var m = 0; var i = 0;
+    while (i < vec_len(v)) { var a = f64_abs(vec_get(v, i)); if (f64_gt(a, m) == 1) { m = a; } i = i + 1; }
+    return m;
+}
+# nonfinite(v) -- how many samples of v are NaN or infinite.
+fn nonfinite(v) {
+    var c = 0; var i = 0;
+    while (i < vec_len(v)) { if (ghurni_is_finite(vec_get(v, i)) == 0) { c = c + 1; } i = i + 1; }
+    return c;
+}
+# gear_mix() -- a one-channel mixer holding a steel gear.
+fn gear_mix() {
+    var m = ghurni_mixer_new();
+    ghurni_mixer_add_channel(m, "g", GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR));
+    ghurni_mixer_set_rpm(m, f64_from(1500));
+    return m;
+}
+# rr(...) -- a short ratio vec for transmission constructors.
+fn rr(a, b) { var r = vec_new(); vec_push(r, a); vec_push(r, b); return r; }
+
+# ================================================================
+test_group("the stall click: nothing past the exact pulse bound reaches the duct");
+# As rpm collapses the integrated pulse's divisor reaches about 1e-21 and its
+# numerator is one ulp. 2.7.1 latched peaks of 260+ in the duct's loop state, which
+# came back at up to +30 dB on a restart; the auditor reached +60 dB at long uptime.
+fn duct_peak_after(et, kind) {
+    var e = ghurni_engine_new(et, 4, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    ghurni_engine_set_load(e, 0.6);
+    var o = zeros(4410);
+    var b = 0;
+    while (b < 10) { ghurni_engine_process_block(e, o); b = b + 1; }
+    ghurni_engine_trigger_event(e, ghurni_event_new(kind, 0, 0));
+    var peak = 0;
+    b = 0;
+    while (b < 40) {
+        ghurni_engine_process_block(e, o);
+        var d = absmax(DelayLine_buffer(GhEngine_duct_line(e)));
+        if (f64_gt(d, peak) == 1) { peak = d; }
+        b = b + 1;
+    }
+    return peak;
+}
+assert_eq(f64_lt(duct_peak_after(GH_ENGINE_GASOLINE, GH_EVENT_STALL), f64_from(4)), 1, "gasoline STALL");
+assert_eq(f64_lt(duct_peak_after(GH_ENGINE_GASOLINE, GH_EVENT_SHUTDOWN), f64_from(4)), 1, "gasoline SHUTDOWN");
+assert_eq(f64_lt(duct_peak_after(GH_ENGINE_DIESEL, GH_EVENT_STALL), f64_from(4)), 1, "diesel STALL");
+
+test_group("engine_rpm reports the speed the engine is heading to");
+var er = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+ghurni_engine_set_rpm(er, f64_from(3000));
+ghurni_engine_trigger_event(er, ghurni_event_stall());
+assert_eq(ghurni_engine_rpm(er), 0, "STALL");
+ghurni_engine_trigger_event(er, ghurni_event_startup());
+assert_eq(ghurni_engine_rpm(er), f64_from(100), "STARTUP");
+ghurni_engine_set_rpm(er, f64_from(2500));
+assert_eq(ghurni_engine_rpm(er), f64_from(2500), "set_rpm");
+
+test_group("firing order: hostile values are refused, and no call leaks");
+assert_eq(vec_len(ghurni_engine_compute_even_firing(GH_ENGINE_GASOLINE, 300000000)), 16, "count clamped high");
+assert_eq(vec_len(ghurni_engine_compute_even_firing(GH_ENGINE_GASOLINE, 0 - 5)), 1, "count clamped low");
+assert_eq(
+    ghurni_is_err(ghurni_engine_set_firing_order(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), 0)),
+    1,
+    "null offsets");
+# firing_with(first) -- a 4-cylinder engine given a firing order starting at `first`.
+fn firing_with(first) {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    var off = vec_new();
+    vec_push(off, first); vec_push(off, f64_from(180)); vec_push(off, f64_from(360)); vec_push(off, f64_from(540));
+    ghurni_engine_set_firing_order(e, off);
+    return e;
+}
+var fo_huge = firing_with(0x4C69E3432963D5D9);   # 1.3e60: rendered Inf for life on 2.7.1
+assert_eq(vec_get(GhEngine_firing_offsets(fo_huge), 0), 0, "1.3e60 leaves the order alone");
+var fo_o = zeros(44100);
+ghurni_engine_process_block(fo_huge, fo_o);
+assert_eq(nonfinite(fo_o), 0, "and renders finite");
+assert_eq(f64_lt(absmax(fo_o), f64_from(4)), 1, "at a normal level");
+assert_eq(vec_get(GhEngine_firing_offsets(firing_with(0x439E87F85809DC00)), 0), 0, "5.5e17 refused");
+assert_eq(vec_get(GhEngine_firing_offsets(firing_with(NANV)), 0), 0, "NaN refused");
+assert_eq(vec_get(GhEngine_firing_offsets(firing_with(GHURNI_POS_INF)), 0), 0, "Inf refused");
+assert_eq(vec_get(GhEngine_firing_offsets(firing_with(f64_from(90))), 0), f64_from(90), "a real offset is taken");
+var fo_e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+var fo_v = vec_new();
+vec_push(fo_v, 0); vec_push(fo_v, f64_from(180)); vec_push(fo_v, f64_from(360)); vec_push(fo_v, f64_from(540));
+ghurni_engine_set_firing_order(fo_e, fo_v);
+var fo_u = alloc_used();
+var fo_i = 0;
+while (fo_i < 100) { ghurni_engine_set_firing_order(fo_e, fo_v); fo_i = fo_i + 1; }
+assert_eq(alloc_used() - fo_u, 0, "100 calls allocate nothing");
+vec_set(fo_v, 1, f64_from(7));
+assert_eq(vec_get(GhEngine_firing_offsets(fo_e), 1), f64_from(180), "the caller's vec is not the engine's");
+
+test_group("smoother: one bad value does not stay");
+var sm = ghurni_smooth_new(f64_from(5), 0.01, SR);
+ghurni_smooth_set_target(sm, NANV);
+assert_eq(ghurni_smooth_target(sm), f64_from(5), "NaN target ignored");
+ghurni_smooth_set_target(sm, GHURNI_POS_INF);
+assert_eq(ghurni_smooth_target(sm), f64_from(5), "Inf target ignored");
+assert_eq(ghurni_smooth_current(ghurni_smooth_new(NANV, 0.01, SR)), 0, "NaN start is 0");
+assert_eq(ghurni_smooth_current(ghurni_smooth_new(GHURNI_POS_INF, 0.01, SR)), 0, "Inf start is 0");
+var sov = ghurni_smooth_new(F64MAX, 0.01, SR);
+ghurni_smooth_set_target(sov, f64_neg(F64MAX));
+assert_eq(ghurni_is_finite(ghurni_smooth_next_value(sov)), 1, "a finite overflow lands on the target");
+var sub = ghurni_smooth_new(F64_ONE, 0.0001, SR);
+ghurni_smooth_set_target(sub, 0);
+var sn = 0;
+while (sn < 200000) { ghurni_smooth_next_value(sub); sn = sn + 1; }
+assert_eq(ghurni_smooth_current(sub), 0, "a decay to 0 arrives at exactly 0");
+
+test_group("dc blocker: one bad sample does not stay");
+var db = ghurni_dcblocker_new(SR);
+ghurni_dcblocker_process(db, NANV);
+assert_eq(ghurni_dcblocker_process(db, 0), 0, "NaN input leaves no state");
+ghurni_dcblocker_process(db, GHURNI_POS_INF);
+assert_eq(ghurni_is_finite(ghurni_dcblocker_process(db, 0.25)), 1, "Inf input leaves no state");
+var dz = ghurni_dcblocker_new(SR);
+ghurni_dcblocker_process(dz, F64_ONE);
+var dn = 0;
+var dlast = 1;
+while (dn < 2000000) { dlast = ghurni_dcblocker_process(dz, F64_ONE); dn = dn + 1; }
+assert_eq(dlast & GHURNI_F64_ABS_MASK, 0, "a decay to 0 arrives at exactly 0");
+var dneg = ghurni_dcblocker_new(SR);
+GhDcBlocker_set_y_prev(dneg, f64_neg(0));
+assert_eq(ghurni_dcblocker_process(dneg, f64_neg(0)), f64_neg(0), "-0.0 keeps its sign, or normal samples would move");
+# buffer_matches_process() -- 1 if process_buffer equals process, sample and state.
+fn buffer_matches_process() {
+    var a = ghurni_dcblocker_new(SR);
+    var b = ghurni_dcblocker_new(SR);
+    var v = vec_new();
+    vec_push(v, 0.5); vec_push(v, NANV); vec_push(v, f64_neg(0.25)); vec_push(v, GHURNI_POS_INF);
+    vec_push(v, 1); vec_push(v, f64_neg(0)); vec_push(v, 0.125); vec_push(v, 0);
+    var want = vec_new();
+    var i = 0;
+    while (i < vec_len(v)) { vec_push(want, ghurni_dcblocker_process(a, vec_get(v, i))); i = i + 1; }
+    ghurni_dcblocker_process_buffer(b, v);
+    i = 0;
+    while (i < vec_len(v)) { if (vec_get(v, i) != vec_get(want, i)) { return 0; } i = i + 1; }
+    return (GhDcBlocker_y_prev(a) == GhDcBlocker_y_prev(b)) && (GhDcBlocker_x_prev(a) == GhDcBlocker_x_prev(b));
+}
+assert_eq(buffer_matches_process(), 1, "process_buffer is process, bit for bit, on hostile input");
+
+test_group("sample rate floor: an integer passed by mistake is refused");
+var INT_RATE = 44100;   # the bit pattern of a positive subnormal, not 44100.0
+assert_eq(ghurni_validate_sample_rate(INT_RATE), GH_ERR_INVALID_PARAMETER, "integer rate");
+assert_eq(ghurni_validate_sample_rate(0.5), GH_ERR_INVALID_PARAMETER, "below 1 Hz");
+assert_eq(ghurni_validate_sample_rate(F64_ONE), GH_ERR_NONE, "1 Hz itself");
+assert_eq(ghurni_is_err(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, INT_RATE)), 1, "clock");
+assert_eq(ghurni_is_err(ghurni_gear_new(24, GH_GEAR_STEEL, INT_RATE)), 1, "gear");
+assert_eq(ghurni_is_err(ghurni_differential_new(41, 11, INT_RATE)), 1, "differential");
+assert_eq(ghurni_is_err(ghurni_chain_drive_new(110, 16, INT_RATE)), 1, "chain");
+
+test_group("rpm gain stays under its documented ceiling");
+assert_eq(ghurni_rpm_gain(F64MAX, F64_ONE), GHURNI_RPM_GAIN_MAX, "f64::MAX over 1");
+assert_eq(ghurni_rpm_gain(0x7E37E43C8800759C, 0x01A56E1FC2F8F359), GHURNI_RPM_GAIN_MAX, "1e300 over 1e-300");
+
+test_group("a bad gear ratio does not freeze the mesh pitch for life");
+# mesh_after(bad) -- the mesh smoother after a bad first gear and a shift to a good one.
+fn mesh_after(bad) {
+    var t = ghurni_transmission_new(rr(bad, f64_from(2)), 24, SR);
+    ghurni_transmission_set_rpm(t, f64_from(3000));
+    var o = zeros(4096);
+    ghurni_transmission_process_block(t, o);
+    ghurni_transmission_shift_to(t, 1);
+    var q = 0;
+    while (q < 60) { ghurni_transmission_process_block(t, o); q = q + 1; }
+    return ghurni_smooth_current(GhTransmission_mesh_rpm(t));
+}
+assert_eq(f64_gt(mesh_after(0), f64_from(1499)), 1, "ratio 0, a natural way to write neutral");
+assert_eq(f64_gt(mesh_after(NANV), f64_from(1499)), 1, "ratio NaN");
+assert_eq(f64_gt(mesh_after(3), f64_from(1499)), 1, "ratio pushed as an integer");
+# Shifting INTO a bad gear must leave the shaft undriven. Ignoring the bad target
+# would be silent and wrong in a different way: the mesh would hold the old pitch.
+fn undriven() {
+    var t = ghurni_transmission_new(rr(f64_from(2), 0), 24, SR);
+    ghurni_transmission_set_rpm(t, f64_from(3000));
+    ghurni_transmission_shift_to(t, 1);
+    return ghurni_transmission_output_rpm(t);
+}
+assert_eq(undriven(), 0, "output rpm through a ratio of 0");
+assert_eq(ghurni_is_err(ghurni_transmission_new(0, 24, SR)), 1, "null ratios");
+
+test_group("non-finite tension and duct take the quiet, safe end");
+assert_eq(GhBeltDrive_tension(ghurni_belt_drive_new(f64_from(120), NANV, SR)), F64_ONE, "belt ctor");
+var bt = ghurni_belt_drive_new(f64_from(120), 0.5, SR);
+ghurni_belt_drive_set_tension(bt, GHURNI_POS_INF);
+assert_eq(GhBeltDrive_tension(bt), F64_ONE, "belt setter");
+assert_eq(GhTurbine_duct_resonance(ghurni_turbine_new(12, GHURNI_POS_INF, SR)), 0, "turbine +Inf duct");
+assert_eq(GhTurbine_duct_resonance(ghurni_turbine_new(12, NANV, SR)), 0, "turbine NaN duct");
+
+test_group("process_block refuses a null or error-code buffer, on every synth");
+# Called directly, because the dispatcher has its own guard, which would hide these.
+var BADV = GH_ERR_INVALID_PARAMETER;
+assert_eq(ghurni_engine_process_block(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), BADV), BADV, "engine");
+assert_eq(ghurni_gear_process_block(ghurni_gear_new(24, GH_GEAR_STEEL, SR), BADV), BADV, "gear");
+assert_eq(ghurni_motor_process_block(ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR), BADV), BADV, "motor");
+assert_eq(ghurni_turbine_process_block(ghurni_turbine_new(12, f64_from(600), SR), BADV), BADV, "turbine");
+assert_eq(ghurni_clock_process_block(ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR), BADV), BADV, "clock");
+assert_eq(
+    ghurni_transmission_process_block(ghurni_transmission_new(rr(f64_from(3), f64_from(2)), 24, SR), BADV),
+    BADV,
+    "transmission");
+assert_eq(ghurni_differential_process_block(ghurni_differential_new(41, 11, SR), BADV), BADV, "differential");
+assert_eq(
+    ghurni_forced_induction_process_block(ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR), BADV),
+    BADV,
+    "forced induction");
+assert_eq(ghurni_belt_drive_process_block(ghurni_belt_drive_new(f64_from(120), 0.6, SR), BADV), BADV, "belt");
+assert_eq(ghurni_chain_drive_process_block(ghurni_chain_drive_new(110, 16, SR), BADV), BADV, "chain");
+assert_eq(
+    ghurni_synth_process_block(GH_KIND_GEAR, ghurni_gear_new(24, GH_GEAR_STEEL, SR), BADV),
+    BADV,
+    "and the dispatcher reports it");
+
+test_group("from_name survives a null or an error code");
+var P = 0;
+while (P > (0 - 2)) {
+    assert_eq(ghurni_kind_from_name(P), 0 - 1, "kind");
+    assert_eq(ghurni_event_from_name(P), 0 - 1, "event");
+    assert_eq(ghurni_err_from_name(P), 0 - 99, "err");
+    assert_eq(ghurni_enginetype_from_name(P), 0 - 1, "engine");
+    assert_eq(ghurni_gearmaterial_from_name(P), 0 - 1, "gear");
+    assert_eq(ghurni_motortype_from_name(P), 0 - 1, "motor");
+    assert_eq(ghurni_clocktype_from_name(P), 0 - 1, "clock");
+    assert_eq(ghurni_inductiontype_from_name(P), 0 - 1, "induction");
+    P = P - 1;
+}
+
+test_group("a failed parse handed to trigger_event is refused");
+var failed = GhEvent_from_json_str("garbage");
+assert_eq(ghurni_is_err(failed), 1, "a failed parse is an error code, not 0");
+assert_eq(
+    ghurni_is_err(ghurni_engine_trigger_event(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), failed)),
+    1,
+    "engine");
+assert_eq(ghurni_is_err(ghurni_transmission_trigger_event(ghurni_preset_manual_5speed(SR), failed)), 1, "transmission");
+
+test_group("dispatch refuses what add_channel refuses");
+var buf = zeros(4);
+vec_set(buf, 0, 7);
+assert_eq(ghurni_is_err(ghurni_synth_process_block(GH_KIND_ENGINE, 0 - 1, buf)), 1, "process_block, bad synth");
+assert_eq(ghurni_is_err(ghurni_synth_set_rpm(GH_KIND_GEAR, 0, F64_ONE)), 1, "set_rpm, bad synth");
+assert_eq(ghurni_synth_rpm(GH_KIND_GEAR, 0), 0, "rpm, bad synth");
+assert_eq(ghurni_synth_sample_rate(GH_KIND_GEAR, 100), 0, "sample_rate, bad synth");
+var dg = ghurni_gear_new(24, GH_GEAR_STEEL, SR);
+assert_eq(ghurni_synth_process_block(99, dg, buf), GH_ERR_INVALID_PARAMETER, "process_block, unknown tag");
+assert_eq(vec_get(buf, 0), 7, "and the buffer is untouched");
+assert_eq(ghurni_synth_set_rpm(0 - 1, dg, F64_ONE), GH_ERR_INVALID_PARAMETER, "set_rpm, unknown tag");
+assert_eq(ghurni_is_err(ghurni_mixer_process_block(gear_mix(), 0)), 1, "null out");
+assert_eq(ghurni_is_err(ghurni_mixer_process_block_stereo(gear_mix(), 0 - 1, buf)), 1, "error code as left");
+assert_eq(ghurni_is_err(ghurni_mixer_channel_scratch(0, 16)), 1, "scratch, null channel");
+
+test_group("mixer: non-finite gain and pan, ownership, and the block-size leak");
+var mg = gear_mix();
+var ch = vec_get(GhMixer_channels(mg), 0);
+ghurni_mixer_set_channel_gain(mg, 0, GHURNI_POS_INF);
+assert_eq(GhMixerChannel_gain(ch), 0, "+Inf channel gain collapses to 0");
+ghurni_mixer_set_master_gain(mg, GHURNI_POS_INF);
+assert_eq(GhMixer_master_gain(mg), 0, "+Inf master collapses to 0");
+ghurni_mixer_set_channel_pan(mg, 0, NANV);
+assert_eq(GhMixerChannel_pan(ch), 0, "NaN pan is centre, not hard left");
+ghurni_mixer_set_channel_pan(mg, 0, GHURNI_POS_INF);
+assert_eq(GhMixerChannel_pan(ch), 0, "+Inf pan is centre, not hard left");
+var md = ghurni_mixer_new();
+var once = ghurni_gear_new(24, GH_GEAR_STEEL, SR);
+assert_eq(ghurni_mixer_add_channel(md, "a", GH_KIND_GEAR, once), 0, "first channel");
+assert_eq(ghurni_mixer_add_channel(md, "b", GH_KIND_GEAR, once), GH_ERR_INVALID_PARAMETER, "one synth, two channels");
+assert_eq(ghurni_mixer_channel_count(md), 1, "and no channel was added");
+var name_buf = alloc(8);
+memcpy(name_buf, "abc", 4);
+var mn = ghurni_mixer_new();
+ghurni_mixer_add_channel(mn, name_buf, GH_KIND_GEAR, ghurni_gear_new(24, GH_GEAR_STEEL, SR));
+store8(name_buf, 88);
+assert_streq(GhMixerChannel_name(vec_get(GhMixer_channels(mn), 0)), "abc", "the name is the mixer's own copy");
+var m2 = gear_mix();
+var a = zeros(512); var b = zeros(511); var c = zeros(64);
+ghurni_mixer_process_block(m2, a);
+ghurni_mixer_process_block(m2, b);
+ghurni_mixer_process_block(m2, c);
+var u0 = alloc_used();
+var r = 0;
+while (r < 50) {
+    ghurni_mixer_process_block(m2, a);
+    ghurni_mixer_process_block(m2, b);
+    ghurni_mixer_process_block(m2, c);
+    r = r + 1;
+}
+assert_eq(alloc_used() - u0, 0, "no bytes across 150 mixed-size blocks");
+
+test_group("JSON: an unterminated key stops at the NUL");
+var h = alloc(32);
+memcpy(h, "{\"k", 3);
+store8(h + 3, 0);
+var g = alloc(64);
+memcpy(g, "\":0,\"kind\":3,\"arg0\":77}", 23);
+store8(g + 23, 0);
+assert_eq(GhEvent_from_json_str(h), GH_ERR_INVALID_PARAMETER, "2.7.1 read this out of the next allocation");
+# That alone cannot prove the fix: an overrun can still end in a refusal. So place
+# each prefix against an unmapped page. Reading one byte past the NUL faults here.
+var PAGE = syscall(9, 0, 8192, 3, 0x22, 0 - 1, 0);
+syscall(10, PAGE + 4096, 4096, 0);
+# at_page_end(s, n) -- n bytes of s, NUL-terminated, ending against an unmapped page.
+fn at_page_end(s, n) {
+    var p = PAGE + 4096 - (n + 1);
+    memcpy(p, s, n);
+    store8(p + n, 0);
+    return p;
+}
+var doc = "{\"kind\":5,\"arg0\":2,\"arg1\":3}";
+var cut = 0;
+var refused = 0;
+while (cut < strlen(doc)) {
+    if (GhEvent_from_json_str(at_page_end(doc, cut)) == GH_ERR_INVALID_PARAMETER) { refused = refused + 1; }
+    cut = cut + 1;
+}
+assert_eq(refused, strlen(doc), "every prefix is refused, with no read past its NUL");
+assert_eq(GhEvent_kind(GhEvent_from_json_str(at_page_end(doc, strlen(doc)))), 5, "and the whole document parses there");
+
+test_group("JSON: only a complete, in-range object parses");
+# bad_event(s) -- 1 if from_json_str refuses s.
+fn bad_event(s) { return GhEvent_from_json_str(s) == GH_ERR_INVALID_PARAMETER; }
+assert_eq(bad_event(0), 1, "null");
+assert_eq(bad_event(0 - 1), 1, "error code");
+assert_eq(bad_event(""), 1, "empty");
+assert_eq(bad_event("{}"), 1, "2.7.1 took this as a valid Backfire");
+assert_eq(bad_event("{\"GearShift\":{\"from\":2,\"to\":3}}"), 1, "the Rust wire form");
+assert_eq(bad_event("{\"kind\":1,\"arg0\":2}"), 1, "a missing member");
+assert_eq(bad_event("{\"kind\":1,\"kind\":2,\"arg0\":3}"), 1, "a duplicate member");
+assert_eq(bad_event("{\"kind\":1,\"arg0\":2,\"arg1\":3,\"x\":4}"), 1, "an unknown member");
+assert_eq(bad_event("{\"kind\":1,\"arg0\":2,\"arg1\":3}x"), 1, "trailing bytes");
+assert_eq(bad_event("{\"kind\":8,\"arg0\":0,\"arg1\":0}"), 1, "kind past the last event");
+assert_eq(bad_event("{\"kind\":-1,\"arg0\":0,\"arg1\":0}"), 1, "negative kind");
+assert_eq(bad_event("{\"kind\":1.5,\"arg0\":0,\"arg1\":0}"), 1, "a float where an integer belongs");
+assert_eq(bad_event("{\"kind\":12x34,\"arg0\":0,\"arg1\":0}"), 1, "digits with a letter in them");
+assert_eq(bad_event("{\"kind\":1,\"arg0\":99999999999999999999,\"arg1\":0}"), 1, "past INT64_MAX");
+assert_eq(bad_event("{\"kind\":1,\"arg0\":-,\"arg1\":0}"), 1, "a bare sign");
+# event_ok(s) -- arg1 of the parsed event, or 0 if the parse failed.
+fn event_ok(s) { var e = GhEvent_from_json_str(s); if (ghurni_is_err(e) == 1) { return 0; } return GhEvent_arg1(e); }
+assert_eq(event_ok(" { \"arg1\" : 3 ,\n\"kind\":5,\t\"arg0\":2 } "), 3, "whitespace and member order are free");
+assert_eq(
+    event_ok("{\"kind\":1,\"arg0\":0,\"arg1\":-9223372036854775808}"),
+    0 - 9223372036854775807 - 1,
+    "INT64_MIN fits");
+
+test_group("JSON: a parsed blocker or smoother cannot plant bad state");
+assert_eq(
+    ghurni_is_err(GhDcBlocker_from_json_str("{\"x_prev\":0,\"y_prev\":0,\"r\":9221120237041090560}")),
+    1,
+    "r NaN");
+assert_eq(
+    ghurni_is_err(GhDcBlocker_from_json_str("{\"x_prev\":0,\"y_prev\":0,\"r\":4611686018427387904}")),
+    1,
+    "r 2.0, finite but unstable");
+assert_eq(
+    ghurni_is_err(GhDcBlocker_from_json_str("{\"x_prev\":0,\"y_prev\":0,\"r\":0}")),
+    1,
+    "r 0, no blocking at all");
+assert_eq(
+    ghurni_is_err(GhDcBlocker_from_json_str("{\"x_prev\":9221120237041090560,\"y_prev\":0,\"r\":4607178334828536839}")),
+    1,
+    "x_prev NaN");
+assert_eq(
+    ghurni_is_err(GhSmoothedParam_from_json_str("{\"current\":0,\"target\":0,\"coeff\":4611686018427387904}")),
+    1,
+    "coeff 2.0");
+assert_eq(
+    ghurni_is_err(GhSmoothedParam_from_json_str("{\"current\":9218868437227405312,\"target\":0,\"coeff\":0}")),
+    1,
+    "current +Inf");
+assert_eq(ghurni_is_err(GhSmoothedParam_from_json_str("{\"current\":800.0}")), 1, "a plain float is not a bit pattern");
+
+test_group("JSON: every real value round-trips, exactly");
+var rb = ghurni_dcblocker_new(SR);
+ghurni_dcblocker_process(rb, f64_neg(0));
+ghurni_dcblocker_process(rb, 0.5);
+var sb1 = str_builder_new();
+assert_eq(GhDcBlocker_to_json(rb, sb1), 0, "blocker to_json");
+var rb2 = GhDcBlocker_from_json_str(str_data(str_builder_build(sb1)));
+assert_eq(GhDcBlocker_x_prev(rb2), GhDcBlocker_x_prev(rb), "x_prev");
+assert_eq(GhDcBlocker_y_prev(rb2), GhDcBlocker_y_prev(rb), "y_prev");
+assert_eq(GhDcBlocker_r(rb2), GhDcBlocker_r(rb), "r");
+var rs = ghurni_smooth_new(f64_neg(f64_from(800)), 0.05, SR);
+ghurni_smooth_set_target(rs, f64_neg(0));
+var sb2 = str_builder_new();
+GhSmoothedParam_to_json(rs, sb2);
+var rs2 = GhSmoothedParam_from_json_str(str_data(str_builder_build(sb2)));
+assert_eq(GhSmoothedParam_current(rs2), GhSmoothedParam_current(rs), "current, a negative f64");
+assert_eq(GhSmoothedParam_target(rs2), GhSmoothedParam_target(rs), "target, -0.0");
+assert_eq(GhSmoothedParam_coeff(rs2), GhSmoothedParam_coeff(rs), "coeff");
+var re = ghurni_event_gear_shift(2, 3);
+var sb3 = str_builder_new();
+GhEvent_to_json(re, sb3);
+var text = str_data(str_builder_build(sb3));
+assert_streq(text, "{\"kind\":5,\"arg0\":2,\"arg1\":3}", "the wire form did not change");
+assert_eq(ghurni_is_err(GhEvent_to_json(0, sb3)), 1, "to_json of null");
+assert_eq(ghurni_is_err(GhDcBlocker_to_json(0 - 1, sb3)), 1, "to_json of an error code");
+
+test_group("JSON: the parsed-pairs form holds to the same rules");
+var pe = GhEvent_from_json(bayan_json_parse(str_from(text)));
+assert_eq(GhEvent_kind(pe), 5, "pairs kind");
+assert_eq(GhEvent_arg1(pe), 3, "pairs arg1");
+assert_eq(GhEvent_from_json(0), GH_ERR_INVALID_PARAMETER, "null pairs");
+assert_eq(GhEvent_from_json(bayan_json_parse(str_from("{\"kind\":1}"))), GH_ERR_INVALID_PARAMETER, "missing members");
+assert_eq(
+    GhEvent_from_json(bayan_json_parse(str_from("{\"kind\":12,\"arg0\":0,\"arg1\":0}"))),
+    GH_ERR_INVALID_PARAMETER,
+    "bad kind");
+
+var rc = assert_summary();
+syscall(60, rc);

@@ -60,6 +60,7 @@ fn ghurni_turbine_new(blades, duct_resonance, sample_rate) {
     if (b > 64) { b = 64; }
 
     var duct = f64_max(duct_resonance, 0);
+    if (ghurni_is_finite(duct) == 0) { duct = 0; }   # NaN already lands here; +Inf did not
     var nyquist = f64_mul(sample_rate, 0.49);
 
     # blade_synth: 2-partial additive synth (fundamental 100 Hz, 2 partials).
@@ -134,14 +135,10 @@ fn ghurni_turbine_synthesize(self, rpm, duration) {
 # process_block(out) -- fill `out` (vec<f64>) with turbine sound, DC-block, and
 # advance the sample counter.
 fn ghurni_turbine_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     ghurni_turbine_process_block_naad(self, out);
-    var db = GhTurbine_dc_blocker(self);
     var n = vec_len(out);
-    var i = 0;
-    while (i < n) {
-        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
-        i = i + 1;
-    }
+    ghurni_dcblocker_process_buffer(GhTurbine_dc_blocker(self), out);
     GhTurbine_set_sample_position(self, GhTurbine_sample_position(self) + n);
     return 0;
 }

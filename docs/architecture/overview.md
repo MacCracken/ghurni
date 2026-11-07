@@ -70,10 +70,11 @@ which described the dual-path design, is superseded.
 
 Cyrius has no vtables and no dynamic dispatch, so Rust's
 `Box<dyn Synthesizer>` is replaced by a `(GH_KIND_*, pointer)` pair plus a
-hand-written switch in `mixer.cyr` (`ghurni_synth_process_block` /
-`ghurni_synth_set_rpm`). That switch is the explicit equivalent of the trait's
-vtable. `ghurni_mixer_add_channel` range-checks both the tag and the pointer, so
-a channel can never hold an unknown kind or a failed constructor's error code.
+hand-written switch in `mixer.cyr`: four of them, `ghurni_synth_process_block`,
+`_set_rpm`, `_rpm` and `_sample_rate`. They are the explicit equivalent of the trait's
+vtable. `ghurni_mixer_add_channel` and the dispatchers range-check both the tag and the
+pointer, so a channel can never hold an unknown kind or a failed constructor's error
+code.
 
 ## Data Flow
 
@@ -128,6 +129,9 @@ does**. Each one changed rendered audio deliberately and moved golden checksums.
 | [008](adr-008-events-and-control.md) | the control surface stops lying — five dead events made real |
 | [009](adr-009-no-stems-yet.md) | why stems were deferred, and why convolution is closed |
 | [010](adr-010-radiation-paths.md) | the exhaust becomes a quarter-wave duct that carries the pulse train |
+
+[ADR-011](adr-011-allocation-failure.md) changed no audio: it records that a refused
+allocation is fail-stop, on measurement.
 
 Two of those correct earlier claims made by this project, which is worth knowing
 before citing them: ADR-010 records that **ADR-009's acceptance criterion is

@@ -68,6 +68,7 @@ var GHURNI_DIESEL_CLATTER_AMP   = 0.55;
 # samples = fs / (2*f1). Negative loop gain => resonances at ODD multiples of
 # fs/(2D), which is the quarter-wave series, not the fs/D series a positive
 # comb would give.
+var GHURNI_FIRING_OFFSET_MAX = 1000000.0;   # degrees; past this ghurni_fmod loses its range
 var GHURNI_DUCT_MAX_DELAY = 2048;    # 44100/(2*2048) = 10.8 Hz lowest f1
 
 # Open-end pressure reflection magnitude. Physically |R| = 1 - (ka)^2/2 for a
@@ -117,8 +118,6 @@ var GHURNI_DUCT_FLOW = 0.55;
 # this puts the tailpipe back at a sane share of the mix.
 var GHURNI_DUCT_OUT = 8.30;
 
-# --- MEASUREMENT INSTRUMENTATION (scratch only; not part of the release diff) ---
-
 # Event sequence durations, in seconds (2.4.0). Five of the eight declared
 # MechanicalEvent kinds were accepted and SILENTLY DISCARDED until now -- the
 # oracle ignored them too (`_ => {}`), but the oracle retired in 2.0.4 and the
@@ -142,6 +141,7 @@ fn ghurni_enginetype_name(t) {
 # enginetype_from_name(s) -- GH_ENGINE_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_enginetype_from_name(s) {
+    if (s < GHURNI_MIN_VALID_PTR) { return (0 - 1); }
     if (streq(s, "Gasoline") == 1)  { return GH_ENGINE_GASOLINE; }
     if (streq(s, "Diesel") == 1)    { return GH_ENGINE_DIESEL; }
     if (streq(s, "TwoStroke") == 1) { return GH_ENGINE_TWO_STROKE; }
@@ -160,10 +160,11 @@ fn ghurni_enginetype_from_name(s) {
 #   knock_remaining(vec<int samples>) decel_pop_remaining(int)
 #   backfire_remaining(int) smooth_rpm/smooth_load(ptr GhSmoothedParam)
 #   dc_blocker(ptr GhDcBlocker) noise_gen(ptr naad NoiseGenerator)
-#   whine_synth(ptr naad AdditiveSynth, or 0) -- HYBRID only. Ports the Rust
-#     Option<> shape the same way turbine.cyr handles duct_osc: built only for
-#     GH_ENGINE_HYBRID, 0 for every other type, and guarded at the use site.
+#   stall_remaining/rev_limit_remaining/startup_remaining/shutdown_remaining(int)
+#   whine_synth(ptr naad AdditiveSynth) -- built for EVERY type since 2.4.0: it is
+#     the hybrid's electric drive and the STARTUP starter whir.
 #   exhaust_filter/intake_filter(ptr naad BiquadFilter)
+#   duct_line(ptr naad DelayLine) duct_loss_z/duct_rad_z(f64 filter state)
 # ================================================================
 #derive(accessors)
 struct GhEngine {
@@ -200,7 +201,12 @@ struct GhEngine {
 # Even firing offsets (deg) for `cyl` cylinders. 4-stroke = 720deg cycle,
 # 2-stroke = 360deg. offsets[i] = i * (cycle/cyl).
 #must_use
-fn ghurni_engine_compute_even_firing(engine_type, cyl) {
+fn ghurni_engine_compute_even_firing(engine_type, cylinders) {
+    # Clamped as ghurni_engine_new does. This was private in Rust, with a clamped
+    # caller; public here, an unclamped count ran the vec out and ended the process.
+    var cyl = cylinders;
+    if (cyl < 1) { cyl = 1; }
+    if (cyl > 16) { cyl = 16; }
     var cycle = f64_from(720);
     if (engine_type == GH_ENGINE_TWO_STROKE) { cycle = f64_from(360); }
     var spacing = f64_div(cycle, f64_from(cyl));
@@ -323,16 +329,34 @@ fn ghurni_engine_set_load(self, load) {
     return 0;
 }
 
-# set_firing_order(offsets) -- replace the firing order if the length matches.
+# set_firing_order(offsets) -- replace the firing order if the length matches and
+# every offset is finite and within GHURNI_FIRING_OFFSET_MAX degrees. Otherwise the
+# order is left alone. Copies, so the caller keeps no reach into engine state, and
+# overwrites the stored vec, because this library never frees and the call has no
+# rate limit.
 fn ghurni_engine_set_firing_order(self, offsets) {
-    if (vec_len(offsets) == GhEngine_cylinders(self)) {
-        GhEngine_set_firing_offsets(self, ghurni_vec_copy(offsets));
+    if (offsets < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
+    var n = vec_len(offsets);
+    if (n != GhEngine_cylinders(self)) { return 0; }
+    var i = 0;
+    while (i < n) {
+        var o = vec_get(offsets, i);
+        if (ghurni_is_finite(o) == 0) { return 0; }
+        if (f64_gt(f64_abs(o), GHURNI_FIRING_OFFSET_MAX) == 1) { return 0; }
+        i = i + 1;
+    }
+    var stored = GhEngine_firing_offsets(self);
+    i = 0;
+    while (i < n) {
+        vec_set(stored, i, vec_get(offsets, i));
+        i = i + 1;
     }
     return 0;
 }
 
 # trigger_event(event) -- schedule a mechanical event (GhEvent from event.cyr).
 fn ghurni_engine_trigger_event(self, event) {
+    if (event < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     var kind = GhEvent_kind(event);
     if (kind == GH_EVENT_BACKFIRE) {
         GhEngine_set_backfire_remaining(self, f64_to(f64_mul(GhEngine_sample_rate(self), 0.1)));
@@ -360,8 +384,9 @@ fn ghurni_engine_trigger_event(self, event) {
         GhEngine_set_shutdown_remaining(self, f64_to(f64_mul(sr_sd, GHURNI_SHUTDOWN_SECONDS)));
         ghurni_smooth_set_target(GhEngine_smooth_rpm(self), 0);
     } elif (kind == GH_EVENT_STARTUP) {
-        # Cranking, then catch. The smoother ramps from wherever it is up to the
-        # engine's idle floor while a starter whir sits over the top.
+        # Cranking, then catch. The smoother moves from wherever it is to the
+        # engine's idle floor of 100 rpm, while a starter whir sits over the top.
+        # On a default engine that is a ramp DOWN from 800.
         var sr_su = GhEngine_sample_rate(self);
         GhEngine_set_startup_remaining(self, f64_to(f64_mul(sr_su, GHURNI_STARTUP_SECONDS)));
         ghurni_smooth_set_target(GhEngine_smooth_rpm(self), f64_from(100));
@@ -389,7 +414,6 @@ fn ghurni_engine_firing_frequency(self, rpm) {
 }
 
 # roughness_for_load(load). base by type, scaled 0.7 + 0.3*load.
-#inline
 fn ghurni_engine_roughness_for_load(self, load) {
     var et = GhEngine_engine_type(self);
     var base = 0.05;   # Hybrid
@@ -416,15 +440,10 @@ fn ghurni_engine_synthesize(self, rpm, load, duration) {
 # process_block(out) -- fill `out` (vec<f64>) with engine sound, DC-block, and
 # advance the sample counter.
 fn ghurni_engine_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     ghurni_engine_process_block_naad(self, out);
-    var db = GhEngine_dc_blocker(self);
-    var n = vec_len(out);
-    var i = 0;
-    while (i < n) {
-        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
-        i = i + 1;
-    }
-    GhEngine_set_sample_position(self, GhEngine_sample_position(self) + n);
+    ghurni_dcblocker_process_buffer(GhEngine_dc_blocker(self), out);
+    GhEngine_set_sample_position(self, GhEngine_sample_position(self) + vec_len(out));
     return 0;
 }
 
@@ -439,7 +458,7 @@ fn ghurni_engine_process_block_naad(self, out) {
     var sr = GhEngine_sample_rate(self);
     var noise = GhEngine_noise_gen(self);
     var intake_filter = GhEngine_intake_filter(self);
-    # Retune the intake body from its FIELD, mirroring what line 354 already does
+    # Retune the intake body from its FIELD, mirroring what the exhaust retune above does
     # for the exhaust. Until 2.5.0 only the exhaust was retuned: intake_filter was
     # built once in _new from a constructor LOCAL, so GhEngine_set_intake_resonance
     # wrote a field nothing ever read. Cyrius has no visibility control, so that
@@ -527,14 +546,25 @@ fn ghurni_engine_process_block_naad(self, out) {
     var duct_escape = f64_sub(F64_ONE, GHURNI_DUCT_REFLECT);
     # HYBRID has no exhaust at all, so nothing enters the duct and the electric
     # drive's whine keeps its whole level on the direct path.
-    # HYBRID has no exhaust at all, so nothing enters the duct and the electric
-    # drive's whine keeps its whole level on the direct path.
     var duct_drive = GHURNI_DUCT_DRIVE;
     var duct_struct = GHURNI_DUCT_STRUCT;
     if (is_hybrid == 1) { duct_drive = 0; duct_struct = F64_ONE; }
     # Skip the per-cylinder knock scan entirely while nothing is armed -- the
     # common case for every sample of ordinary engine audio. Rust pays the same
     # scan, but it is pure overhead: every iteration is `if *remaining > 0`.
+    var rough_base = 0.05;
+    var et_h = GhEngine_engine_type(self);
+    if (et_h == GH_ENGINE_DIESEL)        { rough_base = 0.4; }
+    elif (et_h == GH_ENGINE_TWO_STROKE)  { rough_base = 0.3; }
+    elif (et_h == GH_ENGINE_GASOLINE)    { rough_base = 0.15; }
+    var spm_den = f64_mul(f64_from(60), sr);
+    var k360 = f64_from(360);
+    var win_den = f64_mul(0.08, cycle);
+    var k8 = f64_from(8);
+    var neg_cycle = f64_neg(cycle);
+    var misfire_armed = 0;
+    var ma = 0;
+    while (ma < n_misfire) { if (vec_get(misfire, ma) == 1) { misfire_armed = 1; } ma = ma + 1; }
     var knock_armed = 0;
     var ka = 0;
     while (ka < n_knock) {
@@ -547,18 +577,22 @@ fn ghurni_engine_process_block_naad(self, out) {
     while (i < n) {
         var rpm = ghurni_smooth_next_value(smooth_rpm);
         var load = ghurni_smooth_next_value(smooth_load);
-        var abs_pos = f64_from(base_pos + i);
-
-        var roughness = ghurni_engine_roughness_for_load(self, load);
+        var roughness = f64_mul(rough_base, f64_add(0.7, f64_mul(0.3, load)));
         var base_amp = f64_add(0.2, f64_mul(load, 0.5));
 
-        var revs_per_sample = f64_div(rpm, f64_mul(f64_from(60), sr));
-        var crank_deg = ghurni_fmod(f64_mul(f64_mul(abs_pos, revs_per_sample), f64_from(360)), cycle);
-        # How far `t` advances in one sample: crank degrees per sample divided by
-        # the width of the combustion window (0.08 of the cycle). Guarded so a
-        # stalled crank cannot divide by zero in the integrated pulse below.
-        var pulse_dt = f64_div(f64_mul(revs_per_sample, f64_from(360)), f64_mul(0.08, cycle));
-        if (f64_le(pulse_dt, 0) == 1) { pulse_dt = 0.000000001; }
+        var revs_per_sample = 0;
+        var crank_deg = 0;
+        var pulse_dt = 0;
+        if (is_hybrid == 0) {
+            var abs_pos = f64_from(base_pos + i);
+            revs_per_sample = f64_div(rpm, spm_den);
+            crank_deg = ghurni_fmod(f64_mul(f64_mul(abs_pos, revs_per_sample), k360), cycle);
+            # How far `t` advances in one sample: crank degrees per sample divided by
+            # the width of the combustion window (0.08 of the cycle). Guarded so a
+            # stalled crank cannot divide by zero in the integrated pulse below.
+            pulse_dt = f64_div(f64_mul(revs_per_sample, k360), win_den);
+            if (f64_le(pulse_dt, 0) == 1) { pulse_dt = 0.000000001; }
+        }
 
         # sum combustion impulses from each cylinder -- OR, for HYBRID, the
         # electric drive's EM whine, which replaces them entirely.
@@ -573,14 +607,29 @@ fn ghurni_engine_process_block_naad(self, out) {
         var c = 0;
         while (c < n_fire) {
             var offset = vec_get(firing, c);
-            var cyl_phase = ghurni_fmod(f64_sub(crank_deg, offset), cycle);
+            # ghurni_fmod(pa, cycle), without its division on the two ranges where
+            # the answer is exact. For 0 <= pa < cycle, pa/cycle stays more than
+            # 2^-53 below 1, so it cannot round up and floor is 0. For
+            # -cycle <= pa < -2^-1021, floor is -1; that bound is the one case
+            # where pa/cycle underflows to -0 and floor is 0 instead.
+            var pa = f64_sub(crank_deg, offset);
+            var cyl_phase = pa;
+            if (f64_ge(pa, 0) == 1) {
+                if (f64_lt(pa, cycle) == 0) { cyl_phase = ghurni_fmod(pa, cycle); }
+            } elif ((f64_lt(pa, 0x8020000000000000) == 1) && (f64_ge(pa, neg_cycle) == 1)) {
+                cyl_phase = f64_add(pa, cycle);
+            } else {
+                cyl_phase = ghurni_fmod(pa, cycle);
+            }
             var cyl_norm = f64_div(cyl_phase, cycle);
 
             var skip = 0;
-            if (c < n_misfire) {
-                if ((vec_get(misfire, c) == 1) && (f64_lt(cyl_norm, 0.01) == 1)) {
-                    vec_set(misfire, c, 0);
-                    skip = 1;
+            if (misfire_armed == 1) {
+                if (c < n_misfire) {
+                    if ((vec_get(misfire, c) == 1) && (f64_lt(cyl_norm, 0.01) == 1)) {
+                        vec_set(misfire, c, 0);
+                        skip = 1;
+                    }
                 }
             }
             if (skip == 0) {
@@ -609,9 +658,17 @@ fn ghurni_engine_process_block_naad(self, out) {
                     if (f64_lt(t, pulse_dt) == 1) { lo = 0; }
                     var hi = f64_add(t, pulse_dt);
                     if (f64_gt(hi, F64_ONE) == 1) { hi = F64_ONE; }
-                    var e_lo = naad_db_to_amplitude(f64_mul(f64_neg(f64_mul(f64_from(8), lo)), GHURNI_DB_SCALE));
-                    var e_hi = naad_db_to_amplitude(f64_mul(f64_neg(f64_mul(f64_from(8), hi)), GHURNI_DB_SCALE));
+                    var e_lo = naad_db_to_amplitude(f64_mul(f64_neg(f64_mul(k8, lo)), GHURNI_DB_SCALE));
+                    var e_hi = naad_db_to_amplitude(f64_mul(f64_neg(f64_mul(k8, hi)), GHURNI_DB_SCALE));
                     var pulse = f64_div(f64_sub(e_lo, e_hi), f64_mul(GHURNI_COMBUSTION_DECAY, pulse_dt));
+                    # The exact value lies in [0, 2]: the envelope is at most 1
+                    # and the window at most 2*dt wide. Only rounding escapes it.
+                    # As rpm collapses after a stall, dt reaches about 1e-21 and
+                    # the numerator is one ulp, which reads as a pulse of thousands
+                    # that latches in the duct and comes back as a +60 dB click on
+                    # a restart. The first test also catches NaN.
+                    if (f64_ge(pulse, 0) == 0) { pulse = 0; }
+                    elif (f64_gt(pulse, 2.0) == 1) { pulse = 2.0; }
                     var ns = noise_next_sample(noise);
                     var rough_gain = f64_add(F64_ONE, f64_mul(roughness, ns));
                     var contrib = f64_mul(f64_mul(pulse, base_amp), rough_gain);
@@ -768,9 +825,11 @@ fn ghurni_engine_process_block_naad(self, out) {
     return 0;
 }
 
-# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
+# Synthesizer-trait accessors (used by the mixer's tag dispatch + parity). rpm()
+# reads the smoother's target, not the stored field, because STALL, SHUTDOWN and
+# STARTUP retarget the smoother directly and the field would report the old speed.
 #must_use
-fn ghurni_engine_rpm(self) { return GhEngine_rpm(self); }
+fn ghurni_engine_rpm(self) { return ghurni_smooth_target(GhEngine_smooth_rpm(self)); }
 # sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_engine_sample_rate(self) { return GhEngine_sample_rate(self); }

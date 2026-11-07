@@ -9,10 +9,10 @@
 # Requires (from the build/test unit): stdlib alloc (+ str/bayan for serde).
 # The module file has no `include` lines.
 #
-# serde: MechanicalEvent was Serialize/Deserialize (the GearShift roundtrip is
-# exercised in the Rust integration tests); RESTORED via #derive(Serialize) on
-# GhEvent -> GhEvent_to_json / _from_json_str, plus a name mapping mirroring
-# serde's externally-tagged variant names.
+# serde: MechanicalEvent was Serialize/Deserialize. GhEvent_to_json and
+# _from_json_str are hand-written since 2.7.2 (see the strict reader in error.cyr).
+# The wire form is `{"kind":5,"arg0":2,"arg1":3}`, not Rust's externally-tagged
+# one. A name mapping mirrors serde's variant names.
 
 # ================================================================
 # Event kinds (was `enum MechanicalEvent`). One per Rust variant, in order.
@@ -36,13 +36,14 @@ var GH_EVENT_SHUTDOWN        = 7;   # shutdown sequence
 # comments are the only place these were written down):
 #   Misfire  arg0 = cylinder, 0-INDEXED
 #   Knock    arg0 = cylinder, 0-INDEXED
-#   GearShift arg0 = from, arg1 = to; from 0 = NEUTRAL
-# arg0/arg1 are unused for Backfire / Stall / RevLimiterHit / Startup /
-# Shutdown. Note those five are currently accepted and silently discarded by
-# every synth -- the oracle did the same (`_ => {}` at engine.rs:202) -- and
-# implementing them is roadmapped for 2.3.0.
+#   GearShift arg0 = from (0 = NEUTRAL), arg1 = to, an INDEX into the ratios
+# arg0/arg1 are unused for Backfire / Stall / RevLimiterHit / Startup / Shutdown.
+#
+# ⚠ GearShift's two fields do not count the same way: `from` treats 0 as neutral,
+# so its gears start at 1, while `to` is 0-indexed, because the transmission hands
+# it to shift_to. tests/oracle_pins.tcyr pins the 0-indexed reading. Fixing this
+# changes valid audio, so it is scheduled for 2.8.0.
 #derive(accessors)
-#derive(Serialize)
 struct GhEvent {
     kind: i64;
     arg0: i64;
@@ -104,6 +105,7 @@ fn ghurni_event_name(kind) {
 # port carried only the forward half until 2.4.0.
 #must_use
 fn ghurni_event_from_name(s) {
+    if (s < GHURNI_MIN_VALID_PTR) { return (0 - 1); }
     if (streq(s, "Backfire") == 1)      { return GH_EVENT_BACKFIRE; }
     if (streq(s, "Misfire") == 1)       { return GH_EVENT_MISFIRE; }
     if (streq(s, "Knock") == 1)         { return GH_EVENT_KNOCK; }
@@ -113,4 +115,34 @@ fn ghurni_event_from_name(s) {
     if (streq(s, "Startup") == 1)       { return GH_EVENT_STARTUP; }
     if (streq(s, "Shutdown") == 1)      { return GH_EVENT_SHUTDOWN; }
     return (0 - 1);
+}
+
+# Serde. Refuses a kind outside GH_EVENT_*; arg0 and arg1 are bounded at their use.
+# to_json(ptr, sb) -> 0 or GH_ERR_*.
+fn GhEvent_to_json(ptr, sb) {
+    if ((ptr < GHURNI_MIN_VALID_PTR) || (sb < GHURNI_MIN_VALID_PTR)) { return GH_ERR_INVALID_PARAMETER; }
+    return GhJson_write3(sb, "kind", GhEvent_kind(ptr), "arg0", GhEvent_arg0(ptr), "arg1", GhEvent_arg1(ptr));
+}
+
+# Build an event from three read fields, or GH_ERR_INVALID_PARAMETER.
+fn GhEvent_from_vals(vals) {
+    var kind = load64(vals);
+    if ((kind < GH_EVENT_BACKFIRE) || (kind > GH_EVENT_SHUTDOWN)) { return GH_ERR_INVALID_PARAMETER; }
+    return ghurni_event_new(kind, load64(vals + 8), load64(vals + 16));
+}
+
+# from_json_str(json) -> ptr or GH_ERR_INVALID_PARAMETER.
+#must_use
+fn GhEvent_from_json_str(json) {
+    var vals[24];
+    if (GhJson_read3(json, "kind", "arg0", "arg1", &vals) == 0) { return GH_ERR_INVALID_PARAMETER; }
+    return GhEvent_from_vals(&vals);
+}
+
+# from_json(pairs) -> ptr or GH_ERR_INVALID_PARAMETER.
+#must_use
+fn GhEvent_from_json(pairs) {
+    var vals[24];
+    if (GhJson_pairs3(pairs, "kind", "arg0", "arg1", &vals) == 0) { return GH_ERR_INVALID_PARAMETER; }
+    return GhEvent_from_vals(&vals);
 }

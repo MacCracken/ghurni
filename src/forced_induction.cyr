@@ -47,6 +47,7 @@ fn ghurni_inductiontype_name(t) {
 # inductiontype_from_name(s) -- GH_INDUCTION_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_inductiontype_from_name(s) {
+    if (s < GHURNI_MIN_VALID_PTR) { return (0 - 1); }
     if (streq(s, "Turbo") == 1)        { return GH_INDUCTION_TURBO; }
     if (streq(s, "Supercharger") == 1) { return GH_INDUCTION_SUPERCHARGER; }
     return (0 - 1);
@@ -191,21 +192,13 @@ fn ghurni_forced_induction_synthesize(self, rpm, load, duration) {
 # process_block(out) -- fill `out` (vec<f64>) with induction sound, DC-block, and
 # advance the sample counter.
 fn ghurni_forced_induction_process_block(self, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     ghurni_forced_induction_process_block_naad(self, out);
     var db = GhForcedInduction_dc_blocker(self);
+    ghurni_dcblocker_process_buffer(db, out);
     var n = vec_len(out);
-    var i = 0;
-    while (i < n) {
-        vec_set(out, i, ghurni_dcblocker_process(db, vec_get(out, i)));
-        i = i + 1;
-    }
-    # VESTIGIAL: advanced every block, read by nothing in this module. Its only
-    # readers in the oracle were the non-naad fallback arms, which ADR-004 drops.
-    # Kept so the struct stays field-compatible with the oracle and with its nine
-    # siblings, where the counter IS live (engine/gear/motor/turbine/clock/belt/
-    # chain all derive phase from it). Do not remove without checking all ten.
-    # NOT vestigial, despite two roadmap generations saying so. Nothing INSIDE this
-    # module reads sample_position -- but Cyrius has no visibility control, so the
+    # Nothing INSIDE this module reads sample_position, but Cyrius has no visibility
+    # control, so the
     # #derive(accessors) pair is public API, and it returns a meaningful value: the
     # number of samples this synth has rendered. Deleting the write would make a
     # legitimate consumer read return 0 forever, and deleting the accessor would be a
@@ -231,15 +224,20 @@ fn ghurni_forced_induction_process_block_naad(self, out) {
     var noise = GhForcedInduction_noise_gen(self);
     var bov_filter = GhForcedInduction_bov_filter(self);
 
+    var f60 = f64_from(60);
+    var f20 = f64_from(20);
+    var f20k = f64_from(20000);
+    var bov_len = f64_mul(sr, 0.15);
+    var last_f = 0;
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
         var spool = ghurni_smooth_next_value(spool_rpm);
-        var whine_freq = f64_clamp(f64_mul(f64_div(spool, f64_from(60)), whine_order), f64_from(20), nyquist);
-        osc_set_frequency(whine_osc, whine_freq);
+        var whine_freq = f64_clamp(f64_mul(f64_div(spool, f60), whine_order), f20, nyquist);
+        if (whine_freq != last_f) { osc_set_frequency(whine_osc, whine_freq); last_f = whine_freq; }
 
         # whine amplitude scales with spool speed
-        var whine_amp = f64_clamp(f64_div(spool, f64_from(20000)), 0, 0.4);
+        var whine_amp = f64_clamp(f64_div(spool, f20k), 0, 0.4);
         var whine = f64_mul(osc_next_sample(whine_osc), whine_amp);
 
         # compressor noise -- broadband hiss proportional to boost
@@ -253,7 +251,7 @@ fn ghurni_forced_induction_process_block_naad(self, out) {
         if (rem > 0) {
             rem = rem - 1;
             GhForcedInduction_set_bov_remaining(self, rem);
-            var env = f64_div(f64_from(rem), f64_mul(sr, 0.15));
+            var env = f64_div(f64_from(rem), bov_len);
             var raw = f64_mul(f64_mul(noise_next_sample(noise), env), 0.6);
             bov = filter_biquad_process_sample(bov_filter, raw);
         } else {

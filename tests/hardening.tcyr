@@ -42,6 +42,12 @@ include "src/presets.cyr"
 
 alloc_init();
 
+# assert_gt and assert_lt compare raw i64s, so on an f64 a NaN passes whichever one
+# its sign bit favours: a STALL rendering 44100 NaN samples passed "kills the engine".
+fn assert_f_gt(a, b, name) { return assert_eq(f64_gt(a, b), 1, name); }
+# assert_f_lt(a, b, name) -- assert a < b as f64s.
+fn assert_f_lt(a, b, name) { return assert_eq(f64_lt(a, b), 1, name); }
+
 # ---- audio assertion helpers (same shape the other suites use) ----
 fn audio_all_finite(v) {
     var n = vec_len(v);
@@ -79,12 +85,12 @@ assert_eq(GHURNI_DB_SCALE, 0x4047069E2AA2AA5B, "GHURNI_DB_SCALE bit pattern == 2
 # 10^(-1 * 46.051701859880914 / 20) = 0.004982128296440718. Under the broken
 # constant this was 0.9333878779699565 -- a 187x difference.
 var env1 = naad_db_to_amplitude(f64_neg(GHURNI_DB_SCALE));
-assert_lt(env1, 0.005, "decay envelope at t=1 is ~0.00498, not ~0.93");
-assert_gt(env1, 0.0049, "decay envelope at t=1 is not degenerate");
+assert_f_lt(env1, 0.005, "decay envelope at t=1 is ~0.00498, not ~0.93");
+assert_f_gt(env1, 0.0049, "decay envelope at t=1 is not degenerate");
 # And at half the exponent: 10^(-0.5*46.0517/20) = 0.0705690...
 var env2 = naad_db_to_amplitude(f64_mul(f64_neg(GHURNI_DB_SCALE), 0.5));
-assert_lt(env2, 0.0706, "decay envelope at t=0.5 upper bound");
-assert_gt(env2, 0.0705, "decay envelope at t=0.5 lower bound");
+assert_f_lt(env2, 0.0706, "decay envelope at t=0.5 upper bound");
+assert_f_gt(env2, 0.0705, "decay envelope at t=0.5 lower bound");
 
 # ================================================================
 test_group("sample-count guard (CLASS 2: f64_to saturation)");
@@ -96,7 +102,7 @@ assert_eq(ghurni_sample_count(SR, F64_ONE), 44100, "1 s @ 44.1 kHz = 44100 sampl
 assert_eq(ghurni_sample_count(SR, f64_from(2)), 88200, "2 s @ 44.1 kHz = 88200 samples");
 # The cap sits below the stdlib's VEC_CAP_MAX so vec growth can never abort.
 assert_eq(ghurni_is_err(ghurni_sample_count(SR, f64_from(10000))), 1, "10000 s exceeds the buffer cap");
-assert_lt(GHURNI_MAX_SAMPLES, 0x10000000, "cap stays under the stdlib VEC_CAP_MAX");
+assert_f_lt(GHURNI_MAX_SAMPLES, 0x10000000, "cap stays under the stdlib VEC_CAP_MAX");
 # A count that rounds to zero is an error, not a silent empty success.
 assert_eq(ghurni_is_err(ghurni_sample_count(SR, 0.000001)), 1, "sub-sample duration rejected");
 # Invalid sample rate / duration still route through the existing validators.
@@ -290,8 +296,8 @@ assert_eq(audio_has_energy(mbuf), 1, "mixer still renders real signal");
 
 # ================================================================
 test_group("mixer scratch is reused, not reallocated per block");
-# Ports the oracle's grow-only buffer (rust-old/src/mixer.rs:124-131). 2.0.1
-# built a fresh vec per channel per block and dropped the old one; this library
+# Ports the oracle's buffer reuse (rust-old/src/mixer.rs:124-131). 2.0.1 built a
+# fresh vec per channel per block and dropped the old one; this library
 # never frees, so every block leaked its whole scratch buffer (measured: 278 MB
 # per 100 s of 4-channel audio, now 0).
 var m2 = ghurni_mixer_new();
@@ -308,8 +314,8 @@ ghurni_mixer_process_block(m2, buf2);
 assert_eq(GhMixerChannel_scratch(ch0), scratch_first, "second block reuses the SAME buffer");
 ghurni_mixer_process_block(m2, buf2);
 assert_eq(GhMixerChannel_scratch(ch0), scratch_first, "third block reuses it too");
-# A changed block size must rebuild it to exactly the new length (Cyrius vecs
-# have no sub-slice, so process_block must see a vec of exactly `len`).
+# A changed block size must leave it at exactly the new length, because
+# process_block fills the whole vec. Since 2.7.2 it is the same vec, kept in place.
 var buf3 = vec_new();
 var bk = 0;
 while (bk < 512) { vec_push(buf3, 0); bk = bk + 1; }

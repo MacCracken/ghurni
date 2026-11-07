@@ -14,8 +14,8 @@
 #
 # serde: MixerChannel/MechanicalMixer were Serialize with #[serde(skip)] on the
 # synth + scratch (the live synth objects can't serialize). Deep serde is
-# dropped in the port (nothing meaningful survives the skip); the structs use
-# #derive(accessors) only.
+# dropped in the port, which is a real scope cut: name, gain, pan and muted did
+# survive the skip in Rust. The structs use #derive(accessors) only.
 
 # ================================================================
 # Tag dispatch -- the Synthesizer "vtable". Switches a (kind, synth) pair to the
@@ -23,6 +23,8 @@
 # the whole compilation unit).
 # ================================================================
 fn ghurni_synth_process_block(kind, synth, out) {
+    if ((synth < GHURNI_MIN_VALID_PTR) || (out < GHURNI_MIN_VALID_PTR)) { return GH_ERR_INVALID_PARAMETER; }
+    if ((kind < GH_KIND_ENGINE) || (kind > GH_KIND_CHAIN_DRIVE)) { return GH_ERR_INVALID_PARAMETER; }
     if (kind == GH_KIND_ENGINE)             { ghurni_engine_process_block(synth, out); }
     elif (kind == GH_KIND_GEAR)             { ghurni_gear_process_block(synth, out); }
     elif (kind == GH_KIND_MOTOR)            { ghurni_motor_process_block(synth, out); }
@@ -40,6 +42,9 @@ fn ghurni_synth_process_block(kind, synth, out) {
 # `kind`. Unknown tags fall through and do nothing -- ghurni_mixer_add_channel
 # range-checks the tag, so a mixer channel can never hold one.
 fn ghurni_synth_set_rpm(kind, synth, rpm) {
+    if ((synth < GHURNI_MIN_VALID_PTR) || (kind < GH_KIND_ENGINE) || (kind > GH_KIND_CHAIN_DRIVE)) {
+        return GH_ERR_INVALID_PARAMETER;
+    }
     if (kind == GH_KIND_ENGINE)             { ghurni_engine_set_rpm(synth, rpm); }
     elif (kind == GH_KIND_GEAR)             { ghurni_gear_set_rpm(synth, rpm); }
     elif (kind == GH_KIND_MOTOR)            { ghurni_motor_set_rpm(synth, rpm); }
@@ -59,6 +64,7 @@ fn ghurni_synth_set_rpm(kind, synth, rpm) {
 # for an unknown tag.
 #must_use
 fn ghurni_synth_rpm(kind, synth) {
+    if (synth < GHURNI_MIN_VALID_PTR) { return 0; }
     if (kind == GH_KIND_ENGINE)             { return ghurni_engine_rpm(synth); }
     elif (kind == GH_KIND_GEAR)             { return ghurni_gear_rpm(synth); }
     elif (kind == GH_KIND_MOTOR)            { return ghurni_motor_rpm(synth); }
@@ -76,6 +82,7 @@ fn ghurni_synth_rpm(kind, synth) {
 # (rust-old/src/traits.rs:20). Returns 0 for an unknown tag.
 #must_use
 fn ghurni_synth_sample_rate(kind, synth) {
+    if (synth < GHURNI_MIN_VALID_PTR) { return 0; }
     if (kind == GH_KIND_ENGINE)             { return ghurni_engine_sample_rate(synth); }
     elif (kind == GH_KIND_GEAR)             { return ghurni_gear_sample_rate(synth); }
     elif (kind == GH_KIND_MOTOR)            { return ghurni_motor_sample_rate(synth); }
@@ -124,7 +131,7 @@ fn ghurni_mixer_new() {
 # return its index. (Rust took a Box<dyn Synthesizer>; the port takes the
 # (kind, synth) pair.)
 fn ghurni_mixer_add_channel(m, name, kind, synth) {
-    if ((ghurni_is_err(synth) == 1) || (synth < GHURNI_MIN_VALID_PTR)) {
+    if (synth < GHURNI_MIN_VALID_PTR) {
         ghurni_log_warn("ghurni: mixer add_channel rejected a failed/absent synthesizer");
         return GH_ERR_INVALID_PARAMETER;
     }
@@ -132,16 +139,34 @@ fn ghurni_mixer_add_channel(m, name, kind, synth) {
         ghurni_log_warn("ghurni: mixer add_channel rejected an unknown synth kind");
         return GH_ERR_INVALID_PARAMETER;
     }
+    # Rust moved the Box, so one synth could not sit in two channels. Here it would
+    # step twice per block, and both channels would play at double time.
+    var channels = GhMixer_channels(m);
+    var idx = vec_len(channels);
+    var c = 0;
+    while (c < idx) {
+        if (GhMixerChannel_synth(vec_get(channels, c)) == synth) {
+            ghurni_log_warn("ghurni: mixer add_channel rejected a synthesizer already in a channel");
+            return GH_ERR_INVALID_PARAMETER;
+        }
+        c = c + 1;
+    }
+    # The name is copied, as Rust's String was, so reusing the caller's buffer
+    # cannot rename a channel. A null name is still accepted.
+    var stored_name = name;
+    if (name >= GHURNI_MIN_VALID_PTR) {
+        var name_len = strlen(name);
+        stored_name = alloc(name_len + 1);
+        memcpy(stored_name, name, name_len + 1);
+    }
     var ch = alloc(sizeof(GhMixerChannel));
-    GhMixerChannel_set_name(ch, name);
+    GhMixerChannel_set_name(ch, stored_name);
     GhMixerChannel_set_gain(ch, F64_ONE);
     GhMixerChannel_set_pan(ch, 0);
     GhMixerChannel_set_muted(ch, 0);
     GhMixerChannel_set_kind(ch, kind);
     GhMixerChannel_set_synth(ch, synth);
     GhMixerChannel_set_scratch(ch, 0);
-    var channels = GhMixer_channels(m);
-    var idx = vec_len(channels);
     vec_push(channels, ch);
     return idx;
 }
@@ -150,7 +175,9 @@ fn ghurni_mixer_add_channel(m, name, kind, synth) {
 fn ghurni_mixer_set_channel_gain(m, index, gain) {
     var channels = GhMixer_channels(m);
     if ((index >= 0) && (index < vec_len(channels))) {
-        GhMixerChannel_set_gain(vec_get(channels, index), f64_max(gain, 0));
+        var g = f64_max(gain, 0);
+        if (ghurni_is_finite(g) == 0) { g = 0; }   # f64_max absorbs NaN but not +Inf
+        GhMixerChannel_set_gain(vec_get(channels, index), g);
     }
     return 0;
 }
@@ -159,7 +186,10 @@ fn ghurni_mixer_set_channel_gain(m, index, gain) {
 fn ghurni_mixer_set_channel_pan(m, index, pan) {
     var channels = GhMixer_channels(m);
     if ((index >= 0) && (index < vec_len(channels))) {
-        GhMixerChannel_set_pan(vec_get(channels, index), ghurni_finite_clamp(pan, f64_neg(F64_ONE), F64_ONE));
+        # Non-finite means centre. ghurni_finite_clamp would send it hard left.
+        var p = 0;
+        if (ghurni_is_finite(pan) == 1) { p = f64_clamp(pan, f64_neg(F64_ONE), F64_ONE); }
+        GhMixerChannel_set_pan(vec_get(channels, index), p);
     }
     return 0;
 }
@@ -175,7 +205,9 @@ fn ghurni_mixer_set_channel_muted(m, index, muted) {
 
 # set_master_gain(gain) -- master >= 0.
 fn ghurni_mixer_set_master_gain(m, gain) {
-    GhMixer_set_master_gain(m, f64_max(gain, 0));
+    var g = f64_max(gain, 0);
+    if (ghurni_is_finite(g) == 0) { g = 0; }
+    GhMixer_set_master_gain(m, g);
     return 0;
 }
 
@@ -206,24 +238,21 @@ fn ghurni_mixer_channel_count(m) {
 #     if ch.scratch.len() < len { ch.scratch.resize(len, 0.0); }
 #     let scratch = &mut ch.scratch[..len];
 #     for s in scratch.iter_mut() { *s = 0.0; }
-# Rust re-slices a longer buffer down to `len`; Cyrius vecs have no sub-slice,
-# so process_block must see a vec of EXACTLY `len` and the buffer is rebuilt
-# only when the block size actually changes. For the streaming case that matters
-# (a fixed audio-callback block size) that is one allocation for the lifetime of
-# the channel instead of one per channel per block -- the previous code built a
-# fresh vec on every call and dropped the old one, and this library never frees,
-# so each block leaked its whole scratch buffer (~4 MB/s of rendered audio at
-# 44.1 kHz with four channels).
+# Rust re-slices a longer buffer down to `len`; process_block needs a vec of
+# EXACTLY `len`, so the port truncates and regrows in place, which keeps the
+# capacity. Rebuilding on a size change instead (2.0.2 to 2.7.1) leaked the whole
+# buffer every time the block size moved, because this library never frees: about
+# 100 KB per round with ten channels on alternating sizes.
 #must_use
 fn ghurni_mixer_channel_scratch(ch, len) {
+    if ((ch < GHURNI_MIN_VALID_PTR) || (len < 0)) { return GH_ERR_INVALID_PARAMETER; }
     var v = GhMixerChannel_scratch(ch);
-    if ((v == 0) || (vec_len(v) != len)) {
+    if (v == 0) {
         v = vec_new();
-        var i = 0;
-        while (i < len) { vec_push(v, 0); i = i + 1; }
         GhMixerChannel_set_scratch(ch, v);
-        return v;
     }
+    vec_truncate(v, len);
+    while (vec_len(v) < len) { vec_push(v, 0); }
     var z = 0;
     while (z < len) { vec_set(v, z, 0); z = z + 1; }
     return v;
@@ -231,6 +260,7 @@ fn ghurni_mixer_channel_scratch(ch, len) {
 
 # process_block(out) -- render + sum all unmuted channels into mono `out`.
 fn ghurni_mixer_process_block(m, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     var len = vec_len(out);
     var z = 0;
     while (z < len) { vec_set(out, z, 0); z = z + 1; }
@@ -258,6 +288,7 @@ fn ghurni_mixer_process_block(m, out) {
 
 # process_block_stereo(left, right) -- equal-power pan into stereo.
 fn ghurni_mixer_process_block_stereo(m, left, right) {
+    if ((left < GHURNI_MIN_VALID_PTR) || (right < GHURNI_MIN_VALID_PTR)) { return GH_ERR_INVALID_PARAMETER; }
     var len = vec_len(left);
     if (vec_len(right) < len) { len = vec_len(right); }
     var z = 0;

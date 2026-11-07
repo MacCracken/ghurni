@@ -1,9 +1,10 @@
 # ghurni.fcyr -- adversarial numeric sweep over the public boundary.
 #
-# ghurni has no I/O and no parsers, so the only untrusted input it can receive
-# is NUMBERS a consumer forwarded from somewhere less trusted -- a save file, a
-# preset, a network peer driving RPM. This harness drives the guarded surface
-# with the values that actually break Cyrius ports.
+# ghurni has no I/O. Its untrusted input is NUMBERS a consumer forwarded from
+# somewhere less trusted -- a save file, a preset, a network peer driving RPM --
+# plus the three JSON readers and the name maps, which do parse bytes. This
+# harness drives the guarded surface with the values that actually break Cyrius
+# ports.
 #
 # The value table is not arbitrary. Every entry has caused a real defect here or
 # in a sibling:
@@ -105,7 +106,7 @@ fn fz_check(cond, what) {
 
 # A constructor must either report an error or hand back something usable.
 fn fz_ctor(p, what) {
-    fz_check(ghurni_is_err(p) == 1 || p > 0, what);
+    fz_check(ghurni_is_err(p) == 1 || p >= GHURNI_MIN_VALID_PTR, what);
     return 0;
 }
 
@@ -294,19 +295,14 @@ fn main(): i64 {
         var k = 0;
         while (k < 100) { vec_push(out5, 0); k = k + 1; }
         ghurni_engine_process_block(e5, out5);
-        # A finite RPM/load pair must give finite audio. Non-finite INPUT is a
-        # documented open item (roadmap Arc 1: f64_clamp propagates NaN), so it
-        # is not asserted here -- asserting it would fail today and this harness
-        # must be green to be useful as a gate.
-        if (ghurni_is_finite(fz_val(i)) == 1 && ghurni_is_finite(fz_val(i + 5)) == 1) {
-            var ok5 = 1;
-            var q = 0;
-            while (q < 100) {
-                if (ghurni_is_finite(vec_get(out5, q)) == 0) { ok5 = 0; q = 100; }
-                q = q + 1;
-            }
-            fz_check(ok5, "finite rpm/load produced non-finite audio");
+        # Any RPM/load pair, finite or not, must give finite audio.
+        var ok5 = 1;
+        var q = 0;
+        while (q < 100) {
+            if (ghurni_is_finite(vec_get(out5, q)) == 0) { ok5 = 0; q = 100; }
+            q = q + 1;
         }
+        fz_check(ok5, "an rpm/load pair produced non-finite audio");
         i = i + 1;
     }
 
@@ -396,7 +392,6 @@ fn main(): i64 {
     var empty = vec_new();
     ghurni_mixer_process_block_stereo(mix, empty, rgt);
     ghurni_mixer_process_block(mix, empty);
-    fz_check(1, "mixer survived mismatched and zero-length stereo buffers");
 
     # ---------------------------------------------------------------
     # 8. EVENTS -- kind and payload both out of range.
@@ -410,6 +405,49 @@ fn main(): i64 {
         i = i + 1;
     }
     fz_render(GH_KIND_ENGINE, ev_eng, 200, "engine rendered non-finite after junk events");
+
+    # Section 8's fz_int only reaches kinds 0 and 1. Every real kind, on a fresh
+    # engine, with hostile payloads: a STALL rendering pure NaN used to pass.
+    i = 0;
+    while (i < 64) {
+        var ev_each = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+        ghurni_engine_set_rpm(ev_each, f64_from(3000));
+        ghurni_engine_trigger_event(ev_each, ghurni_event_new(i % 8, fz_int(i), fz_int(i + 3)));
+        fz_render(GH_KIND_ENGINE, ev_each, 512, "engine rendered non-finite after a real event kind");
+        i = i + 1;
+    }
+    var ev_null = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    fz_check(ghurni_is_err(ghurni_engine_trigger_event(ev_null, 0)) == 1, "trigger_event took a null event");
+
+    # ---------------------------------------------------------------
+    # 8b. FIRING ORDER and GEAR RATIOS -- floats that reach phase and a smoother.
+    # A finite 1.3e60 offset used to render Inf for life, and a ratio of 0 froze
+    # the mesh pitch while the output stayed finite, so both need the state read.
+    # ---------------------------------------------------------------
+    i = 0;
+    while (i < 24) {
+        var fo_eng = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+        ghurni_engine_set_rpm(fo_eng, f64_from(3000));
+        var fo_off = vec_new();
+        vec_push(fo_off, fz_val(i)); vec_push(fo_off, fz_val(i + 3));
+        vec_push(fo_off, fz_val(i + 5)); vec_push(fo_off, fz_val(i + 7));
+        ghurni_engine_set_firing_order(fo_eng, fo_off);
+        fz_render(GH_KIND_ENGINE, fo_eng, 512, "engine rendered non-finite after a hostile firing order");
+
+        var fz_r = vec_new();
+        vec_push(fz_r, fz_val(i)); vec_push(fz_r, fz_val(i + 5)); vec_push(fz_r, f64_from(2));
+        var fz_t = ghurni_transmission_new(fz_r, 24, SR);
+        fz_ctor(fz_t, "transmission_new(bad ratios): neither an error nor a usable pointer");
+        if (ghurni_is_err(fz_t) == 0) {
+            ghurni_transmission_set_rpm(fz_t, f64_from(3000));
+            fz_render(GH_KIND_TRANSMISSION, fz_t, 256, "transmission rendered non-finite on a bad ratio");
+            ghurni_transmission_shift_to(fz_t, 1);
+            fz_render(GH_KIND_TRANSMISSION, fz_t, 256, "transmission rendered non-finite after shifting");
+            fz_check(ghurni_is_finite(ghurni_smooth_current(GhTransmission_mesh_rpm(fz_t))) == 1,
+              "a bad ratio left the mesh smoother non-finite");
+        }
+        i = i + 1;
+    }
 
     # ---------------------------------------------------------------
     # 9. ENUM NAME MAPPING -- ids far outside the domain must not over-run.
@@ -425,6 +463,40 @@ fn main(): i64 {
         fz_check(strlen(ghurni_event_name(id2)) <= 20, "event_name over-long");
         fz_check(strlen(ghurni_err_name(id2)) <= 24, "err_name over-long");
         i = i + 1;
+    }
+
+    # ---------------------------------------------------------------
+    # 10. PARSERS -- the only code here that reads bytes it did not produce. Every
+    # prefix of a valid document, then every one-byte corruption of it, in a heap
+    # copy so a read past the NUL has somewhere to go. Each must return an error or
+    # a usable object. A surviving object must hold in-range state.
+    # ---------------------------------------------------------------
+    var doc = "{\"kind\":5,\"arg0\":2,\"arg1\":3}";
+    var doc_n = strlen(doc);
+    var doc_buf = alloc(doc_n + 32);
+    var cut = 0;
+    while (cut < doc_n) {
+        memcpy(doc_buf, doc, cut);
+        store8(doc_buf + cut, 0);
+        fz_check(ghurni_is_err(GhEvent_from_json_str(doc_buf)) == 1, "a truncated document parsed");
+        cut = cut + 1;
+    }
+    var bytes = "\x00\"{}:,-.09aZ";
+    var at = 0;
+    while (at < doc_n) {
+        var bi = 1;
+        while (bi < 14) {
+            memcpy(doc_buf, doc, doc_n + 1);
+            store8(doc_buf + at, load8(bytes + bi));
+            var pe = GhEvent_from_json_str(doc_buf);
+            fz_ctor(pe, "from_json_str: neither an error nor a usable pointer");
+            if (ghurni_is_err(pe) == 0) {
+                fz_check(GhEvent_kind(pe) >= GH_EVENT_BACKFIRE && GhEvent_kind(pe) <= GH_EVENT_SHUTDOWN,
+                  "a corrupted document planted an out-of-range kind");
+            }
+            bi = bi + 1;
+        }
+        at = at + 1;
     }
 
     fmt_int(fz_checks);

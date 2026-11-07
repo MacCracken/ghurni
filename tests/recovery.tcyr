@@ -1,0 +1,83 @@
+# recovery.tcyr -- a bad value must not silence a synth for life (2.7.2).
+#
+# Half of the ghurni_finite_clamp sites could be reverted to f64_clamp with the
+# suite green, because rendering once and checking finiteness passes on a synth
+# that a NaN has muted for good: ghurni_rpm_gain sinks NaN to silence. These render
+# through the bad value, return to a real speed, and require audible output.
+
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+var SR = f64_from(44100);
+var NANV = f64_div(0, 0);
+# zeros(n) -- a vec of n zero samples.
+fn zeros(n) { var v = vec_new(); var i = 0; while (i < n) { vec_push(v, 0); i = i + 1; } return v; }
+# audible(kind, s) -- 1 if the synth renders finite, audible output after a NaN set_rpm.
+fn audible(kind, s) {
+    # one render through the poison, then a return to a real speed. A NaN that
+    # reached a smoother never leaves it, because current = target + c*(current-target).
+    ghurni_synth_set_rpm(kind, s, NANV);
+    if (ghurni_is_finite(ghurni_synth_rpm(kind, s)) == 0) { return 0; }
+    var a = zeros(512);
+    ghurni_synth_process_block(kind, s, a);
+    ghurni_synth_set_rpm(kind, s, f64_from(3000));
+    var b = zeros(8820);
+    ghurni_synth_process_block(kind, s, b);
+    ghurni_synth_process_block(kind, s, b);
+    var n = vec_len(b); var i = 0; var ok = 1; var peak = 0;
+    while (i < n) {
+        var x = vec_get(b, i);
+        if (ghurni_is_finite(x) == 0) { ok = 0; }
+        if (f64_gt(f64_abs(x), peak) == 1) { peak = f64_abs(x); }
+        i = i + 1;
+    }
+    if (ok == 0) { return 0; }
+    return f64_gt(peak, 0.0005);
+}
+test_group("a NaN set_rpm does not silence or poison a synth for life");
+assert_eq(audible(GH_KIND_ENGINE, ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR)), 1, "engine recovers");
+assert_eq(audible(GH_KIND_GEAR, ghurni_gear_new(32, GH_GEAR_STEEL, SR)), 1, "gear recovers");
+assert_eq(audible(GH_KIND_MOTOR, ghurni_motor_new(GH_MOTOR_BRUSHLESS, 8, SR)), 1, "motor recovers");
+assert_eq(audible(GH_KIND_TURBINE, ghurni_turbine_new(12, f64_from(600), SR)), 1, "turbine recovers");
+var rr = vec_new(); vec_push(rr, f64_from(3)); vec_push(rr, f64_from(2));
+assert_eq(audible(GH_KIND_TRANSMISSION, ghurni_transmission_new(rr, 24, SR)), 1, "transmission recovers");
+assert_eq(audible(GH_KIND_DIFFERENTIAL, ghurni_differential_new(41, 11, SR)), 1, "differential recovers");
+var fi = ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR);
+ghurni_forced_induction_set_load(fi, 0.8);
+assert_eq(audible(GH_KIND_FORCED_INDUCTION, fi), 1, "forced_induction recovers");
+assert_eq(audible(GH_KIND_BELT_DRIVE, ghurni_belt_drive_new(f64_from(120), 0.6, SR)), 1, "belt recovers");
+assert_eq(audible(GH_KIND_CHAIN_DRIVE, ghurni_chain_drive_new(110, 16, SR)), 1, "chain recovers");
+
+test_group("a NaN load, tension or construction float never reaches stored state");
+var d = ghurni_differential_new(41, 11, SR);
+ghurni_differential_set_load(d, NANV);
+assert_eq(GhDifferential_load(d), 0, "differential load");
+var t = ghurni_transmission_new(rr, 24, SR);
+ghurni_transmission_set_load(t, NANV);
+assert_eq(GhTransmission_load(t), 0, "transmission load");
+var b = ghurni_belt_drive_new(f64_from(120), 0.6, SR);
+ghurni_belt_drive_set_tension(b, NANV);
+assert_eq(GhBeltDrive_tension(b), F64_ONE, "belt tension is tight, not the loud slack end");
+var f2 = ghurni_forced_induction_new(GH_INDUCTION_TURBO, NANV, NANV, SR);
+assert_eq(ghurni_is_finite(GhForcedInduction_drive_ratio(f2)), 1, "drive_ratio");
+assert_eq(ghurni_is_finite(GhForcedInduction_spool_inertia(f2)), 1, "spool_inertia");
+
+var rc = assert_summary();
+syscall(60, rc);

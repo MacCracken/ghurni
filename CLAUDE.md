@@ -48,7 +48,8 @@ cyrius distlib                           # rebuild dist/ghurni.cyr from [lib].mo
   Deliberate audio changes still need an ADR, and belong in a MINOR release.
 - RPM is the fundamental parameter — everything derives from rotational speed.
 - Every public enum maps to `GH_<ENUM>_*` integer constants + `ghurni_<enum>_name`/`_from_name` (serde parity).
-- `#must_use` on pure functions; `#inline` on hot-path sample processing.
+- `#must_use` on pure functions; `#inline` on hot-path sample processing. The compiler
+  ignores `#inline` on a body over 32 tokens or with more than 2 parameters, and warns.
 - Zero panics in library code; fallible fns return a negative `GH_ERR_*` code (check `ghurni_is_err`).
 - Never skip benchmarks before claiming performance improvements.
 
