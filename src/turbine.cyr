@@ -184,5 +184,6 @@ fn ghurni_turbine_process_block_naad(self, out) {
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
 #must_use
 fn ghurni_turbine_rpm(self) { return GhTurbine_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_turbine_sample_rate(self) { return GhTurbine_sample_rate(self); }

@@ -262,7 +262,9 @@ fn ghurni_transmission_trigger_event(self, event) {
     return 0;
 }
 
+# rpm() -- the current RPM, as clamped by set_rpm.
 #must_use
 fn ghurni_transmission_rpm(self) { return GhTransmission_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_transmission_sample_rate(self) { return GhTransmission_sample_rate(self); }

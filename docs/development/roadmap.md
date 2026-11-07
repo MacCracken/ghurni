@@ -37,6 +37,7 @@ the index. Everything below is closed — nothing here is outstanding work.
 | `2.5.0` | Arc 3b "Output Path" | stems **deferred on measurement** (the engine had nothing to split); convolution **closed** on ADR-002 scope; two dead-API defects fixed | [ADR-009](../architecture/adr-009-no-stems-yet.md) |
 | `2.5.1` | — | pulled naad 2.2.2 (its FFT convolution dropped its tail); corrected the assertion counts reported for 2.3.0/2.4.0/2.5.0 | CHANGELOG |
 | `2.6.0` | Arc 3c "Radiation Paths" | the exhaust becomes a quarter-wave waveguide and the combustion pulse train goes down it; cyrius 6.5.36 | [ADR-010](../architecture/adr-010-radiation-paths.md) |
+| `2.6.2` | — | cyrius 6.6.20 and the naad 2.2.5 set; no golden moved, and audio differs by at most 8.9e-16; 28 doc comments; envelopes 12-32% slower because `f64_pow` got correct | CHANGELOG |
 
 **Three corrections worth remembering**, because each was a claim this project
 made and later disproved with its own measurements:
@@ -175,3 +176,36 @@ Removed with reasons, so they are not re-proposed:
 - Adding a synth touches eight places: the module, `traits.cyr`, both mixer
   dispatchers, `add_channel`'s range check, `cyrius.cyml [lib].modules`, the test
   suite, and the bench. Worth writing down as a checklist before Arc 4.
+
+---
+
+## Moving the cyrius pin to 6.6.6
+
+**Current pin: `cyrius = "6.6.3"`.** Nothing must change first — pin bump and rebuild.
+
+**What was checked** (19 `.cyr` under `src/`; vendored `lib/` excluded):
+
+- **Windows write corruption: not a ghurni exposure.** `O_APPEND` / `O_TRUNC` appear **33
+  times, all inside the vendored `lib/` fold, zero in `src/`**. ghurni opens no files —
+  no `file_open` / `sys_open` / `file_read_all` / `file_exists` call site in `src/`.
+- **Struct copies / by-value struct params: nothing to change.** ghurni declares **15
+  `Gh*` structs** (`GhEngine`, `GhTransmission`, `GhMixerChannel`, …) and **not one** is a
+  by-value fn parameter, a fn return type, or a `var x: GhT = …` declaration — all are
+  heap-offset layouts reached by pointer. The two mixer dispatchers and `add_channel` pass
+  handles, not values, so the new deep-copy semantics change nothing.
+- **Also clean:** no `async fn`, no `operator` fn, no SIMD-returning fn, no fn mixing pair
+  and scalar returns, no `var` inside a top-level block (zero top-level `{` / `if (` /
+  `while (` at column 0), no raw `SYS_STATFS`, no `lib/regression.cyr` consumer, no `vec_*`
+  of ghurni's own, no duplicate top-level global, no symlink in `lib/`.
+- **Platform:** CI is `ubuntu-latest` only, no `CYRIUS_TARGET_*` branch in `src/`.
+
+**What it gains:** 6.6.5's aggregate-layout fix (silently wrong since 5.8.17) and the
+corrected ENTRY stack bases, plus 6.6.6's nine new refusals. **Not** a gain here: 6.6.4's
+≥64 KB string-literal fix — ghurni's longest literal is 64 bytes (`src/dsp.cyr`), measured.
+
+**Verify after bumping:** `cyrius deps` → `cyrius build` → `cyrius test` → `cyrius bench`
+→ **regenerate `dist/ghurni.cyr`**. ⚠ The *"compiled by the consumer's toolchain"* note in
+the section above is the live constraint on this bump: verify the regenerated bundle still
+compiles under the **oldest** pin in ghurni's consumer set — long float literals in
+particular — before tagging, not just under 6.6.6. Add the bump to the eight-place
+"adding a synth" checklist's sibling list, since `cyrius.cyml` is one of the places it touches.

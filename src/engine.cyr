@@ -139,6 +139,7 @@ fn ghurni_enginetype_name(t) {
     if (t == GH_ENGINE_HYBRID)     { return "Hybrid"; }
     return "Unknown";
 }
+# enginetype_from_name(s) -- GH_ENGINE_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_enginetype_from_name(s) {
     if (streq(s, "Gasoline") == 1)  { return GH_ENGINE_GASOLINE; }
@@ -766,5 +767,6 @@ fn ghurni_engine_process_block_naad(self, out) {
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
 #must_use
 fn ghurni_engine_rpm(self) { return GhEngine_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_engine_sample_rate(self) { return GhEngine_sample_rate(self); }

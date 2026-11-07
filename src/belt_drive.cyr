@@ -222,5 +222,6 @@ fn ghurni_belt_drive_process_block(self, out) {
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
 #must_use
 fn ghurni_belt_drive_rpm(self) { return GhBeltDrive_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_belt_drive_sample_rate(self) { return GhBeltDrive_sample_rate(self); }

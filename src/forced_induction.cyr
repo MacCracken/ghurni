@@ -44,6 +44,7 @@ fn ghurni_inductiontype_name(t) {
     if (t == GH_INDUCTION_SUPERCHARGER) { return "Supercharger"; }
     return "Unknown";
 }
+# inductiontype_from_name(s) -- GH_INDUCTION_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_inductiontype_from_name(s) {
     if (streq(s, "Turbo") == 1)        { return GH_INDUCTION_TURBO; }
@@ -269,5 +270,6 @@ fn ghurni_forced_induction_process_block_naad(self, out) {
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
 #must_use
 fn ghurni_forced_induction_rpm(self) { return GhForcedInduction_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_forced_induction_sample_rate(self) { return GhForcedInduction_sample_rate(self); }

@@ -42,6 +42,7 @@ fn ghurni_gearmaterial_name(t) {
     if (t == GH_GEAR_NYLON)     { return "Nylon"; }
     return "Unknown";
 }
+# gearmaterial_from_name(s) -- GH_GEAR_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_gearmaterial_from_name(s) {
     if (streq(s, "Steel") == 1)    { return GH_GEAR_STEEL; }
@@ -246,7 +247,9 @@ fn ghurni_gear_set_load(self, load) {
 #must_use
 fn ghurni_gear_load(self) { return GhGear_load(self); }
 
+# rpm() -- the current RPM, as clamped by set_rpm.
 #must_use
 fn ghurni_gear_rpm(self) { return GhGear_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_gear_sample_rate(self) { return GhGear_sample_rate(self); }

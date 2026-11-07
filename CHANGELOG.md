@@ -5,6 +5,91 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.2] - 2026-11-07
+
+Toolchain and dependency release. `cyrius` 6.6.3 -> **6.6.20**, `naad` 2.2.2 ->
+**2.2.5**, `hisab` 2.11.2 -> **3.3.7**, `goonj` 2.0.4 -> **2.0.6**, `sakshi` 2.4.11 ->
+**2.5.7**, with ganita 1.2.14 and bayan 1.5.12 from the 6.6.20 snapshot. This is the
+set naad 2.2.5 pins for 6.6.20: hisab 3.3.7 and goonj 2.0.6 pin it exactly, and the
+next tag of each needs cyrius 6.7.x. No DSP source changed; the only `src/` edits are
+comments.
+
+⚠ **Rendered audio is not bit-identical, and no golden moved.** The differences arrive
+with the toolchain and dependency move. The expected source is the math, though it was
+not bisected: cyrius 6.6.9 moved x86 `f64_sin` / `f64_cos` off x87 `fsin` onto fdlibm,
+and 6.6.10 replaced `f64_pow` with fdlibm's `e_pow`. The goldens truncate to 1e-6 before
+hashing, so green goldens cannot show this. A raw-bit sweep can, across 715 streams and
+2,227,790 samples (every synth, engine event, preset and the mixer):
+
+| | |
+|---|---|
+| samples that differ | 1,140,261 (51.2%) |
+| largest difference | 8.9e-16, about -301 dBFS |
+| moved at the golden quantizer (1e-6) | **0** |
+| non-finite, or sign-of-zero changes | 0 |
+| bit-identical | `forced_induction`, turbo and supercharger presets |
+
+This stays a patch release under the golden rule. The regenerated bundle compiled on
+6.6.3 renders bit-identically to 2.6.1 on 6.6.3, so none of it comes from ghurni.
+
+### Changed
+
+- **Envelopes cost more, because `pow` got correct.** `naad_db_to_amplitude` is
+  `f64_pow(10, db/20)` and `clock`, `gear` and `engine` call it per sample. `f64_pow`
+  was up to 909 ulp out before 6.6.10 and is now within 1 ulp, at 1.9x the cost (99 ->
+  190 ns; `naad_db_to_amplitude` 102 -> 226 ns). `sin`, `cos`, `exp`, the biquad and
+  noise are flat or faster. Median of 3 alternating runs, 1-4% spread:
+
+  | Path | 6.6.3 | 6.6.20 | Change |
+  |---|---|---|---|
+  | `clock` 0.05 s | 280 us | 371 us | **+32%** |
+  | `gear` 0.05 s | 987 us | 1,214 us | **+23%** |
+  | `engine_process_block` 512 | 358 us | 426 us | **+19%** |
+  | `mixer` 4 channels, 512 | 964 us | 1,084 us | **+12%** |
+  | `engine` 0.05 s | 1.27 ms | 1.42 ms | **+12%** |
+  | `transmission` 0.05 s | 758 us | 709 us | -6% |
+  | `forced_induction` 0.05 s | 295 us | 257 us | -13% |
+
+  `motor`, `turbine`, `belt_drive`, the DC blocker and the smoother are flat. The
+  four-channel mixer still runs about 10x faster than real time.
+- **`dist/ghurni.deps` shrinks from 17 stdlib leaves to `bayan`**, and the bundle now
+  opens with `include "lib/bayan.cyr"`. `cyrius distlib` 6.6.18 and later names only
+  what the fold needs beyond its named deps. A consumer's `cyrius deps` handles this;
+  one that vendors the bundle by hand needs `lib/bayan.cyr` beside it.
+- **28 public fns gained the doc comment they never had.** cyrdoc used to read
+  `#must_use` as documentation, so `cyrius audit` exits 1 on 6.6.20 without them.
+- **`f64_to` saturates since cyrius 6.6.8**: +Inf and anything past 2^63 give
+  `INT64_MAX` where they gave `INT64_MIN`. The comments that described the old result
+  as current are corrected, and `fuzz/ghurni.fcyr` gains an `INT64_MAX` row, so it now
+  runs 1,628 checks (3 fewer: that value is above the pointer floor, so the
+  non-pointer check skips it).
+- Past about 1e19 Hz, an event length overflows to `INT64_MAX` instead of a negative
+  value, so the event stays armed rather than being ignored. No such rate is usable,
+  and the output stays finite.
+
+### Fixed
+
+- `chain_drive` at a 1e-300 Hz sample rate emitted 4,047 non-finite samples in four
+  1,024-sample blocks and now emits none. This arrived with the toolchain move, not a
+  change here.
+
+### Verified
+
+- **naad's regression does not reach ghurni.** naad 2.2.5 found public entry points that
+  aborted on 6.6.20 behind guards that only had a floor, with every assertion green.
+  `ghurni_sample_count` compares in f64 before the cast, so it was never exposed. Probed
+  directly: 294 extreme-input cases (f64::MAX, +/-Inf, NaN, subnormal and 1e300 sample
+  rates and parameters, across every synth and event, one process each) ran on both
+  toolchains with no abort and no hang, and the same 113 cases were refused cleanly.
+- `lib/` is re-vendored from a regenerated lock: all 41 files are byte-identical to the
+  6.6.20 snapshot or to their tag's `dist/`, and the four commit pins match origin.
+- **The bundle still compiles for older consumers.** It builds and passes smoke under
+  6.6.3, the oldest toolchain carrying it (jalwa, through dhvani). dhvani's own
+  `tests/mechanical.tcyr` passes 10 of 10 on its 6.6.10 pin with this bundle resolved
+  through `cyrius deps`, on naad 2.2.4 / hisab 2.11.2.
+- `cyrius audit`, `cyrius fuzz`, `cyrius deny`, `cyrius distlib --check`, `cyrius coverage
+  --min 65` and all five examples are clean. Tests: **10 suites / 640 assertions**.
+
 ## [2.6.1] - Unblocked by cyrius 6.6.3
 
 Toolchain-pin release. `cyrius` 6.6.2 -> **6.6.3**; no source change.

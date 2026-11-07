@@ -44,6 +44,7 @@ fn ghurni_motortype_name(t) {
     if (t == GH_MOTOR_SERVO)       { return "Servo"; }
     return "Unknown";
 }
+# motortype_from_name(s) -- GH_MOTOR_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_motortype_from_name(s) {
     if (streq(s, "DcBrushed") == 1)   { return GH_MOTOR_DC_BRUSHED; }
@@ -222,5 +223,6 @@ fn ghurni_motor_process_block_naad(self, out) {
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
 #must_use
 fn ghurni_motor_rpm(self) { return GhMotor_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_motor_sample_rate(self) { return GhMotor_sample_rate(self); }

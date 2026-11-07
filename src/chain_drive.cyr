@@ -187,5 +187,6 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
 # Synthesizer-trait accessors (used by the mixer's tag dispatch + parity).
 #must_use
 fn ghurni_chain_drive_rpm(self) { return GhChainDrive_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_chain_drive_sample_rate(self) { return GhChainDrive_sample_rate(self); }

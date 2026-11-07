@@ -238,7 +238,9 @@ fn ghurni_differential_set_coasting(self, coasting) {
 #must_use
 fn ghurni_differential_coasting(self) { return GhDifferential_coasting(self); }
 
+# rpm() -- the current RPM, as clamped by set_rpm.
 #must_use
 fn ghurni_differential_rpm(self) { return GhDifferential_rpm(self); }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_differential_sample_rate(self) { return GhDifferential_sample_rate(self); }

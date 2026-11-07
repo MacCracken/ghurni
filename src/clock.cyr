@@ -43,6 +43,7 @@ fn ghurni_clocktype_name(t) {
     if (t == GH_CLOCK_POCKET_WATCH)      { return "PocketWatch"; }
     return "Unknown";
 }
+# clocktype_from_name(s) -- GH_CLOCK_* for a serde name, or -1 if unknown.
 #must_use
 fn ghurni_clocktype_from_name(s) {
     if (streq(s, "Wristwatch") == 1)       { return GH_CLOCK_WRISTWATCH; }
@@ -268,6 +269,7 @@ fn ghurni_clock_process_block_naad(self, out) {
 fn ghurni_clock_rpm(self) {
     return f64_mul(GhClock_tick_rate(self), f64_from(60));
 }
+# sample_rate() -- the sample rate this synth renders at, in Hz.
 #must_use
 fn ghurni_clock_sample_rate(self) {
     return GhClock_sample_rate(self);

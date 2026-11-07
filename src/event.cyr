@@ -62,18 +62,25 @@ fn ghurni_event_new(kind, arg0, arg1) {
 # Variant convenience constructors (mirror the Rust variant names).
 #must_use
 fn ghurni_event_backfire()          { return ghurni_event_new(GH_EVENT_BACKFIRE, 0, 0); }
+# Misfire event: skipped combustion on cylinder (0-indexed).
 #must_use
 fn ghurni_event_misfire(cylinder)   { return ghurni_event_new(GH_EVENT_MISFIRE, cylinder, 0); }
+# Knock event: a pre-detonation ping on cylinder (0-indexed).
 #must_use
 fn ghurni_event_knock(cylinder)     { return ghurni_event_new(GH_EVENT_KNOCK, cylinder, 0); }
+# Stall event: RPM collapses to zero.
 #must_use
 fn ghurni_event_stall()             { return ghurni_event_new(GH_EVENT_STALL, 0, 0); }
+# Rev-limiter event: fuel cut at max RPM.
 #must_use
 fn ghurni_event_rev_limiter_hit()   { return ghurni_event_new(GH_EVENT_REV_LIMITER_HIT, 0, 0); }
+# Gear-shift event: the payload is the from and to gears.
 #must_use
 fn ghurni_event_gear_shift(from, to){ return ghurni_event_new(GH_EVENT_GEAR_SHIFT, from, to); }
+# Startup event: the startup sequence.
 #must_use
 fn ghurni_event_startup()           { return ghurni_event_new(GH_EVENT_STARTUP, 0, 0); }
+# Shutdown event: the shutdown sequence.
 #must_use
 fn ghurni_event_shutdown()          { return ghurni_event_new(GH_EVENT_SHUTDOWN, 0, 0); }
 

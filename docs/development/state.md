@@ -5,12 +5,12 @@
 
 ## Version
 
-**2.6.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
+**2.6.2** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
 (ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007), a
 control surface that no longer lies (ADR-008), stems deferred on measurement with
 convolution closed (ADR-009), and a quarter-wave exhaust waveguide (ADR-010).
 Dependency set:
-cyrius 6.5.36 · naad 2.2.2 · hisab 2.11.2 · goonj 2.0.4 · sakshi 2.4.11.
+cyrius 6.6.20 · naad 2.2.5 · hisab 3.3.7 · goonj 2.0.6 · sakshi 2.5.7.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 
@@ -21,7 +21,7 @@ and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 non-naad fallback path, which ADR-004 drops. All 44 Rust integration tests are
 reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green.
 
-## Modules (`src/*.cyr`, 19 modules, 4,112 lines)
+## Modules (`src/*.cyr`, 19 modules, 4,144 lines)
 
 | Layer | Modules |
 |-------|---------|
@@ -30,7 +30,7 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (4,099 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (4,134 lines, `cyrius distlib`).
 
 ## Tests (`tests/*.tcyr`, 10 suites, 640 assertions, 0 failures)
 
@@ -53,13 +53,13 @@ Bundle: `dist/ghurni.cyr` (4,099 lines, `cyrius distlib`).
 | `goldens` | 2.0.3 — rendered-audio checksums; the gate that makes "a patch may not change audio" enforceable |
 | `spectral` | 2.0.3 — FFT peak assertions that audio sits where the RPM physics says it should |
 
-`cyrius bench` (`benches/ghurni.bcyr`): DcBlocker ~20 ns/sample, smoother
-~15 ns/sample, engine/gear one-shot synthesis, the streaming 4-channel mixer
+`cyrius bench` (`benches/ghurni.bcyr`): DcBlocker ~8 ns/sample, smoother
+~9 ns/sample, engine/gear one-shot synthesis, the streaming 4-channel mixer
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
 `cyrius coverage`: 137/185 functions referenced (74%) — a floor, not a proof.
-Fuzz: `fuzz/ghurni.fcyr`, 1631 adversarial checks (`cyrius fuzz`).
+Fuzz: `fuzz/ghurni.fcyr`, 1628 adversarial checks (`cyrius fuzz`).
 
 ## Deliberate divergences from `rust-old/`
 

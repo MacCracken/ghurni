@@ -9,9 +9,11 @@
 #   CLASS 1  Rust usize/u32/enum guarantees erased by Cyrius's signed i64. The
 #            oracle's body validates nothing because the bad value is
 #            UNREPRESENTABLE, so a transliterated guard is only half a bound.
-#   CLASS 2  f64_to TRUNCATES where Rust's `as` casts SATURATE. Rust maps an
-#            over-range f64 to usize::MAX; f64_to overflows to INT64_MIN, which
+#   CLASS 2  f64_to TRUNCATED where Rust's `as` casts SATURATE. Rust maps an
+#            over-range f64 to usize::MAX; f64_to overflowed to INT64_MIN, which
 #            is neither `> MAX` nor `== 0`, so one-sided clamps let it through.
+#            Since cyrius 6.6.8 f64_to saturates to INT64_MAX instead, which a
+#            floor-only clamp lets through just the same.
 #
 # NOTE these suites deliberately assert on ERROR CODES and STRUCTURAL facts
 # (lengths, gear indices, survival of a call that used to abort the process),
@@ -86,10 +88,10 @@ assert_gt(env2, 0.0705, "decay envelope at t=0.5 lower bound");
 
 # ================================================================
 test_group("sample-count guard (CLASS 2: f64_to saturation)");
-# ghurni_sample_count compares in f64 BEFORE the f64_to, so the INT64_MIN
-# overflow is never reached. 1e30 as a literal is not available, so build it.
+# ghurni_sample_count compares in f64 BEFORE the f64_to, so the over-range
+# result is never reached. 1e30 as a literal is not available, so build it.
 var HUGE = f64_mul(f64_mul(f64_from(1000000000), f64_from(1000000000)), f64_from(1000000));
-assert_eq(ghurni_is_err(ghurni_sample_count(SR, HUGE)), 1, "1e24 s rejected, not wrapped to INT64_MIN");
+assert_eq(ghurni_is_err(ghurni_sample_count(SR, HUGE)), 1, "1e24 s rejected, never cast to an integer");
 assert_eq(ghurni_sample_count(SR, F64_ONE), 44100, "1 s @ 44.1 kHz = 44100 samples");
 assert_eq(ghurni_sample_count(SR, f64_from(2)), 88200, "2 s @ 44.1 kHz = 88200 samples");
 # The cap sits below the stdlib's VEC_CAP_MAX so vec growth can never abort.

@@ -102,6 +102,8 @@ fn ghurni_validate_sample_rate(sample_rate) {
     return GH_ERR_NONE;
 }
 
+# validate_duration(duration) -- GH_ERR_NONE, or GH_ERR_INVALID_PARAMETER unless
+# duration is positive and finite.
 #must_use
 fn ghurni_validate_duration(duration) {
     if (f64_le(duration, 0) == 1) {
@@ -119,9 +121,11 @@ fn ghurni_validate_duration(duration) {
 # Sample-count guard (P-1, 2.0.2). Ports the `(sample_rate * duration) as usize`
 # line every one-shot `synthesize` uses (rust-old/src/engine.rs:225 and the nine
 # siblings). Rust's `as usize` SATURATES, so an over-range product becomes
-# usize::MAX and `vec![0.0; usize::MAX]` fails loudly; Cyrius `f64_to` OVERFLOWS
-# to INT64_MIN, which is < 0, so `while (i < n)` never runs and synthesize used
-# to return a length-0 vec that ghurni_is_err() reports as SUCCESS.
+# usize::MAX and `vec![0.0; usize::MAX]` fails loudly. Before cyrius 6.6.8, `f64_to`
+# OVERFLOWED to INT64_MIN, which is < 0, so `while (i < n)` never ran and synthesize
+# used to return a length-0 vec that ghurni_is_err() reports as SUCCESS. Since 6.6.8
+# it saturates like Rust (+Inf and past 2^63 -> INT64_MAX, NaN -> 0), which a
+# floor-only guard would walk past and into the vec abort described below.
 #
 # There is also no upper bound in the oracle: the stdlib vec aborts the whole
 # process (`_vec_die()` -> exit(1)) once a push would exceed VEC_CAP_MAX
@@ -135,7 +139,7 @@ fn ghurni_validate_duration(duration) {
 var GHURNI_MAX_SAMPLES = 0x4000000;
 
 # sample_count(sample_rate, duration) -> count > 0, or a negative GH_ERR_*.
-# Compares in f64 BEFORE the f64_to, so the overflow is never reached.
+# Compares in f64 BEFORE the f64_to, so neither over-range result is ever reached.
 #must_use
 fn ghurni_sample_count(sample_rate, duration) {
     var vsr = ghurni_validate_sample_rate(sample_rate);
@@ -196,6 +200,7 @@ fn ghurni_sample_count(sample_rate, duration) {
 # ================================================================
 var GHURNI_LOAD_TILT = 1.0;
 
+# load_tilt(load) -- tilt(load) at the default GHURNI_LOAD_TILT.
 #must_use
 fn ghurni_load_tilt(load) {
     return ghurni_load_tilt_k(load, GHURNI_LOAD_TILT);
@@ -239,6 +244,8 @@ fn ghurni_finite_clamp(x, lo, hi) {
 
 var GHURNI_RPM_GAIN_MAX = 2.0;
 
+# rpm_gain(rpm, ref_rpm) -- 2r / (r + 1) for r = rpm / ref_rpm. 0 when either is
+# non-finite or not positive.
 #must_use
 fn ghurni_rpm_gain(rpm, ref_rpm) {
     if (ghurni_is_finite(rpm) == 0) { return 0; }

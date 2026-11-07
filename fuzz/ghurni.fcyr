@@ -12,8 +12,11 @@
 #                      nothing and a transliterated guard is half a bound.
 #                      2.0.2 found this in shift_to, five enum constructors and
 #                      the mixer's synth pointer.
-#   INT64_MIN          what f64_to produces on overflow, where Rust's `as`
-#                      SATURATES. 2.0.2's silently-empty synthesize() was this.
+#   INT64_MIN          what f64_to produced on overflow before cyrius 6.6.8,
+#                      where Rust's `as` SATURATES. 2.0.2's silently-empty
+#                      synthesize() was this.
+#   INT64_MAX          what f64_to produces on overflow since cyrius 6.6.8. A
+#                      floor-only guard walks past it.
 #   NaN, +/-inf        pass straight through f64_clamp (which propagates NaN
 #                      where f64_max/f64_min absorb it) into persistent filter
 #                      state.
@@ -75,7 +78,7 @@ fn fz_val(i) {
 
 # fz int — helper used by ghurni.fcyr.
 fn fz_int(i) {
-    var k = i % 10;
+    var k = i % 11;
     if (k == 0) { return 0; }
     if (k == 1) { return 1; }
     if (k == 2) { return 0 - 1; }
@@ -85,6 +88,7 @@ fn fz_int(i) {
     if (k == 6) { return 100; }
     if (k == 7) { return 1000; }
     if (k == 8) { return 0 - 9223372036854775807 - 1; }   # INT64_MIN
+    if (k == 9) { return 9223372036854775807; }           # INT64_MAX
     return 127;
 }
 
@@ -259,9 +263,9 @@ fn main(): i64 {
     }
 
     # ---------------------------------------------------------------
-    # 4. DURATION, at a valid synth. This is the CLASS 2 site: f64_to overflows
-    # to INT64_MIN where Rust's `as` saturates, and the stdlib vec ABORTS the
-    # process past VEC_CAP_MAX. Neither may happen.
+    # 4. DURATION, at a valid synth. This is the CLASS 2 site: an over-range
+    # f64_to is INT64_MAX (INT64_MIN before cyrius 6.6.8), and the stdlib vec
+    # ABORTS the process past VEC_CAP_MAX. Neither may be reached.
     # ---------------------------------------------------------------
     i = 0;
     while (i < 24) {
@@ -344,15 +348,18 @@ fn main(): i64 {
           "mixer accepted an out-of-range kind tag");
         fz_check(ghurni_is_err(rc) == 0 || (kind < GH_KIND_ENGINE || kind > GH_KIND_CHAIN_DRIVE),
           "mixer REJECTED an in-range kind tag");
-        # A non-pointer as the synth must be refused. Every fz_int value is
-        # below GHURNI_MIN_VALID_PTR (the largest is 48000), so ALL of them must
-        # come back as an error -- error codes, null, and small positive
-        # integers alike. Note the contract's limit again: an ARBITRARY wild
-        # pointer above the floor is still undefined behaviour, because Cyrius
-        # has no allocator oracle. That is not asserted; the library cannot
-        # honour it.
-        fz_check(ghurni_is_err(ghurni_mixer_add_channel(tag_mix, "fz", GH_KIND_GEAR, fz_int(i))) == 1,
-          "mixer accepted a non-pointer as a synthesizer");
+        # A non-pointer as the synth must be refused. Every fz_int value but
+        # INT64_MAX is below GHURNI_MIN_VALID_PTR (the next largest is 48000), so
+        # ALL of those must come back as an error -- error codes, null, and small
+        # positive integers alike. INT64_MAX is skipped because it IS the
+        # contract's limit: an ARBITRARY wild pointer above the floor is still
+        # undefined behaviour, because Cyrius has no allocator oracle. That is
+        # not asserted; the library cannot honour it.
+        var not_ptr = fz_int(i);
+        if (not_ptr < GHURNI_MIN_VALID_PTR) {
+            fz_check(ghurni_is_err(ghurni_mixer_add_channel(tag_mix, "fz", GH_KIND_GEAR, not_ptr)) == 1,
+              "mixer accepted a non-pointer as a synthesizer");
+        }
         i = i + 1;
     }
 
