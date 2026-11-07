@@ -5,12 +5,12 @@
 
 ## Version
 
-**2.6.2** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
+**2.7.0** — Cyrius port, hardened and pinned; oracle retired; RPM loudness law
 (ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007), a
 control surface that no longer lies (ADR-008), stems deferred on measurement with
 convolution closed (ADR-009), and a quarter-wave exhaust waveguide (ADR-010).
 Dependency set:
-cyrius 6.6.20 · naad 2.2.5 · hisab 3.3.7 · goonj 2.0.6 · sakshi 2.5.7.
+cyrius 6.7.9 · naad 2.3.0 · hisab 3.4.0 · goonj 2.1.0 · sakshi 2.5.8.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 

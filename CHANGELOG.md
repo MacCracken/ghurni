@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-11-07
+
+Onto the cyrius 6.7.x language minor. Toolchain and dependency release. `cyrius` 6.6.20
+-> **6.7.9**, `naad` 2.2.5 -> **2.3.0**, `hisab` 3.3.7 -> **3.4.0**, `goonj` 2.0.6 ->
+**2.1.0**, `sakshi` 2.5.7 -> **2.5.8**, with ganita 1.2.15 and bayan 1.5.13 from the
+6.7.9 snapshot. This is the set naad 2.3.0 pins for 6.7.9: hisab 3.4.0 and goonj 2.1.0
+pin it exactly, and the next tag of each, like naad 2.3.1 onward, needs 6.7.18.
+
+**Nothing under `src/`, `tests/`, `fuzz/` or `benches/` changed, and rendered audio is
+byte-identical to 2.6.2.** It is a minor because the toolchain floor moves.
+
+### Changed
+
+- ⚠ **ghurni's own dependency set now needs cyrius 6.7.2 or later.** sakshi 2.5.8
+  declares its syscall numbers `const`, which arrives at 6.7.2, and goonj pulls sakshi
+  in. Measured by resolving the whole 2.7.0 set from scratch on each toolchain: 6.7.2
+  and 6.7.9 build and run, 6.7.1 and 6.6.20 fail at compile time (`undefined variable
+  'SK_OUT_STDERR'`). The failure is loud, not silent.
+- **`dist/ghurni.cyr` itself does not raise that floor.** It differs from 2.6.2 only in
+  its version line, so a consumer can take it on an older toolchain with its existing
+  naad set. See Verified.
+- **Consumers that move to naad 2.3.0 move hisab and goonj with it.** hisab 3.4.0 retires
+  27 public names, and hisab's changelog has the replacements. ghurni calls none of them.
+- Compiled binaries grow about 14% for the same program, 2.37 MB to 2.71 MB.
+
+### Verified
+
+- **Audio is byte-identical to 2.6.2.** The same sweep as 2.6.2, 715 streams and 2,227,790
+  samples across every synth, engine event, preset and the mixer, shows no difference.
+  That sweep moved 1,140,261 samples last release, so it can see a change.
+- **The language changes do not reach ghurni's source.** There is no lone `!` (a no-op
+  until 6.7.3, so a real one would have flipped), no `~`, no `impl` or `trait`, and no
+  unary `-` on a constant. Reserved words such as `dyn` would be compile errors, and
+  everything compiles unchanged.
+- **The extreme-input sweep is unchanged.** All 294 cases behave the same on both
+  toolchains, output included, with no abort or hang and the same 113 clean refusals.
+- `lib/` is re-vendored from a regenerated lock: all 41 files are byte-identical to the
+  6.7.9 snapshot or to their tag's `dist/`, the four commit pins match origin, and `cyrius
+  deps --locked` confirms `lib/` and the lock are what the tags resolve.
+- **The bundle still compiles for older consumers.** It builds and passes smoke under
+  6.6.3, the oldest toolchain carrying it (jalwa, through dhvani). dhvani's own
+  `tests/mechanical.tcyr` passes 10 of 10 on its 6.6.10 pin with this bundle resolved
+  through `cyrius deps`, on naad 2.2.4 / hisab 2.11.2.
+- **Benchmarks are flat to slightly faster**: -2% to -6% across the synths, with 1-9%
+  spread, median of 3 alternating runs. `f64_pow` did not change, so the envelope cost
+  recorded in 2.6.2 stands.
+- `cyrius audit`, `cyrius fuzz` (1,628 checks), `cyrius deny`, `cyrius distlib --check`,
+  `cyrius coverage --min 65` and all five examples are clean. Tests: **10 suites / 640
+  assertions**.
+
 ## [2.6.2] - 2026-11-07
 
 Toolchain and dependency release. `cyrius` 6.6.3 -> **6.6.20**, `naad` 2.2.2 ->
