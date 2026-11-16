@@ -1,0 +1,635 @@
+# continuity.tcyr -- 2.8.0 "Phase Continuity" (ADR-012).
+#
+# Every group here fails on 2.7.2, except where a group says it guards a new
+# name. They pin what the release changed on purpose: phase is integrated from
+# the speed actually in force, not derived from absolute position; a clock tick
+# has a duration; a misfire skips a whole firing; the hybrid's starter has its own
+# synth; block-stepped terms ramp; every synth builds and keeps its partials at
+# any valid sample rate; and a negative ratio is a reverse gear.
+#
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+alloc_init();
+var SR = f64_from(44100);
+# A minute of stream at 44.1 kHz, in samples.
+var MINUTE = 2646000;
+
+# assert_f_gt(a, b, name) -- assert a > b as f64s (assert_gt compares raw i64s).
+fn assert_f_gt(a, b, name) { return assert_eq(f64_gt(a, b), 1, name); }
+# assert_f_lt(a, b, name) -- assert a < b as f64s.
+fn assert_f_lt(a, b, name) { return assert_eq(f64_lt(a, b), 1, name); }
+# zeros(n) -- a vec of n zero samples.
+fn zeros(n) { var v = vec_new(); var i = 0; while (i < n) { vec_push(v, 0); i = i + 1; } return v; }
+# mean_abs(v, a, b) -- the mean of |v[i]| for a <= i < b.
+fn mean_abs(v, a, b) {
+    var s = 0; var i = a;
+    while (i < b) { s = f64_add(s, f64_abs(vec_get(v, i))); i = i + 1; }
+    return f64_div(s, f64_from(b - a));
+}
+# ndiff(a, b) -- how many samples differ in their raw bits.
+fn ndiff(a, b) {
+    var c = 0; var i = 0;
+    while (i < vec_len(a)) { if (vec_get(a, i) != vec_get(b, i)) { c = c + 1; } i = i + 1; }
+    return c;
+}
+# finite_all(v) -- 1 if every sample of v is finite.
+fn finite_all(v) {
+    var i = 0;
+    while (i < vec_len(v)) { if (ghurni_is_finite(vec_get(v, i)) == 0) { return 0; } i = i + 1; }
+    return 1;
+}
+# ratios2(a, b) -- a two-gear ratio vec.
+fn ratios2(a, b) { var r = vec_new(); vec_push(r, a); vec_push(r, b); return r; }
+
+# make(kind) -- one synth of each GH_KIND_*, at 44.1 kHz.
+fn make(kind) {
+    if (kind == GH_KIND_ENGINE)           { return ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR); }
+    if (kind == GH_KIND_GEAR)             { return ghurni_gear_new(32, GH_GEAR_STEEL, SR); }
+    if (kind == GH_KIND_MOTOR)            { return ghurni_motor_new(GH_MOTOR_DC_BRUSHED, 8, SR); }
+    if (kind == GH_KIND_TURBINE)          { return ghurni_turbine_new(12, f64_from(600), SR); }
+    if (kind == GH_KIND_CLOCK)            { return ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR); }
+    if (kind == GH_KIND_TRANSMISSION)     { return ghurni_transmission_new(ratios2(f64_from(3), F64_ONE), 24, SR); }
+    if (kind == GH_KIND_DIFFERENTIAL)     { return ghurni_differential_new(41, 11, SR); }
+    if (kind == GH_KIND_FORCED_INDUCTION) {
+        return ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.2, SR);
+    }
+    if (kind == GH_KIND_BELT_DRIVE)       { return ghurni_belt_drive_new(f64_from(120), 0.3, SR); }
+    return ghurni_chain_drive_new(110, 16, SR);
+}
+# set_pos(kind, s, pos) -- write a synth's public sample_position.
+fn set_pos(kind, s, pos) {
+    if (kind == GH_KIND_ENGINE)           { GhEngine_set_sample_position(s, pos); }
+    if (kind == GH_KIND_GEAR)             { GhGear_set_sample_position(s, pos); }
+    if (kind == GH_KIND_MOTOR)            { GhMotor_set_sample_position(s, pos); }
+    if (kind == GH_KIND_TURBINE)          { GhTurbine_set_sample_position(s, pos); }
+    if (kind == GH_KIND_CLOCK)            { GhClock_set_sample_position(s, pos); }
+    if (kind == GH_KIND_TRANSMISSION)     { GhTransmission_set_sample_position(s, pos); }
+    if (kind == GH_KIND_DIFFERENTIAL)     { GhDifferential_set_sample_position(s, pos); }
+    if (kind == GH_KIND_FORCED_INDUCTION) { GhForcedInduction_set_sample_position(s, pos); }
+    if (kind == GH_KIND_BELT_DRIVE)       { GhBeltDrive_set_sample_position(s, pos); }
+    if (kind == GH_KIND_CHAIN_DRIVE)      { GhChainDrive_set_sample_position(s, pos); }
+    return 0;
+}
+
+# ================================================================
+test_group("no synth's audio depends on how long its stream has run");
+# Two identical synths, one told it is a minute into its stream, driven through the
+# same ramp in uneven blocks. Phase taken from absolute position (2.7.2) gives the
+# old one different audio even at a steady speed; integrated phase gives the same
+# bits, because the phase is a function of the speed history alone.
+fn age_diff(kind) {
+    var a = make(kind);
+    var b = make(kind);
+    set_pos(kind, b, MINUTE);
+    var d = 0;
+    var k = 0;
+    while (k < 30) {
+        var rpm = f64_from(800 + ((k * 337) % 2600));
+        ghurni_synth_set_rpm(kind, a, rpm);
+        ghurni_synth_set_rpm(kind, b, rpm);
+        if (kind == GH_KIND_CLOCK) {
+            var tr = f64_add(F64_ONE, f64_div(f64_from(k % 7), f64_from(3)));
+            ghurni_clock_set_tick_rate(a, tr);
+            ghurni_clock_set_tick_rate(b, tr);
+        }
+        var len = 100 + ((k * 211) % 700);
+        var oa = zeros(len);
+        var ob = zeros(len);
+        ghurni_synth_process_block(kind, a, oa);
+        ghurni_synth_process_block(kind, b, ob);
+        d = d + ndiff(oa, ob);
+        k = k + 1;
+    }
+    return d;
+}
+assert_eq(age_diff(GH_KIND_ENGINE), 0, "engine: crank angle");
+assert_eq(age_diff(GH_KIND_GEAR), 0, "gear: ring envelope phase");
+assert_eq(age_diff(GH_KIND_CLOCK), 0, "clock: beat grid");
+assert_eq(age_diff(GH_KIND_DIFFERENTIAL), 0, "differential: ring revolution");
+assert_eq(age_diff(GH_KIND_CHAIN_DRIVE), 0, "chain: engagement and lap");
+assert_eq(age_diff(GH_KIND_BELT_DRIVE), 0, "belt: loop rotation");
+assert_eq(age_diff(GH_KIND_MOTOR), 0, "motor");
+assert_eq(age_diff(GH_KIND_TURBINE), 0, "turbine");
+assert_eq(age_diff(GH_KIND_TRANSMISSION), 0, "transmission");
+assert_eq(age_diff(GH_KIND_FORCED_INDUCTION), 0, "forced induction");
+# The other three engine types, and the event sequences.
+fn engine_age_diff(et, kind) {
+    var a = ghurni_engine_new(et, 6, SR);
+    var b = ghurni_engine_new(et, 6, SR);
+    GhEngine_set_sample_position(b, MINUTE);
+    var d = 0;
+    var k = 0;
+    while (k < 20) {
+        var rpm = f64_from(1200 + k * 150);
+        ghurni_engine_set_rpm(a, rpm);
+        ghurni_engine_set_rpm(b, rpm);
+        if (k == 5) {
+            ghurni_engine_trigger_event(a, ghurni_event_new(kind, 2, 0));
+            ghurni_engine_trigger_event(b, ghurni_event_new(kind, 2, 0));
+        }
+        var oa = zeros(441);
+        var ob = zeros(441);
+        ghurni_engine_process_block(a, oa);
+        ghurni_engine_process_block(b, ob);
+        d = d + ndiff(oa, ob);
+        k = k + 1;
+    }
+    return d;
+}
+assert_eq(engine_age_diff(GH_ENGINE_DIESEL, GH_EVENT_MISFIRE), 0, "diesel, through a MISFIRE");
+assert_eq(engine_age_diff(GH_ENGINE_TWO_STROKE, GH_EVENT_STALL), 0, "two-stroke, through a STALL");
+assert_eq(engine_age_diff(GH_ENGINE_GASOLINE, GH_EVENT_STARTUP), 0, "gasoline, through a STARTUP");
+assert_eq(engine_age_diff(GH_ENGINE_HYBRID, GH_EVENT_SHUTDOWN), 0, "hybrid, through a SHUTDOWN");
+
+# ================================================================
+test_group("the crank angle is the integral of the speed");
+# A replica of the engine's smoother integrates rps x 360 per sample, the way a
+# crank turns. After every block the engine's anchored crank must agree with it,
+# through a ramp, a minute into the stream. Position x current speed (2.7.2) drifts
+# from it by whole cycles within the first ramp.
+# circ_err(a, b, cycle) -- the distance between two phases on a circle of `cycle`.
+fn circ_err(a, b, cycle) {
+    var d = f64_abs(f64_sub(a, b));
+    var e = f64_sub(cycle, d);
+    if (f64_lt(e, d) == 1) { return e; }
+    return d;
+}
+# crank_track_err(et) -- the worst circular error, in degrees, between an engine's
+# anchored crank and a replica integration of its smoother, over 60 uneven blocks.
+fn crank_track_err(et) {
+    var e = ghurni_engine_new(et, 4, SR);
+    GhEngine_set_sample_position(e, MINUTE);
+    var cycle = f64_from(720);
+    if (et == GH_ENGINE_TWO_STROKE) { cycle = f64_from(360); }
+    var spm = f64_mul(f64_from(60), SR);
+    var rep = ghurni_smooth_new(f64_from(800), 0.05, SR);
+    var acc = 0;
+    var worst = 0;
+    var k = 0;
+    while (k < 60) {
+        var rpm = f64_from(800 + ((k * 571) % 6000));
+        ghurni_engine_set_rpm(e, rpm);
+        ghurni_smooth_set_target(rep, rpm);
+        var len = 64 + ((k * 97) % 600);
+        ghurni_engine_process_block(e, zeros(len));
+        var j = 0;
+        while (j < len) {
+            var rps = f64_div(ghurni_smooth_next_value(rep), spm);
+            acc = ghurni_fmod(f64_add(acc, f64_mul(rps, f64_from(360))), cycle);
+            j = j + 1;
+        }
+        var next = ghurni_fmod(f64_add(GhEngine_crank_anchor(e),
+            f64_mul(f64_mul(f64_from(GhEngine_sample_position(e) - GhEngine_crank_anchor_pos(e)),
+                GhEngine_crank_anchor_rps(e)), f64_from(360))), cycle);
+        var err = circ_err(next, acc, cycle);
+        if (f64_gt(err, worst) == 1) { worst = err; }
+        k = k + 1;
+    }
+    return worst;
+}
+assert_f_lt(crank_track_err(GH_ENGINE_GASOLINE), 0.000001, "4-stroke crank within 1e-6 degree of the integral");
+assert_f_lt(crank_track_err(GH_ENGINE_TWO_STROKE), 0.000001, "2-stroke crank within 1e-6 degree of the integral");
+
+# The differential's ring gear, the same way: one revolution per (rpm/60) x
+# pinion/ring. 2.7.2's warble ran at 96 Hz instead of 16 a minute into a ramp.
+fn ring_track_err() {
+    var d = ghurni_differential_new(41, 11, SR);
+    GhDifferential_set_sample_position(d, MINUTE);
+    var rep = ghurni_smooth_new(0, 0.05, SR);
+    var p_over_r = f64_div(f64_from(11), f64_from(41));
+    var acc = 0;
+    var worst = 0;
+    var k = 0;
+    while (k < 60) {
+        var rpm = f64_from((k * 733) % 9000);
+        ghurni_differential_set_rpm(d, rpm);
+        ghurni_smooth_set_target(rep, rpm);
+        var len = 64 + ((k * 89) % 600);
+        ghurni_differential_process_block(d, zeros(len));
+        var j = 0;
+        while (j < len) {
+            var step = f64_div(f64_mul(f64_div(ghurni_smooth_next_value(rep), f64_from(60)), p_over_r), SR);
+            acc = ghurni_fmod(f64_add(acc, step), F64_ONE);
+            j = j + 1;
+        }
+        var next = ghurni_fmod(f64_add(GhDifferential_ring_anchor(d),
+            f64_mul(GhDifferential_ring_anchor_step(d),
+              f64_from(GhDifferential_sample_position(d) - GhDifferential_ring_anchor_pos(d)))), F64_ONE);
+        var err = circ_err(next, acc, F64_ONE);
+        if (f64_gt(err, worst) == 1) { worst = err; }
+        k = k + 1;
+    }
+    return worst;
+}
+assert_f_lt(ring_track_err(), 0.000000001, "ring phase within 1e-9 revolution of the integral");
+
+# ================================================================
+test_group("a clock ticks as often as its rate says, at any age and block size");
+# A wall clock 100 s in, ramped from 1 to 2 Hz over 10 s, one rate per block. A
+# beat falls at the window's first sample, and 14.95 more are due over the ramp:
+# 16 ticks. 2.7.2 ticked 19, 25 and 19 times at these three block sizes.
+var oc_quiet = 0;
+var oc_count = 0;
+# onsets(v, thr, refractory) -- count rising crossings of thr, carrying state.
+fn onsets(v, thr, refr) {
+    var i = 0;
+    while (i < vec_len(v)) {
+        if (f64_gt(f64_abs(vec_get(v, i)), thr) == 1) {
+            if (oc_quiet >= refr) { oc_count = oc_count + 1; }
+            oc_quiet = 0;
+        } else { oc_quiet = oc_quiet + 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+# ramp_ticks(bs) -- ticks counted from a wall clock 100 s in, ramped 1 to 2 Hz over
+# 10 s in blocks of bs samples, one rate per block.
+fn ramp_ticks(bs) {
+    var c = ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR);
+    ghurni_clock_set_tick_rate(c, F64_ONE);
+    var w = 0;
+    while (w < 100) { ghurni_clock_process_block(c, zeros(44100)); w = w + 1; }
+    oc_quiet = 100000;
+    oc_count = 0;
+    var done = 0;
+    while (done < 441000) {
+        ghurni_clock_set_tick_rate(c, f64_add(F64_ONE, f64_div(f64_from(done), f64_from(441000))));
+        var o = zeros(bs);
+        ghurni_clock_process_block(c, o);
+        onsets(o, 0.1, 2205);
+        done = done + bs;
+    }
+    return oc_count;
+}
+assert_eq(ramp_ticks(4410), 16, "100 ms blocks");
+assert_eq(ramp_ticks(441), 16, "10 ms blocks");
+assert_eq(ramp_ticks(1000), 16, "1000-sample blocks");
+
+# ================================================================
+test_group("a clock tick has a duration, not a share of the beat");
+# The first beat of a wristwatch at its own 8 Hz and slowed to 0.1 Hz: the tick
+# is the same sound, so the first beat's samples are the same bits. 2.7.2
+# stretched it with the beat: 89 samples above 0.01 at 8 Hz, 1,201 at 0.1 Hz.
+fn first_beat(rate) {
+    var c = ghurni_clock_new(GH_CLOCK_WRISTWATCH, SR);
+    ghurni_clock_set_tick_rate(c, rate);
+    var o = zeros(5512);
+    ghurni_clock_process_block(c, o);
+    return o;
+}
+assert_eq(ndiff(first_beat(f64_from(8)), first_beat(0.1)), 0, "8 Hz and 0.1 Hz first beats are bit-identical");
+# ndiff_n(a, b, n) -- how many of the first n samples differ in their raw bits.
+fn ndiff_n(a, b, n) {
+    var c = 0; var i = 0;
+    while (i < n) { if (vec_get(a, i) != vec_get(b, i)) { c = c + 1; } i = i + 1; }
+    return c;
+}
+assert_eq(ndiff_n(first_beat(f64_from(8)), first_beat(f64_from(20)), 2205), 0,
+  "8 Hz and 20 Hz agree until 20 Hz beats again, at 2205 samples");
+# Not vacuous: the beat really is slower, so the next tick arrives later.
+fn tick_at(rate, n) {
+    var c = ghurni_clock_new(GH_CLOCK_WRISTWATCH, SR);
+    ghurni_clock_set_tick_rate(c, rate);
+    var o = zeros(n);
+    ghurni_clock_process_block(c, o);
+    return mean_abs(o, 5512, 5600);
+}
+assert_f_gt(tick_at(f64_from(8), 6000), 0.01, "at 8 Hz the second tick sounds at 5512.5 samples");
+assert_f_lt(tick_at(0.1, 6000), 0.005, "at 0.1 Hz it does not");
+
+# ================================================================
+test_group("a chain's impact rate does not depend on its age");
+# 200 ms ramp from 2000 to 2950 rpm, 1 s and 60 s into the stream. The impacts
+# due are the integral of the engagement rate, about 125 either way.
+fn chain_ramp_impacts(warm) {
+    var ch = ghurni_chain_drive_new(110, 16, SR);
+    ghurni_chain_drive_set_rpm(ch, f64_from(2000));
+    var w = 0;
+    while (w < warm) { ghurni_chain_drive_process_block(ch, zeros(4410)); w = w + 1; }
+    oc_quiet = 100000;
+    oc_count = 0;
+    var k = 0;
+    while (k < 20) {
+        ghurni_chain_drive_set_rpm(ch, f64_from(2000 + k * 50));
+        var o = zeros(441);
+        ghurni_chain_drive_process_block(ch, o);
+        onsets(o, 0.12, 30);
+        k = k + 1;
+    }
+    return oc_count;
+}
+var ci_young = chain_ramp_impacts(10);
+var ci_old = chain_ramp_impacts(600);
+assert_gte(ci_young, 120, "1 s in: about 125 impacts");
+assert_lte(ci_young, 130, "1 s in: about 125 impacts (upper)");
+assert_gte(ci_old, ci_young - 2, "60 s in: the same count, within two");
+assert_lte(ci_old, ci_young + 2, "60 s in: the same count, within two (upper)");
+
+# ================================================================
+test_group("a misfire skips the whole firing");
+# One cylinder at 3000 rpm: a 720 degree cycle is 1,764 samples and the combustion
+# window 0.08 of it, about 141. 2.7.2 cleared the flag after ONE sample and fired
+# the other 140. The flag must hold "skipping" (2) for the whole window.
+fn misfire_run(do_misfire, out) {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 1, SR);
+    ghurni_engine_set_rpm(e, f64_from(3000));
+    ghurni_engine_set_load(e, 0.8);
+    ghurni_engine_process_block(e, zeros(44100));
+    if (do_misfire == 1) { ghurni_engine_trigger_event(e, ghurni_event_new(GH_EVENT_MISFIRE, 0, 0)); }
+    var skipping = 0;
+    var first = 0 - 1;
+    var i = 0;
+    while (i < 3528) {
+        var one = zeros(1);
+        ghurni_engine_process_block(e, one);
+        vec_set(out, i, vec_get(one, 0));
+        if (vec_get(GhEngine_misfire_flags(e), 0) == 2) {
+            if (first < 0) { first = i; }
+            skipping = skipping + 1;
+        }
+        i = i + 1;
+    }
+    vec_push(out, first);
+    vec_push(out, vec_get(GhEngine_misfire_flags(e), 0));
+    return skipping;
+}
+var mf_out = zeros(3528);
+var mf_ref = zeros(3528);
+var mf_span = misfire_run(1, mf_out);
+var mf_none = misfire_run(0, mf_ref);
+assert_gte(mf_span, 140, "skips about 141 samples, the whole window");
+assert_lte(mf_span, 142, "and no more than the window");
+assert_eq(vec_get(mf_out, 3529), 0, "the flag is clear afterwards");
+assert_eq(mf_none, 0, "no misfire, no skip");
+# The skipped window is quiet next to the same window fired: the pulse is gone.
+var mf_at = vec_get(mf_out, 3528);
+# Measured: 0.0154 misfired, 0.0366 fired, and 0.0154 for the window before, which
+# is the noise beds alone. Up to the skip the two engines are the same bits.
+assert_eq(ndiff_n(mf_out, mf_ref, mf_at), 0, "identical until the skipped firing");
+assert_f_lt(mean_abs(mf_out, mf_at, mf_at + 141), f64_mul(mean_abs(mf_ref, mf_at, mf_at + 141), 0.5),
+  "the skipped window carries under half the fired one's level");
+
+# ================================================================
+test_group("HYBRID STARTUP: the whine and the starter are two synths");
+# The starter whir had to borrow whine_synth, so a hybrid's STARTUP retuned that
+# one synth to 220 Hz in the same sample it had been set to the drive's pitch.
+var hy = ghurni_engine_new(GH_ENGINE_HYBRID, 4, SR);
+ghurni_engine_set_rpm(hy, f64_from(3000));
+ghurni_engine_process_block(hy, zeros(22050));
+ghurni_engine_trigger_event(hy, ghurni_event_new(GH_EVENT_STARTUP, 0, 0));
+ghurni_engine_process_block(hy, zeros(512));
+var hy_rpm = ghurni_smooth_current(GhEngine_smooth_rpm(hy));
+var hy_wf = f64_mul(f64_div(hy_rpm, f64_from(60)), f64_from(GHURNI_HYBRID_POLES));
+assert_eq(additive_fundamental(GhEngine_whine_synth(hy)), hy_wf, "the whine stays at the drive's pitch");
+assert_eq(additive_fundamental(GhEngine_starter_synth(hy)), f64_from(220), "the starter whirs at 220 Hz");
+assert_neq(GhEngine_whine_synth(hy), GhEngine_starter_synth(hy), "two different synths");
+
+# ================================================================
+test_group("block-stepped terms ramp across a block edge");
+# Mean |x| over the 5 ms after a step, against the 5 ms before. 2.7.2 stepped at the
+# edge: 0.025 for the transmission and 0.004 for the belt going to rpm 0, 0.71 for
+# the differential's load and 0.60 for its coast flank.
+fn step_ratio(kind) {
+    var o1 = zeros(8820);
+    var o2 = zeros(8820);
+    if (kind == 0) {
+        var t = ghurni_transmission_new(ratios2(f64_from(3), F64_ONE), 24, SR);
+        ghurni_transmission_set_rpm(t, f64_from(3000));
+        ghurni_transmission_process_block(t, o1);
+        ghurni_transmission_set_rpm(t, 0);
+        ghurni_transmission_process_block(t, o2);
+    } elif (kind == 1) {
+        var b = ghurni_belt_drive_new(f64_from(120), 0.6, SR);
+        ghurni_belt_drive_set_rpm(b, f64_from(2000));
+        ghurni_belt_drive_process_block(b, o1);
+        ghurni_belt_drive_set_rpm(b, 0);
+        ghurni_belt_drive_process_block(b, o2);
+    } elif (kind == 2) {
+        var d = ghurni_differential_new(41, 11, SR);
+        ghurni_differential_set_rpm(d, f64_from(3000));
+        ghurni_differential_set_load(d, F64_ONE);
+        ghurni_differential_process_block(d, o1);
+        ghurni_differential_set_load(d, 0);
+        ghurni_differential_process_block(d, o2);
+    } elif (kind == 3) {
+        var d2 = ghurni_differential_new(41, 11, SR);
+        ghurni_differential_set_rpm(d2, f64_from(3000));
+        ghurni_differential_process_block(d2, o1);
+        ghurni_differential_set_coasting(d2, 1);
+        ghurni_differential_process_block(d2, o2);
+    } else {
+        var t2 = ghurni_transmission_new(ratios2(f64_from(3), F64_ONE), 24, SR);
+        ghurni_transmission_set_rpm(t2, f64_from(3000));
+        ghurni_transmission_set_load(t2, F64_ONE);
+        ghurni_transmission_process_block(t2, o1);
+        ghurni_transmission_set_load(t2, 0);
+        ghurni_transmission_process_block(t2, o2);
+    }
+    return f64_div(mean_abs(o2, 0, 220), mean_abs(o1, 8600, 8820));
+}
+assert_f_gt(step_ratio(0), 0.9, "transmission, rpm 3000 to 0: loudness glides with the pitch");
+assert_f_gt(step_ratio(1), 0.75, "belt, rpm 2000 to 0: the smoother is wired in");
+assert_f_gt(step_ratio(2), 0.9, "differential, load 1 to 0");
+assert_f_gt(step_ratio(3), 0.9, "differential, power to coast");
+assert_f_gt(step_ratio(4), 0.9, "transmission, load 1 to 0");
+# And they still arrive: a second later each sits at its new level.
+var tq = ghurni_transmission_new(ratios2(f64_from(3), F64_ONE), 24, SR);
+ghurni_transmission_set_rpm(tq, f64_from(3000));
+ghurni_transmission_process_block(tq, zeros(4410));
+ghurni_transmission_set_rpm(tq, 0);
+ghurni_transmission_process_block(tq, zeros(44100));
+var tq_tail = zeros(441);
+ghurni_transmission_process_block(tq, tq_tail);
+assert_f_lt(mean_abs(tq_tail, 0, 441), 0.0001, "the transmission is silent a second after rpm 0");
+var bq = ghurni_belt_drive_new(f64_from(120), 0.6, SR);
+ghurni_belt_drive_set_rpm(bq, f64_from(2000));
+ghurni_belt_drive_process_block(bq, zeros(4410));
+ghurni_belt_drive_set_rpm(bq, 0);
+ghurni_belt_drive_process_block(bq, zeros(44100));
+var bq_tail = zeros(441);
+ghurni_belt_drive_process_block(bq, bq_tail);
+assert_f_lt(mean_abs(bq_tail, 0, 441), 0.0001, "the belt is silent a second after rpm 0");
+
+# ================================================================
+test_group("every synth builds, renders and keeps its partials at any sample rate");
+# naad zeroes an additive partial at or above Nyquist and never restores it, and
+# refuses an oscillator or filter there. 2.7.2 built every additive tone at 100 Hz
+# (the top partial lost for good below a 612 Hz rate) and four filters and
+# oscillators at fixed centres (the transmission failed at 8 kHz, forced induction
+# at 4 kHz, the belt at 1 kHz).
+var RATES = vec_new();
+vec_push(RATES, F64_ONE); vec_push(RATES, f64_from(3)); vec_push(RATES, f64_from(10));
+vec_push(RATES, f64_from(100)); vec_push(RATES, f64_from(400)); vec_push(RATES, f64_from(1000));
+vec_push(RATES, f64_from(4000)); vec_push(RATES, f64_from(8000)); vec_push(RATES, f64_from(11025));
+# make_at(kind, sr) -- one synth of each GH_KIND_*, at sample rate sr.
+fn make_at(kind, sr) {
+    if (kind == GH_KIND_ENGINE)           { return ghurni_engine_new(GH_ENGINE_TWO_STROKE, 16, sr); }
+    if (kind == GH_KIND_GEAR)             { return ghurni_gear_new(32, GH_GEAR_STEEL, sr); }
+    if (kind == GH_KIND_MOTOR)            { return ghurni_motor_new(GH_MOTOR_DC_BRUSHED, 8, sr); }
+    if (kind == GH_KIND_TURBINE)          { return ghurni_turbine_new(12, f64_from(600), sr); }
+    if (kind == GH_KIND_CLOCK)            { return ghurni_clock_new(GH_CLOCK_WRISTWATCH, sr); }
+    if (kind == GH_KIND_TRANSMISSION)     { return ghurni_transmission_new(ratios2(f64_from(3), F64_ONE), 24, sr); }
+    if (kind == GH_KIND_DIFFERENTIAL)     { return ghurni_differential_new(41, 11, sr); }
+    if (kind == GH_KIND_FORCED_INDUCTION) {
+        return ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.2, sr);
+    }
+    if (kind == GH_KIND_BELT_DRIVE)       { return ghurni_belt_drive_new(f64_from(120), 0.3, sr); }
+    return ghurni_chain_drive_new(110, 16, sr);
+}
+var lr_built = 0;
+var lr_finite = 0;
+var ri = 0;
+while (ri < vec_len(RATES)) {
+    var kk = 0;
+    while (kk < GHURNI_KIND_COUNT) {
+        var syn = make_at(kk, vec_get(RATES, ri));
+        if (syn >= GHURNI_MIN_VALID_PTR) {
+            lr_built = lr_built + 1;
+            ghurni_synth_set_rpm(kk, syn, f64_from(3000));
+            var lo = zeros(256);
+            ghurni_synth_process_block(kk, syn, lo);
+            lr_finite = lr_finite + finite_all(lo);
+        }
+        kk = kk + 1;
+    }
+    ri = ri + 1;
+}
+assert_eq(lr_built, 90, "all ten synths build at all nine rates, 1 Hz to 11.025 kHz");
+assert_eq(lr_finite, 90, "and every one renders finite audio");
+# all_partials(a) -- 1 if every partial of naad AdditiveSynth `a` has amplitude > 0.
+fn all_partials(a) {
+    var ps = AdditiveSynth_partials(a);
+    var i = 0;
+    while (i < vec_len(ps)) {
+        if (f64_gt(Partial_amplitude(vec_get(ps, i)), 0) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+var LR = f64_from(400);
+var lg = ghurni_gear_new(32, GH_GEAR_STEEL, LR);
+ghurni_gear_process_block(lg, zeros(64));
+assert_eq(all_partials(GhGear_mesh_osc(lg)), 1, "gear at 400 Hz keeps all three partials");
+var lm = ghurni_motor_new(GH_MOTOR_SERVO, 8, LR);
+ghurni_motor_set_rpm(lm, f64_from(3000));
+ghurni_motor_process_block(lm, zeros(64));
+assert_eq(all_partials(GhMotor_hum_synth(lm)), 1, "motor at 400 Hz");
+var lt = ghurni_turbine_new(12, 0, LR);
+ghurni_turbine_process_block(lt, zeros(64));
+assert_eq(all_partials(GhTurbine_blade_synth(lt)), 1, "turbine at 400 Hz");
+var ltx = ghurni_transmission_new(ratios2(f64_from(3), F64_ONE), 24, LR);
+ghurni_transmission_set_rpm(ltx, f64_from(3000));
+ghurni_transmission_process_block(ltx, zeros(64));
+assert_eq(all_partials(GhTransmission_mesh_osc(ltx)), 1, "transmission at 400 Hz");
+var ld = ghurni_differential_new(41, 11, LR);
+ghurni_differential_set_rpm(ld, f64_from(3000));
+ghurni_differential_process_block(ld, zeros(64));
+assert_eq(all_partials(GhDifferential_whine_osc(ld)), 1, "differential at 400 Hz");
+# At 3 Hz the 1 Hz fundamental floor sits above the 0.49 Hz ceiling. Near rest the
+# pitch falls under 1 Hz, and a floor that won there would set 1 Hz and push the
+# 2nd and 3rd partials past the 1.5 Hz Nyquist, for good.
+var l3 = ghurni_transmission_new(ratios2(f64_from(3), F64_ONE), 24, f64_from(3));
+ghurni_transmission_set_rpm(l3, F64_ONE);
+ghurni_transmission_process_block(l3, zeros(64));
+assert_eq(all_partials(GhTransmission_mesh_osc(l3)), 1, "transmission at 3 Hz, near rest");
+var l3d = ghurni_differential_new(41, 11, f64_from(3));
+ghurni_differential_set_rpm(l3d, F64_ONE);
+ghurni_differential_process_block(l3d, zeros(64));
+assert_eq(all_partials(GhDifferential_whine_osc(l3d)), 1, "differential at 3 Hz, near rest");
+var l3h = ghurni_engine_new(GH_ENGINE_HYBRID, 4, f64_from(3));
+ghurni_engine_trigger_event(l3h, ghurni_event_new(GH_EVENT_STALL, 0, 0));
+ghurni_engine_process_block(l3h, zeros(64));
+assert_eq(all_partials(GhEngine_whine_synth(l3h)), 1, "hybrid whine at 3 Hz, stalled");
+var lh = ghurni_engine_new(GH_ENGINE_HYBRID, 4, f64_from(300));
+ghurni_engine_trigger_event(lh, ghurni_event_new(GH_EVENT_STARTUP, 0, 0));
+ghurni_engine_process_block(lh, zeros(64));
+assert_eq(all_partials(GhEngine_whine_synth(lh)), 1, "hybrid whine at 300 Hz");
+assert_eq(all_partials(GhEngine_starter_synth(lh)), 1, "starter at 300 Hz (220 Hz would zero its 2nd partial)");
+
+# ================================================================
+test_group("a negative ratio is a reverse gear");
+# 2.7.2 gave rpm / -3.2 as a negative output speed: the mesh clamp turned it into a
+# 1 Hz tone, and every downstream set_rpm clamps a negative rpm to silence.
+var rv = ghurni_transmission_new(ratios2(f64_from(3), f64_neg(3.2)), 24, SR);
+ghurni_transmission_shift_to(rv, 1);
+ghurni_transmission_set_rpm(rv, f64_from(3000));
+var rv_out = ghurni_transmission_output_rpm(rv);
+assert_f_gt(rv_out, 937.49, "3000 rpm through -3.2 turns the output at 937.5");
+assert_f_lt(rv_out, 937.51, "3000 rpm through -3.2 turns the output at 937.5 (upper)");
+ghurni_transmission_process_block(rv, zeros(44100));
+var rv_f = additive_fundamental(GhTransmission_mesh_osc(rv));
+assert_f_gt(rv_f, 374.99, "the mesh sings at 937.5 / 60 x 24 = 375 Hz, not 1");
+assert_f_lt(rv_f, 375.01, "the mesh sings at 375 Hz (upper)");
+
+# ================================================================
+test_group("the real-time path allocates nothing per block");
+# Anchors, the new smoothers and the dispatch table all live in the objects or in
+# static storage. The allocator never frees, so one byte per block is a leak.
+var rt_bytes = 0;
+var rk = 0;
+while (rk < GHURNI_KIND_COUNT) {
+    var rs = make(rk);
+    var rb = zeros(512);
+    ghurni_synth_set_rpm(rk, rs, f64_from(2000));
+    ghurni_synth_process_block(rk, rs, rb);
+    var ru = alloc_used();
+    var rn = 0;
+    while (rn < 40) {
+        ghurni_synth_set_rpm(rk, rs, f64_from(500 + rn * 211));
+        ghurni_synth_process_block(rk, rs, rb);
+        rn = rn + 1;
+    }
+    rt_bytes = rt_bytes + (alloc_used() - ru);
+    rk = rk + 1;
+}
+assert_eq(rt_bytes, 0, "0 bytes across 40 changing-speed blocks on each of the ten synths");
+
+# ================================================================
+test_group("new names: the dispatch table and the zero-fill helper");
+# Not 2.7.2 failures; these guard the 2.8.0 refactors' own contracts.
+var kt_rows = 0;
+var kk2 = 0;
+while (kk2 < GHURNI_KIND_COUNT) {
+    var mm = 0;
+    while (mm <= GHURNI_KIND_METHOD_SAMPLE_RATE) {
+        if (ghurni_kind_method(kk2, mm) != 0) { kt_rows = kt_rows + 1; }
+        mm = mm + 1;
+    }
+    kk2 = kk2 + 1;
+}
+assert_eq(kt_rows, 40, "ten kinds x four methods, all filled");
+assert_eq(ghurni_kind_method(0 - 1, 0), 0, "kind -1 has no method");
+assert_eq(ghurni_kind_method(GHURNI_KIND_COUNT, 0), 0, "kind 10 has no method");
+assert_eq(ghurni_kind_method(0, 0 - 1), 0, "method -1 is out of range");
+assert_eq(ghurni_kind_method(0, 4), 0, "method 4 is out of range");
+assert_eq(ghurni_kind_method(GH_KIND_GEAR, GHURNI_KIND_METHOD_RPM), &ghurni_gear_rpm, "rows hold the right functions");
+assert_eq(ghurni_kind_method(GH_KIND_CHAIN_DRIVE, GHURNI_KIND_METHOD_PROCESS_BLOCK),
+  &ghurni_chain_drive_process_block, "the last row too");
+var gz = ghurni_gear_new(32, GH_GEAR_STEEL, SR);
+ghurni_gear_set_rpm(gz, f64_from(1234));
+assert_eq(ghurni_synth_rpm(GH_KIND_GEAR, gz), f64_from(1234), "rpm dispatches through the table");
+assert_eq(ghurni_synth_sample_rate(GH_KIND_GEAR, gz), SR, "sample_rate dispatches through the table");
+var zz = ghurni_zeros(7);
+assert_eq(vec_len(zz), 7, "zeros(7) has 7 samples");
+assert_eq(vec_get(zz, 6), 0, "all zero");
+assert_eq(vec_len(ghurni_zeros(0)), 0, "zeros(0) is empty");
+
+var rc = assert_summary();
+syscall(60, rc);

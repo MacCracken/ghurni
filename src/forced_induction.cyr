@@ -17,7 +17,8 @@
 # - naad constructors return a heap pointer on success or a negative ERR_* code
 #   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
 #   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`). The
-#   noise generator never errors.
+#   noise generator is checked too: it can report a refused allocation since
+#   naad 2.3.4.
 # - serde: ForcedInduction held opaque naad backend pointers; deep
 #   #[derive(Serialize)] is dropped. Serde is provided only for InductionType
 #   (roundtrip tested on Turbo) via ghurni_inductiontype_name/_from_name below.
@@ -107,7 +108,8 @@ fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sampl
     }
 
     # naad backend: saw whine oscillator + white noise + band-pass BOV filter.
-    var whine_osc = osc_new(WAVEFORM_SAW, f64_from(100), sample_rate);
+    # Built under Nyquist (2.8.0): at 100 Hz fixed, the constructor failed at 200 Hz.
+    var whine_osc = osc_new(WAVEFORM_SAW, ghurni_below_nyquist(f64_from(100), sample_rate), sample_rate);
     if (ghurni_is_err(whine_osc) == 1) { return ghurni_map_naad_error(whine_osc); }
     # Seed: the oracle uses `induction_type as u32 * 777 + drive_ratio.to_bits()`
     # (rust-old/src/forced_induction.rs:95). The port derives a behavioural
@@ -118,7 +120,10 @@ fn ghurni_forced_induction_new(induction_type, drive_ratio, spool_inertia, sampl
     # coherently instead of decorrelating. x1000 keeps the clamped 0.5..10 ratio
     # distinguishable to three decimals.
     var noise = noise_new(NOISE_WHITE, induction_type * 777 + f64_to(f64_mul(ratio, f64_from(1000))));
-    var bov_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(2000), f64_from(2));
+    if (ghurni_is_err(noise) == 1) { return ghurni_map_naad_error(noise); }
+    # Held under Nyquist (2.8.0): at 2 kHz fixed, the constructor failed at 4 kHz.
+    var bov_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate,
+      ghurni_below_nyquist(f64_from(2000), sample_rate), f64_from(2));
     if (ghurni_is_err(bov_filter) == 1) { return ghurni_map_naad_error(bov_filter); }
 
     var self = alloc(sizeof(GhForcedInduction));
@@ -182,9 +187,7 @@ fn ghurni_forced_induction_synthesize(self, rpm, load, duration) {
     if (ghurni_is_err(n) == 1) { return n; }
     ghurni_forced_induction_set_rpm(self, rpm);
     ghurni_forced_induction_set_load(self, load);
-    var out = vec_new();
-    var i = 0;
-    while (i < n) { vec_push(out, 0); i = i + 1; }
+    var out = ghurni_zeros(n);
     ghurni_forced_induction_process_block(self, out);
     return out;
 }

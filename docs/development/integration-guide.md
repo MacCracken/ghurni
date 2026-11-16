@@ -82,21 +82,26 @@ samples in place and never resizes it.
 ## Parameter Changes
 
 `set_rpm` drives a `GhSmoothedParam` (a one-pole exponential approach) on the engine,
-transmission, differential and chain, so their pitch changes gradually. The engine
-smooths load too, and forced induction has its own spool smoother. Read a smoothed
-value back with `ghurni_smooth_current`, and test for arrival with
-`ghurni_smooth_is_settled`.
+transmission, differential, chain and belt, so their pitch and level change gradually.
+The engine smooths load too, the transmission and differential smooth load (and the
+differential its coast flank) as of 2.8.0, and forced induction has its own spool
+smoother. Read a smoothed value back with `ghurni_smooth_current`, and test for
+arrival with `ghurni_smooth_is_settled`.
 
-Not everything is smoothed. `gear`, `motor`, `turbine` and `belt_drive` take a new rpm
-at the next block, and on the transmission and differential the loudness, load and
-coast terms step once per block. A large change on those lands at a block edge and
-can click, so ramp it across several blocks.
+Not everything is smoothed. `gear`, `motor` and `turbine` take a new rpm at the next
+block, pitch and level together, so a large change lands at a block edge and can
+click. Ramp those across several blocks.
 
-⚠ **Long RPM ramps.** Modulation phase is `position × current frequency`, not an
-integrated phase, so an RPM ramp moves it by an amount that grows with stream age. A
-minute into a stream the engine's firing order and the chain's impact rate are visibly
-wrong during a ramp, though steady speeds are correct. Fixing it changes audio, so it
-is scheduled for 2.8.0. See the [roadmap](roadmap.md).
+**Phase is integrated (2.8.0).** Every periodic phase advances by the speed in force
+for each sample: the engine's crank, the gear's ring, the clock's beat, the
+differential's ring gear, the chain and the belt loop
+([ADR-012](../architecture/adr-012-phase-continuity.md)). A ramp a minute into a stream
+renders as it would a second in, and no synth's audio depends on its
+`sample_position`. Through 2.7.2 the phase was `position × current frequency`, which
+was wrong during any ramp by an amount that grew with stream age.
+
+A fresh transmission or belt fades in over its smoother rather than starting at full
+level, and a step to rpm 0 glides out instead of cutting off at the block edge.
 
 **Load** is 0..1 and drives both level and brightness — a machine working harder
 is louder *and* brighter ([ADR-007](../architecture/adr-007-load-tilt-and-diesel.md)).
@@ -151,9 +156,19 @@ Two controls are not RPM or load:
 ghurni_differential_set_coasting(diff, 1);   # 0 = driving (default), non-zero = coasting
 
 # A clock's beat is set by its escapement, so `set_rpm` on a clock is a no-op by
-# design. Use the tick rate instead (clamped 0.1..50 Hz).
+# design. Use the tick rate instead (clamped 0.1..50 Hz). It changes the beat, not
+# the tick: each tick keeps its own length at any rate (2.8.0), and the next tick
+# comes one new period after the last.
 ghurni_clock_set_tick_rate(clock, f64_from(4));
 ```
+
+A **negative transmission ratio is a reverse gear** (2.8.0): the mesh runs at
+`rpm / |ratio|`, and `ghurni_transmission_output_rpm` reports that speed, so it can
+drive a differential directly.
+
+Every synth builds and keeps its partials at any sample rate from 1 Hz (2.8.0). Until
+then the transmission failed to construct at 8 kHz, forced induction at 4 kHz and the
+belt at 1 kHz.
 
 ## Event Triggers
 
@@ -165,7 +180,7 @@ Seven go to the engine:
 
 ```cyrius
 ghurni_engine_trigger_event(engine, ghurni_event_backfire());
-ghurni_engine_trigger_event(engine, ghurni_event_misfire(0));   # cylinder 0
+ghurni_engine_trigger_event(engine, ghurni_event_misfire(0));   # cylinder 0's next firing fails whole
 ghurni_engine_trigger_event(engine, ghurni_event_knock(2));     # cylinder 2
 ghurni_engine_trigger_event(engine, ghurni_event_startup());          # ~1.1 s
 ghurni_engine_trigger_event(engine, ghurni_event_shutdown());         # ~1.6 s

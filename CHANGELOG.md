@@ -5,6 +5,196 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-11-16
+
+**"Phase Continuity": the defects 2.7.2 could not fix in a patch, because fixing them
+changes audio.** All were found by the 2.7.2 sweep, three of them independently by more
+than one auditor. [ADR-012](docs/architecture/adr-012-phase-continuity.md) records the
+decision. Also moves to the newest tag of every dependency.
+
+**At a speed held from the first sample, audio is byte-identical to 2.7.2.** It differs
+only where a speed or rate changed, which is where the old phase was wrong. A raw-bit
+render of 1,344 cases (about 16.8M samples) confirms it:
+
+- **Unchanged:** all 140 gear, 140 motor and 105 turbine cases; all 20 default-rate
+  clock cases; every engine case at its 800 rpm start speed; every hybrid case except
+  STARTUP; and every synth at rpm 0.
+- **Changed:** every case where a rate changed.
+- **Newly working:** 54 cases whose constructors used to fail at 8 kHz and 1 kHz.
+
+**17 goldens moved**, each in a synth this release changes on purpose, and
+`tests/goldens.tcyr` records why. Level changes run from -2.65 dB (a fresh transmission
+now fades in alongside its pitch) to +0.77 dB (SHUTDOWN).
+
+### Changed — audio, on purpose
+
+- **Phase is integrated, not position × current speed.** Six synths computed a periodic
+  phase as the absolute sample position times the rate in force now: the engine's crank,
+  the gear's ring envelope, the clock's beat, the differential's ring gear, the chain, and
+  the belt loop. Any speed change moved the phase by an amount that grew with stream age.
+  A minute in, the 2.7.2 sweep measured the engine's firing slots changing 3,462 times in a
+  200 ms ramp where 19 firings were due, and the differential's 16 Hz warble running at
+  96 Hz. The engine also ran its crank backward while it slowed.
+
+  Each phase is now **anchored**: a phase, a position and a rate, re-anchored whenever the
+  rate changes, so it advances by the speed in force for each sample. While a rate holds
+  from the first sample on, the anchor is 0 and the expression is the old one term for term,
+  which is what keeps steady audio bit-identical. **No synth's audio depends on its
+  `sample_position` any longer.**
+
+  | Measure (black box) | 2.7.2 | 2.8.0 |
+  |---|---|---|
+  | Wall clock ramped 1→2 Hz over 10 s, 100 s in: ticks (16 due), blocks of 4410 / 441 / 1000 | 19 / 25 / 19 | 16 / 16 / 16 |
+  | Chain impacts in a 200 ms ramp, 1 s in / 60 s in | 119 / 94 | 125 / 126 |
+
+- **A clock tick has a duration.** The attack, the ring and the decay are measured in the
+  type's default beat, not the current one, so slowing a clock changes the beat and not
+  the tick. A wristwatch tick stayed above 0.01 for 89 samples at 8 Hz and for 1,201 at
+  0.1 Hz; it is 89 at both now. Bit-identical at each type's default rate. The beat itself
+  counts samples since the last tick, and the next tick comes one new period after the last.
+- **A misfire skips the whole firing.** It cleared its flag after one sample, so 140 of the
+  141 samples of the misfired firing still fired. A five-state flag now arms on the next
+  firing to start, and holds through its window.
+- **HYBRID STARTUP no longer drives one synth at two pitches.** The starter whir has its own
+  synth. It is built exactly as the whine synth is, so a non-hybrid STARTUP keeps its bits.
+- **Block-stepped terms ramp.** Mean |x| over the 5 ms after a step at a block edge, against
+  the 5 ms before:
+
+  | Step | 2.7.2 | 2.8.0 |
+  |---|---|---|
+  | transmission, rpm 3000 → 0 | 0.025 | 0.982 |
+  | belt, rpm 2000 → 0 | 0.004 | 0.826 |
+  | differential, load 1 → 0 | 0.713 | 0.975 |
+  | differential, power → coast | 0.604 | 0.960 |
+
+  The transmission's loudness reads a 50 ms smoothed input rpm, and its load a 20 ms
+  smoother. The differential smooths load and its coast flank over 20 ms. The belt's
+  smoother, which it always advanced and then discarded, now drives its loudness, flap and
+  loop rate. At load 0, under power, every factor is exactly 1.0 as before.
+- **Partials survive low sample rates.** naad zeroes an additive partial at or above Nyquist
+  and never restores it, and every synth built its additive tone at 100 Hz. Below a 612 Hz
+  rate the top partial was gone for the life of the object. Additive tones are now built
+  where every partial fits, and the 1 Hz floor on a fundamental yields to the ceiling at
+  rates under about 6 Hz.
+- **Every constructor works at every valid rate.** Four centres were fixed and failed their
+  constructor when the rate fell low enough: the transmission's synchro at 4 kHz (fails at
+  8 kHz), the blow-off valve at 2 kHz (4 kHz), the belt's flap at 500 Hz (1 kHz) and the turbo
+  whine at 100 Hz (200 Hz). The engine's exhaust filter was unclamped too. All are held under
+  Nyquist now, so all ten synths build and render finite audio from 1 Hz up.
+- **A negative ratio is a reverse gear.** `ghurni_transmission_output_rpm` returns
+  `rpm / |ratio|`. It returned a negative speed, which the mesh clamp played as a 1 Hz tone
+  and every downstream `set_rpm` clamps to silence.
+
+### Fixed
+
+- **A refused noise generator built a synth that faulted on its first render.** naad
+  2.3.4 made `noise_new` report a refused allocation as `NAAD_ERR_ALLOCATION` (-6), and
+  every ghurni constructor stored its result unchecked, on the old premise that it never
+  fails. All ten now return `GH_ERR_SYNTHESIS_FAILED`, as they already did for every
+  other naad constructor. `tests/alloc_refused.tcyr` refuses exactly that request in each
+  constructor, and fails all ten with the checks removed. ADR-011 carries the amendment;
+  ghurni still adds no checks on its own allocations.
+
+### Changed — behaviour a consumer can notice
+
+- `ghurni_clock_set_tick_rate` changes the beat, not the length of each tick.
+- MISFIRE silences a whole firing of the cylinder named.
+- A fresh transmission or belt fades in over its smoother instead of starting at full
+  level, and a step to rpm 0 glides out.
+- `ghurni_transmission_output_rpm` is positive for a reverse gear.
+- `sample_position` no longer affects audio. It still counts rendered samples.
+- `ghurni_synth_process_block` returns the synth's own code.
+
+### Added
+
+- `ghurni_zeros(n)`, the shared zero-fill for the ten `synthesize` paths. It is the one place
+  2.10.0's presized buffers will change.
+- `ghurni_below_nyquist`, `ghurni_fund_clamp` and `ghurni_additive_new`, the low-rate helpers.
+- `ghurni_kind_method(kind, method)` and `ghurni_kind_row`. The four tag dispatchers, and
+  `ghurni_mixer_add_channel`, now read one table instead of four ten-arm chains, so a new
+  synth is registered in one place. They use `&fn` and `callptr`, compiler builtins since
+  cyrius 6.0.70, so the bundle needs no new stdlib leaf. The table is filled on first use.
+- `ghurni_mixer_mix`, the one channel loop for mono and stereo mixing.
+- Struct fields, each a public `#derive(accessors)` pair:
+  - the anchors on the engine, gear, differential, chain and belt;
+  - `beat_pos` and `beat_count` on the clock;
+  - `starter_synth` on the engine;
+  - `smooth_in_rpm` and `smooth_load` on the transmission;
+  - `smooth_load` and `smooth_coast` on the differential.
+
+### Dependencies
+
+- **naad 2.3.3 -> 2.3.5, hisab 3.4.1 -> 3.5.0, goonj 2.3.1 -> 2.3.2**, the set naad 2.3.5
+  pins. Each is its project's newest tag, and all three pin exactly cyrius 6.7.18, which
+  stays the newest.
+- **sakshi is a stdlib leaf.** hisab 3.4.2 dropped its sakshi package, and a `[deps.sakshi]`
+  package now collides with the leaf. ghurni lists `sakshi` in `[deps].stdlib` instead.
+  `lib/sakshi.cyr` is the same bytes (2.5.10).
+- ghurni calls no hisab symbol, so 3.5.0's 16 retired names do not reach it.
+- **The dependency move alone is byte-identical:** the same 1,344 cases, rendered on the new
+  set before any 2.8.0 source change, match 2.7.2 bit for bit.
+
+### Performance
+
+Median of 3 alternating runs against 2.7.2, 0-5% spread:
+
+| Path | 2.7.2 | 2.8.0 | Change |
+|---|---|---|---|
+| `transmission` 0.05 s | 681 us | 773 us | +13% |
+| `engine` 0.05 s | 1,383 us | 1,426 us | +3% |
+| `belt_drive` 2,205 samples | 563 us | 578 us | +3% |
+| `clock` 0.05 s | 397 us | 375 us | -6% |
+| `forced_induction` 0.05 s | 272 us | 259 us | -5% |
+| gear, motor, turbine, mixer, `engine_process_block` | | | within 2% |
+
+The transmission's cost is its two new per-sample smoothers. While its rpm moves, the
+loudness law is also recomputed every sample, which is the price of ramping it. The engine
+re-anchors every sample while its smoother glides.
+
+### Tests
+
+- **15 suites / 1,013 assertions -> 17 / 1,143.** New: `tests/continuity.tcyr` (73), which
+  pins every item above, and `tests/alloc_refused.tcyr` (33), which replaces the stdlib
+  `alloc` as naad's own suite does.
+- **12 new goldens:** mid-stream ramps on six synths, a set clock rate, a clock rate changed
+  every block, the hybrid's STARTUP, the reverse gear, and two low rates.
+- **One oracle pin measured a transient 2.7.2 rendered wrong.** "Engine at rest is well
+  under running" compared 0.1 s one-shots whose "rest" was the glide from 800 to 100 rpm.
+  The crank really turns about 241° in that time, so a second cylinder fires; the old crank
+  ran backward and never reached it, and the transient alone reached 0.23 of running. The pin
+  now measures the settled 100 rpm floor over a full cycle.
+- **Every change was reverted one at a time** in a scratch copy, 39 in all, and the suite
+  caught each one. The first run let three through: the 1 Hz fundamental floor only wins
+  below 1 Hz, which the 3 Hz tests never reached at 3000 rpm. They now run near rest.
+- Fuzz: 2,235 -> 2,902 checks, adding hostile `sample_position` values and hostile speed
+  sequences on every synth at 1 Hz to 44.1 kHz, and a misfire armed on every cylinder
+  through a stall.
+
+### Verified
+
+- **Consumers.** dhvani 2.3.1 has reached naad 2.3.3 and cyrius 6.7.18. Its
+  `tests/mechanical.tcyr` passes 10 of 10 with this bundle, and all 65 of its suites pass,
+  on its own naad 2.3.3 / hisab 3.4.1 / goonj 2.3.1 set. The control, on its pinned
+  ghurni 2.7.2, passes the same.
+- **The bundle on the oldest consumer toolchain.** On cyrius 6.6.3 with naad 2.2.2
+  (jalwa, through dhvani 2.2.4), the bundle builds and runs the smoke binary, and 15
+  suites (992 assertions, goldens and `continuity` included) pass. `tests/hardening.tcyr` stops at its
+  naad 2.3.2 delay-line group there, exactly as 2.7.2's bundle does.
+- **The toolchain floor of the full set is still cyrius 6.7.2.** 6.7.1 fails at compile time
+  inside naad's bundle.
+- **Real-time path:** 0 bytes allocated across 40 changing-speed blocks on each of the ten
+  synths, now a test.
+- `cyrius audit`, `cyrius fuzz`, `cyrius fuzz --poison`, `cyrius deny`,
+  `cyrius distlib --check`, `cyrius deps --locked`, `cyrius coverage --min 65` (75%) and all
+  five examples are clean.
+
+### Found, not fixed
+
+- **STARTUP on a running engine cuts its combustion term at the trigger.** The gate is
+  `1 - ufrac`, which is about 0 on the first sample, so a running hybrid's electric whine
+  stops instantly: a 0.097 step in the A/B render. Until 2.8.0 the shared synth masked it.
+  Scheduled; see the roadmap.
+
 ## [2.7.2] - 2026-11-07
 
 **P(-1) sweep: audit, hardening, optimization, refactor, security sweep and repair.**

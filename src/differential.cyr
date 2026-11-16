@@ -18,7 +18,7 @@
 # - naad constructors return a heap pointer on success or a negative ERR_* code
 #   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
 #   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`).
-#   noise_new never errors.
+#   noise_new can report a refused allocation since naad 2.3.4, and is checked.
 # - The Rust process_block inlines its naad synthesis core (no separate
 #   process_block_naad fn); the port keeps that inline shape.
 
@@ -32,6 +32,11 @@
 #   smooth_rpm(ptr GhSmoothedParam) dc_blocker(ptr GhDcBlocker)
 #   whine_osc(ptr naad AdditiveSynth) noise_gen(ptr naad NoiseGenerator)
 #   resonance_filter(ptr naad BiquadFilter)
+#   ring_anchor(f64 revolutions, in [0, 1)) ring_anchor_pos(int sample)
+#   ring_anchor_step(f64 revolutions/sample) -- the ring gear's ANCHORED phase
+#     (2.8.0, ADR-012), re-anchored whenever the step changes.
+#   smooth_load/smooth_coast(ptr GhSmoothedParam) -- load and the coast flank
+#     (0 under power, 1 on overrun), ramped per sample (2.8.0).
 # ================================================================
 #derive(accessors)
 struct GhDifferential {
@@ -47,6 +52,11 @@ struct GhDifferential {
     whine_osc;
     noise_gen;
     resonance_filter;
+    ring_anchor;
+    ring_anchor_pos;
+    ring_anchor_step;
+    smooth_load;
+    smooth_coast;
 }
 
 # new(ring_teeth, pinion_teeth, sample_rate) -> ptr or GH_ERR_*.
@@ -75,13 +85,15 @@ fn ghurni_differential_new(ring_teeth, pinion_teeth, sample_rate) {
     # Mesh tone is a 3-partial ADDITIVE synth, not a pure sine (ADR-006): real
     # hypoid mesh has strong harmonics of the tooth-mesh frequency, and a single
     # sine is the one thing meshing gears never sound like.
-    var whine_osc = additive_new(f64_from(100), 3, sample_rate);
+    # Built at a pitch whose 3rd partial fits under Nyquist (2.8.0); see dsp.cyr.
+    var whine_osc = ghurni_additive_new(3, sample_rate);
     if (ghurni_is_err(whine_osc) == 1) { return ghurni_map_naad_error(whine_osc); }
     additive_set_partial(whine_osc, 0, F64_ONE, F64_ONE);
     additive_set_partial(whine_osc, 1, f64_from(2), 0.4);
     additive_set_partial(whine_osc, 2, f64_from(3), 0.2);
 
     var noise = noise_new(NOISE_WHITE, ring * 41 + pinion);
+    if (ghurni_is_err(noise) == 1) { return ghurni_map_naad_error(noise); }
     var resonance_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, housing_resonance, f64_from(6));
     if (ghurni_is_err(resonance_filter) == 1) { return ghurni_map_naad_error(resonance_filter); }
 
@@ -98,6 +110,11 @@ fn ghurni_differential_new(ring_teeth, pinion_teeth, sample_rate) {
     GhDifferential_set_whine_osc(self, whine_osc);
     GhDifferential_set_noise_gen(self, noise);
     GhDifferential_set_resonance_filter(self, resonance_filter);
+    GhDifferential_set_ring_anchor(self, 0);
+    GhDifferential_set_ring_anchor_pos(self, 0);
+    GhDifferential_set_ring_anchor_step(self, 0);
+    GhDifferential_set_smooth_load(self, ghurni_smooth_new(0, 0.02, sample_rate));
+    GhDifferential_set_smooth_coast(self, ghurni_smooth_new(0, 0.02, sample_rate));
     return self;
 }
 
@@ -127,9 +144,7 @@ fn ghurni_differential_synthesize(self, rpm, duration) {
     var n = ghurni_sample_count(GhDifferential_sample_rate(self), duration);
     if (ghurni_is_err(n) == 1) { return n; }
     ghurni_differential_set_rpm(self, rpm);
-    var out = vec_new();
-    var i = 0;
-    while (i < n) { vec_push(out, 0); i = i + 1; }
+    var out = ghurni_zeros(n);
     ghurni_differential_process_block(self, out);
     return out;
 }
@@ -147,18 +162,23 @@ fn ghurni_differential_process_block(self, out) {
     var noise = GhDifferential_noise_gen(self);
     var resonance_filter = GhDifferential_resonance_filter(self);
     var sr_d = GhDifferential_sample_rate(self);
-    # sample_position is READ here as of 2.3.0 -- the ring-revolution modulation
-    # below needs absolute time. It was vestigial (written, never read) until now.
+    # sample_position is READ here as of 2.3.0: the ring-revolution phase below is
+    # measured from its anchor's position (2.8.0).
     var base_pos_d = GhDifferential_sample_position(self);
-    var df_load = GhDifferential_load(self);
-    var df_amp = f64_add(F64_ONE, f64_mul(0.5, df_load));
-    var df_tilt = ghurni_load_tilt(df_load);
-    # Coast flank: quieter whine, grittier bed. 1.0 / 1.0 under power, so the
-    # default (driving) path is unchanged.
-    if (GhDifferential_coasting(self) == 1) {
-        df_amp = f64_mul(df_amp, 0.55);
-        df_tilt = f64_mul(df_tilt, 1.6);
-    }
+    # LOAD AND COAST RAMP (2.8.0, ADR-012). Both used to be read once per block, so
+    # a change stepped the whine level and the bed at the block edge. Each now has
+    # a 20 ms smoother, as the engine's load does. Coast flank: quieter whine,
+    # grittier bed, blended by the smoothed flag. Under power with no load both
+    # smoothers sit at exactly 0 and every factor below is exactly 1.0, so the
+    # default path is unchanged.
+    var smooth_load = GhDifferential_smooth_load(self);
+    var smooth_coast = GhDifferential_smooth_coast(self);
+    ghurni_smooth_set_target(smooth_load, GhDifferential_load(self));
+    ghurni_smooth_set_target(smooth_coast, f64_from(GhDifferential_coasting(self)));
+    var last_l = 0x7FF8000000000001;
+    var last_c = 0x7FF8000000000001;
+    var df_amp = F64_ONE;
+    var df_tilt = F64_ONE;
 
     var f60 = f64_from(60);
     var pinion_f = f64_from(GhDifferential_pinion_teeth(self));
@@ -167,6 +187,13 @@ fn ghurni_differential_process_block(self, out) {
     var last_s = 0x7FF8000000000001;
     var ring_step = 0;
     var df_gain = 0;
+    # ANCHORED RING PHASE (2.8.0, ADR-012). The ring-revolution warble's phase was
+    # ring_step x absolute position, so as the smoother moved the step, the phase
+    # swept at a rate that grew with stream age: a minute in, the 16 Hz warble ran
+    # at 96 Hz during a ramp. Re-anchored, in [0, 1), whenever the step changes.
+    var ring_a = GhDifferential_ring_anchor(self);
+    var ring_apos = GhDifferential_ring_anchor_pos(self);
+    var ring_astep = GhDifferential_ring_anchor_step(self);
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
@@ -174,9 +201,25 @@ fn ghurni_differential_process_block(self, out) {
         if (smooth != last_s) {
             last_s = smooth;
             var rps = f64_div(smooth, f60);
-            additive_set_fundamental(whine_osc, f64_clamp(f64_mul(rps, pinion_f), F64_ONE, fund_hi));
+            additive_set_fundamental(whine_osc, ghurni_fund_clamp(f64_mul(rps, pinion_f), fund_hi));
             ring_step = f64_div(f64_mul(rps, p_over_r), sr_d);
             df_gain = ghurni_rpm_gain(smooth, GHURNI_REF_RPM_DIFFERENTIAL);
+            if (ring_step != ring_astep) {
+                var pos_r = base_pos_d + i;
+                ring_a = ghurni_fmod(f64_add(ring_a, f64_mul(ring_astep, f64_from(pos_r - ring_apos))), F64_ONE);
+                ring_apos = pos_r;
+                ring_astep = ring_step;
+            }
+        }
+        var ld = ghurni_smooth_next_value(smooth_load);
+        var cs = ghurni_smooth_next_value(smooth_coast);
+        if ((ld != last_l) || (cs != last_c)) {
+            last_l = ld;
+            last_c = cs;
+            # (1 - c) * 1 + c * k, so c = 0 and c = 1 give exactly 1.0 and exactly k.
+            var keep = f64_sub(F64_ONE, cs);
+            df_amp = f64_mul(f64_add(F64_ONE, f64_mul(0.5, ld)), f64_add(keep, f64_mul(cs, 0.55)));
+            df_tilt = f64_mul(ghurni_load_tilt(ld), f64_add(keep, f64_mul(cs, 1.6)));
         }
 
         # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
@@ -186,8 +229,8 @@ fn ghurni_differential_process_block(self, out) {
         # modulate the whine once per RING revolution -- the slow warble a worn
         # or badly-shimmed diff has, and the reason ring and pinion counts are
         # both audible rather than only their ratio.
-        var abs_pos_d = f64_from(base_pos_d + i);
-        var ring_phase = ghurni_fmod(f64_mul(ring_step, abs_pos_d), F64_ONE);
+        var ring_phase = ghurni_fmod(f64_add(ring_a,
+            f64_mul(ring_step, f64_from(base_pos_d + i - ring_apos))), F64_ONE);
         var ring_mod = f64_add(0.88, f64_mul(0.12, f64_cos(f64_mul(F64_TAU, ring_phase))));
         var whine = f64_mul(f64_mul(f64_mul(additive_next_sample(whine_osc), 0.2), ring_mod), df_amp);
 
@@ -203,10 +246,13 @@ fn ghurni_differential_process_block(self, out) {
         i = i + 1;
     }
 
+    GhDifferential_set_ring_anchor(self, ring_a);
+    GhDifferential_set_ring_anchor_pos(self, ring_apos);
+    GhDifferential_set_ring_anchor_step(self, ring_astep);
     var db = GhDifferential_dc_blocker(self);
     ghurni_dcblocker_process_buffer(db, out);
-    # LIVE as of 2.3.0: the ring-revolution modulation reads this for absolute
-    # time. It was vestigial (written, never read) in every release before.
+    # The ring phase reads this as of 2.3.0, relative to its anchor as of 2.8.0.
+    # It was vestigial (written, never read) in every release before 2.3.0.
     GhDifferential_set_sample_position(self, GhDifferential_sample_position(self) + n);
     return 0;
 }

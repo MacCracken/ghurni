@@ -594,8 +594,20 @@ var t_run  = rest_rms(ghurni_turbine_synthesize(ghurni_turbine_new(12, f64_from(
 assert_f_gt(t_run, 0.01, "turbine running produces real signal");
 assert_f_lt(t_rest, f64_mul(t_run, 0.05), "turbine at rest is under 5% of running (1 rpm floor)");
 
-var e_rest = rest_rms(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), 0, 0.5, 0.1));
-var e_run  = rest_rms(ghurni_engine_synthesize(ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR), f64_from(3000), 0.5, 0.1));
+# The engine is measured SETTLED, over one whole 720 degree cycle at its 100 rpm
+# floor (1.2 s). Until 2.8.0 this compared 0.1 s one-shots, so "rest" was the
+# smoother's glide from the 800 rpm default down to 100. During that glide the
+# crank really turns about 241 degrees, so a second cylinder fires at about 65 ms.
+# The position-derived crank of 2.7.2 ran BACKWARD as the engine slowed, never
+# reached that cylinder, and rendered the glide too quiet; the integrated crank
+# (ADR-012) fires it, and the transient alone reached 0.23 of running.
+fn engine_settled_rms(rpm) {
+    var e = ghurni_engine_new(GH_ENGINE_GASOLINE, 4, SR);
+    var warm = ghurni_engine_synthesize(e, rpm, 0.5, F64_ONE);
+    return rest_rms(ghurni_engine_synthesize(e, rpm, 0.5, 1.2));
+}
+var e_rest = engine_settled_rms(0);
+var e_run  = engine_settled_rms(f64_from(3000));
 assert_f_gt(e_run, 0.005, "engine running produces real signal");
 assert_f_lt(e_rest, f64_mul(e_run, 0.2), "engine at rest is well under running (100 rpm idle floor)");
 

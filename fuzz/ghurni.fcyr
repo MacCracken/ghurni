@@ -499,6 +499,87 @@ fn main(): i64 {
         at = at + 1;
     }
 
+    # ---------------------------------------------------------------
+    # 11. ANCHORED PHASE (2.8.0, ADR-012). sample_position is a public field, and
+    # every phase is now measured from an anchor at some position. A hostile
+    # position, set before or between blocks, with hostile and changing speeds,
+    # must still render finite audio on every synth, at rates from 1 Hz up.
+    # ---------------------------------------------------------------
+    var fz_rates = vec_new();
+    vec_push(fz_rates, FZ_ONE); vec_push(fz_rates, f64_from(7)); vec_push(fz_rates, f64_from(300));
+    vec_push(fz_rates, f64_from(8000)); vec_push(fz_rates, SR);
+    var ri = 0;
+    while (ri < vec_len(fz_rates)) {
+        var fsr = vec_get(fz_rates, ri);
+        var kk = 0;
+        while (kk <= GH_KIND_CHAIN_DRIVE) {
+            var syn = 0;
+            if (kk == GH_KIND_ENGINE) { syn = ghurni_engine_new(GH_ENGINE_TWO_STROKE, 16, fsr); }
+            if (kk == GH_KIND_GEAR) { syn = ghurni_gear_new(64, GH_GEAR_STEEL, fsr); }
+            if (kk == GH_KIND_MOTOR) { syn = ghurni_motor_new(GH_MOTOR_BRUSHLESS, 24, fsr); }
+            if (kk == GH_KIND_TURBINE) { syn = ghurni_turbine_new(64, f64_from(900), fsr); }
+            if (kk == GH_KIND_CLOCK) { syn = ghurni_clock_new(GH_CLOCK_WRISTWATCH, fsr); }
+            if (kk == GH_KIND_TRANSMISSION) {
+                var fz_r2 = vec_new(); vec_push(fz_r2, f64_neg(f64_from(3))); vec_push(fz_r2, FZ_HALF);
+                syn = ghurni_transmission_new(fz_r2, 64, fsr);
+            }
+            if (kk == GH_KIND_DIFFERENTIAL) { syn = ghurni_differential_new(80, 4, fsr); }
+            if (kk == GH_KIND_FORCED_INDUCTION) {
+                syn = ghurni_forced_induction_new(GH_INDUCTION_SUPERCHARGER, f64_from(10), FZ_HALF, fsr);
+            }
+            if (kk == GH_KIND_BELT_DRIVE) { syn = ghurni_belt_drive_new(f64_from(20), 0, fsr); }
+            if (kk == GH_KIND_CHAIN_DRIVE) { syn = ghurni_chain_drive_new(500, 64, fsr); }
+            fz_check(syn >= GHURNI_MIN_VALID_PTR, "a synth failed to build at a low sample rate");
+            if (syn >= GHURNI_MIN_VALID_PTR) {
+                var step = 0;
+                while (step < 12) {
+                    var pos = fz_int(step);
+                    if (pos < 0) { pos = 0; }
+                    if (kk == GH_KIND_ENGINE) { GhEngine_set_sample_position(syn, pos); }
+                    if (kk == GH_KIND_GEAR) { GhGear_set_sample_position(syn, pos); }
+                    if (kk == GH_KIND_CLOCK) {
+                        GhClock_set_sample_position(syn, pos);
+                        ghurni_clock_set_tick_rate(syn, fz_val(step));
+                    }
+                    if (kk == GH_KIND_DIFFERENTIAL) {
+                        GhDifferential_set_sample_position(syn, pos);
+                        ghurni_differential_set_coasting(syn, step % 2);
+                        ghurni_differential_set_load(syn, fz_val(step + 1));
+                    }
+                    if (kk == GH_KIND_TRANSMISSION) { ghurni_transmission_set_load(syn, fz_val(step + 3)); }
+                    if (kk == GH_KIND_BELT_DRIVE) { GhBeltDrive_set_sample_position(syn, pos); }
+                    if (kk == GH_KIND_CHAIN_DRIVE) { GhChainDrive_set_sample_position(syn, pos); }
+                    ghurni_synth_set_rpm(kk, syn, fz_val(step + 2));
+                    fz_render(kk, syn, 64, "a hostile position or speed sequence rendered non-finite");
+                    step = step + 1;
+                }
+            }
+            kk = kk + 1;
+        }
+        ri = ri + 1;
+    }
+    # A misfire armed on every cylinder, then the engine stalled and restarted.
+    var fz_me = ghurni_engine_new(GH_ENGINE_GASOLINE, 8, SR);
+    var fz_mc = 0;
+    while (fz_mc < 10) {
+        ghurni_engine_trigger_event(fz_me, ghurni_event_new(GH_EVENT_MISFIRE, fz_mc, 0));
+        ghurni_engine_trigger_event(fz_me, ghurni_event_new(GH_EVENT_MISFIRE, fz_mc, 0));
+        fz_mc = fz_mc + 1;
+    }
+    ghurni_engine_set_rpm(fz_me, f64_from(9000));
+    fz_render(GH_KIND_ENGINE, fz_me, 4410, "every cylinder misfiring rendered non-finite");
+    ghurni_engine_trigger_event(fz_me, ghurni_event_new(GH_EVENT_STALL, 0, 0));
+    fz_render(GH_KIND_ENGINE, fz_me, 44100, "a stall with misfires armed rendered non-finite");
+    ghurni_engine_set_rpm(fz_me, f64_from(3000));
+    fz_render(GH_KIND_ENGINE, fz_me, 4410, "the restart rendered non-finite");
+    var fz_mf = GhEngine_misfire_flags(fz_me);
+    var fz_mi = 0;
+    while (fz_mi < vec_len(fz_mf)) {
+        var fv = vec_get(fz_mf, fz_mi);
+        fz_check((fv >= 0) && (fv <= 4), "a misfire flag left its five states");
+        fz_mi = fz_mi + 1;
+    }
+
     fmt_int(fz_checks);
     println(" checks");
     if (fz_fail == 0) {

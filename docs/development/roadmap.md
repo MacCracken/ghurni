@@ -21,51 +21,20 @@ listed here: it lives in [`CHANGELOG.md`](../../CHANGELOG.md) and the
 
 ---
 
-## Now: `2.7.2` — P(-1) sweep
+## Now: `2.8.0` "Phase Continuity"
 
-**Audit, hardening, optimization, refactor, security sweep and repair.** Four
-independent audits by module cluster, plus mechanical sweeps: all-zero and hostile
-values through every public function, refused allocations, per-block leaks, long runs
-and 294 extreme inputs. Every repair keeps valid audio byte-identical to 2.7.1, and
-everything whose fix would change audio is scheduled below rather than fixed here.
-Full record in the [CHANGELOG](../../CHANGELOG.md).
+**The defects 2.7.2 could not fix in a patch, because fixing them changes audio.**
+Phase is anchored to the speed in force instead of derived from absolute position, a
+clock tick has a duration, a misfire skips a whole firing, the hybrid's starter has its
+own synth, block-stepped terms ramp, every synth builds and keeps its partials at any
+valid rate, and a negative ratio is a reverse gear. A speed held from the first sample
+renders 2.7.2's bits; audio differs only where a rate changed.
+[ADR-012](../architecture/adr-012-phase-continuity.md) records it, and the full record
+is in the [CHANGELOG](../../CHANGELOG.md). Also moves to naad 2.3.5, hisab 3.5.0 and
+goonj 2.3.2, with sakshi now a stdlib leaf.
 
----
-
-## `2.8.0` "Phase Continuity"
-
-**Theme: the defects that a patch could not fix, because fixing them changes audio.**
-All found by the 2.7.2 sweep, three of them independently by more than one auditor.
-This comes first because it is correctness, and because every later arc builds on
-the phase model it replaces.
-
-- [ ] **Integrate phase instead of deriving it from absolute position.** Modulation
-      phase is `position × current frequency`, so an RPM ramp moves it by an amount
-      that grows with stream age. Measured: a minute into a stream the engine's
-      firing slots change 3,462 times during a 200 ms ramp where 19 are due, the
-      chain's impact train runs 6x too fast, and the differential's warble reaches
-      96 Hz instead of 16. Same shape in `engine` (crank angle), `gear` (ring
-      envelope), `clock` (beat grid), `differential` (ring revolution), `chain_drive`
-      and `belt_drive`. Moves every engine golden, so it needs the ADR.
-- [ ] **Clock ticks have a duration, not a share of the beat.** Decay and the tick
-      windows scale with the beat, so slowing a clock stretches every tick: 15 ms at
-      8 Hz, 208 ms at 0.1 Hz. Bit-identical at each type's default rate.
-- [ ] **A misfire skips the firing, not one sample.** Today the flag clears after one
-      sample and the rest of the combustion window still fires.
-- [ ] **HYBRID STARTUP drives one synth at two pitches.** The starter whir and the
-      electric whine share `whine_synth`, which advances at the sum of both.
-- [ ] **Ramp the block-stepped terms.** Loudness, load and coast step at block edges
-      on the transmission and differential, and `belt_drive` takes raw rpm: a step to
-      rpm 0 drops 30 dB inside 1 ms.
-- [ ] **Partials survive low sample rates.** Gear, motor and turbine build their
-      additive synth at 100 Hz, so below a 612 Hz rate naad zeroes partials for good.
-- [ ] **A negative ratio is a reverse gear**, not a 1 Hz mesh. `f64_abs` in
-      `output_rpm`.
-- [ ] Refactors that need new names, which a patch cannot add: a shared zero-fill
-      helper for the ten `synthesize` loops, one channel loop for mono and stereo
-      mixing, and a table for the four tag dispatchers.
-
-**Patch line `2.8.x`**: golden refreshes and tuning after the phase change.
+**Patch line `2.8.x`**: anything the new goldens and A/B renders turn up that does not
+move audio on valid input. A change that does move it goes to a minor below.
 
 ---
 
@@ -87,6 +56,10 @@ Arc 3d and the 2.6.x patch line.
       bar at 21.9%.
 - [ ] Let the duct energy split (`GHURNI_DUCT_DRIVE` / `_STRUCT`) survive a release in
       consumers' hands before an occlusion curve is built on it.
+- [ ] **STARTUP fades a running engine's combustion out instead of cutting it.** Found by
+      2.8.0's A/B review: the gate is `1 - ufrac`, about 0 on the first sample, so STARTUP
+      on a running hybrid stops its electric whine instantly (a 0.097 step at the shared
+      gain). The shared starter synth masked it until 2.8.0 gave the whine its own.
 
 **Patch line `2.9.x`**: stem-level tuning.
 
@@ -95,8 +68,9 @@ Arc 3d and the 2.6.x patch line.
 ## `2.10.0` "Throughput"
 
 **Theme: take what naad 2.3.x offers, once consumers can follow.** Every item here
-raises the consumer floor to naad 2.3.3 and cyrius 6.7.18, which dhvani (on naad 2.2.4
-and cyrius 6.6.10) has not reached. Schedule it once it has.
+raises the consumer floor to naad 2.3.3 and cyrius 6.7.18. **dhvani reached both in
+2.3.1** (checked at 2.8.0), so this arc is unblocked. jalwa still reaches ghurni through
+dhvani 2.2.4 on cyrius 6.6.3, so check it before raising the floor.
 
 - [ ] **naad block forms**: `noise_fill_buffer`, `filter_biquad_process_buffer`,
       `additive_fill_buffer` and `osc_fill_buffer`, wherever the noise draw order and
@@ -104,7 +78,12 @@ and cyrius 6.6.10) has not reached. Schedule it once it has.
       bit for bit, so this is a speed change only, and must be proved so here too.
 - [ ] **Presized output buffers.** `synthesize` grows its result one `vec_push` at a
       time, so 2,205 samples allocate 65 KB for 17 KB of audio. `naad_vec_zeros`
-      (naad 2.3.2) is the presized vec this was blocked on.
+      (naad 2.3.2) is the presized vec this was blocked on, and `ghurni_zeros` (2.8.0)
+      is the one place to change.
+- [ ] **Settled smoothers cost a call per sample.** 2.8.0 added two per-sample
+      smoothers to the transmission (+13% on its one-shot) and two to the differential.
+      A settled smoother returns its target; skipping the arithmetic then is
+      bit-identical except for a target of -0.0, which no ghurni setter produces.
 - [ ] **Envelope cost.** `naad_db_to_amplitude` is `f64_pow` per sample in clock, gear
       and engine, and `f64_pow` doubled at cyrius 6.6.10. Any replacement must hold
       the goldens.
@@ -203,6 +182,9 @@ Removed with reasons, so they are not re-proposed:
 
 ## Standing notes
 
+- **Gear, motor and turbine have no smoother**, by the oracle's design, so their pitch
+  and loudness both step at block edges. Giving them one changes their character, not
+  just their continuity, so ADR-012 left them alone. It is open for an ADR in any minor.
 - **Three corrections to remember before the stems arc**, each a claim this project
   made and later disproved: ADR-009's acceptance criterion is passed by a wire, so it
   must never be cited as evidence a radiation path exists; ADR-009's tripwire never

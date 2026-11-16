@@ -17,7 +17,7 @@
 # - naad constructors return a heap pointer on success or a negative ERR_* code
 #   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
 #   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`).
-#   noise_new never errors.
+#   noise_new can report a refused allocation since naad 2.3.4, and is checked.
 # - The Rust process_block interleaved the naad synthesis directly in the sample
 #   loop (no separate _naad helper), so this port keeps it inline too.
 # - serde: Transmission held opaque naad backend pointers; deep #[derive(
@@ -36,6 +36,8 @@
 #   mesh_rpm(ptr GhSmoothedParam) dc_blocker(ptr GhDcBlocker)
 #   mesh_osc(ptr naad AdditiveSynth) noise_gen(ptr naad NoiseGenerator white)
 #   synchro_filter(ptr naad BiquadFilter band-pass 4000 Hz, q=3)
+#   smooth_in_rpm(ptr GhSmoothedParam, INPUT shaft rpm for the loudness law)
+#   smooth_load(ptr GhSmoothedParam) -- both ramped per sample (2.8.0).
 # ================================================================
 #derive(accessors)
 struct GhTransmission {
@@ -53,6 +55,8 @@ struct GhTransmission {
     mesh_osc;
     noise_gen;
     synchro_filter;
+    smooth_in_rpm;
+    smooth_load;
 }
 
 # new(ratios, output_teeth, sample_rate) -> ptr or GH_ERR_*.
@@ -75,14 +79,18 @@ fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
     # Mesh tone is a 3-partial ADDITIVE synth, not a pure sine (ADR-006): real
     # gear mesh has strong harmonics of the tooth-mesh frequency, and a single
     # sine is the one thing meshing gears never sound like.
-    var mesh_osc = additive_new(f64_from(100), 3, sample_rate);
+    # Built at a pitch whose 3rd partial fits under Nyquist (2.8.0); see dsp.cyr.
+    var mesh_osc = ghurni_additive_new(3, sample_rate);
     if (ghurni_is_err(mesh_osc) == 1) { return ghurni_map_naad_error(mesh_osc); }
     additive_set_partial(mesh_osc, 0, F64_ONE, F64_ONE);
     additive_set_partial(mesh_osc, 1, f64_from(2), 0.4);
     additive_set_partial(mesh_osc, 2, f64_from(3), 0.2);
 
     var noise = noise_new(NOISE_WHITE, teeth * 31);
-    var synchro_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(4000), f64_from(3));
+    if (ghurni_is_err(noise) == 1) { return ghurni_map_naad_error(noise); }
+    # Held under Nyquist (2.8.0): at 4 kHz fixed, the constructor failed at 8 kHz.
+    var synchro_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate,
+      ghurni_below_nyquist(f64_from(4000), sample_rate), f64_from(3));
     if (ghurni_is_err(synchro_filter) == 1) { return ghurni_map_naad_error(synchro_filter); }
 
     var self = alloc(sizeof(GhTransmission));
@@ -100,6 +108,8 @@ fn ghurni_transmission_new(ratios, output_teeth, sample_rate) {
     GhTransmission_set_mesh_osc(self, mesh_osc);
     GhTransmission_set_noise_gen(self, noise);
     GhTransmission_set_synchro_filter(self, synchro_filter);
+    GhTransmission_set_smooth_in_rpm(self, ghurni_smooth_new(0, 0.05, sample_rate));
+    GhTransmission_set_smooth_load(self, ghurni_smooth_new(0, 0.02, sample_rate));
     return self;
 }
 
@@ -130,13 +140,17 @@ fn ghurni_transmission_current_ratio(self) {
     return F64_ONE;
 }
 
-# output_rpm() -- output shaft RPM = rpm / current_ratio.
+# output_rpm() -- output shaft SPEED = rpm / |current_ratio|.
 #must_use
 fn ghurni_transmission_output_rpm(self) {
     # A ratio of 0 is a natural way to write neutral, and rpm/0 in the smoother's
     # target used to freeze the mesh pitch for the life of the object. An unusable
     # ratio leaves the output shaft undriven.
-    var out_rpm = f64_div(GhTransmission_rpm(self), ghurni_transmission_current_ratio(self));
+    # A NEGATIVE ratio is a reverse gear (2.8.0). The output shaft turns the other
+    # way at the same speed, and every rpm in this library is a speed: until now
+    # rpm / -3.2 gave a negative target, which the mesh clamp turned into a 1 Hz
+    # tone, and which every downstream set_rpm clamps to silence.
+    var out_rpm = f64_div(GhTransmission_rpm(self), f64_abs(ghurni_transmission_current_ratio(self)));
     if (ghurni_is_finite(out_rpm) == 0) { return 0; }
     return out_rpm;
 }
@@ -147,9 +161,7 @@ fn ghurni_transmission_synthesize(self, rpm, duration) {
     var n = ghurni_sample_count(GhTransmission_sample_rate(self), duration);
     if (ghurni_is_err(n) == 1) { return n; }
     ghurni_transmission_set_rpm(self, rpm);
-    var out = vec_new();
-    var i = 0;
-    while (i < n) { vec_push(out, 0); i = i + 1; }
+    var out = ghurni_zeros(n);
     ghurni_transmission_process_block(self, out);
     return out;
 }
@@ -164,10 +176,20 @@ fn ghurni_transmission_process_block(self, out) {
     # sets -- not `smooth_rpm`, which tracks OUTPUT rpm (rpm / current_ratio) and
     # would make loudness depend on the selected gear. That would be a different
     # behaviour, and not one this ADR is introducing.
-    var tx_load = GhTransmission_load(self);
-    var tx_amp = f64_add(F64_ONE, f64_mul(0.5, tx_load));
-    var tx_tilt = ghurni_load_tilt(tx_load);
-    var tx_gain = ghurni_rpm_gain(GhTransmission_rpm(self), GHURNI_REF_RPM_TRANSMISSION);
+    # LOUDNESS AND LOAD RAMP (2.8.0, ADR-012). Both used to be read once per
+    # block from the raw setters, so a step to rpm 0 silenced the gearbox at the
+    # block edge while its pitch was still gliding down, and a load change stepped
+    # the level. Each now has a smoother, the loudness on the same 50 ms as the
+    # mesh pitch. At load 0 tx_amp and tx_tilt are exactly 1.0, as before.
+    var smooth_in = GhTransmission_smooth_in_rpm(self);
+    var smooth_ld = GhTransmission_smooth_load(self);
+    ghurni_smooth_set_target(smooth_in, GhTransmission_rpm(self));
+    ghurni_smooth_set_target(smooth_ld, GhTransmission_load(self));
+    var last_in = 0x7FF8000000000001;
+    var last_ld = 0x7FF8000000000001;
+    var tx_amp = F64_ONE;
+    var tx_tilt = F64_ONE;
+    var tx_gain = 0;
     var out_rpm = ghurni_transmission_output_rpm(self);
     var mesh_rpm = GhTransmission_mesh_rpm(self);
     ghurni_smooth_set_target(mesh_rpm, out_rpm);
@@ -187,9 +209,20 @@ fn ghurni_transmission_process_block(self, out) {
     while (i < n) {
         var smooth_rpm = ghurni_smooth_next_value(mesh_rpm);
         var mesh_freq = f64_mul(f64_div(smooth_rpm, f60), teeth);
+        var in_s = ghurni_smooth_next_value(smooth_in);
+        if (in_s != last_in) {
+            last_in = in_s;
+            tx_gain = ghurni_rpm_gain(in_s, GHURNI_REF_RPM_TRANSMISSION);
+        }
+        var ld = ghurni_smooth_next_value(smooth_ld);
+        if (ld != last_ld) {
+            last_ld = ld;
+            tx_amp = f64_add(F64_ONE, f64_mul(0.5, ld));
+            tx_tilt = ghurni_load_tilt(ld);
+        }
 
         # Clamp so the THIRD partial stays below nyquist, not just the fundamental.
-        var fc = f64_clamp(mesh_freq, F64_ONE, fund_hi);
+        var fc = ghurni_fund_clamp(mesh_freq, fund_hi);
         if (fc != last_f) { additive_set_fundamental(mesh_osc, fc); last_f = fc; }
         var mesh = f64_mul(f64_mul(additive_next_sample(mesh_osc), 0.15), tx_amp);
 

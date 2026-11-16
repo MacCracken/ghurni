@@ -12,12 +12,16 @@ git -C ../naad tag --sort=-v:refname | head
 ```
 
 ```bash
-git -C ../naad show 2.3.3:cyrius.cyml | grep -E '^cyrius|^tag'
+git -C ../naad show 2.3.5:cyrius.cyml | grep -E '^cyrius|^tag'
 ```
 
 Read the tags in the sibling clone, not `~/.cyrius/deps`, which holds only tags
-something has already resolved. hisab pins sakshi, and goonj pins hisab, so check
-that the chain agrees. naad's `CHANGELOG.md` names the set in its entry.
+something has already resolved. goonj pins hisab, so check that the chain agrees.
+naad's `CHANGELOG.md` names the set in its entry. sakshi is a stdlib leaf of the
+toolchain, not a git package, since hisab 3.4.2: it is listed in `[deps].stdlib`,
+and a `[deps.sakshi]` package would collide with the leaf. Before running `git tag`
+in a sibling, `git fetch --tags` there, or read the tags from the GitHub API, because
+a stale clone shows an old newest tag.
 
 Then read naad's changelog from the current tag to the new one. Look for **new
 failure returns** in anything ghurni calls: naad 2.3.2 made `delay_line_new` fallible,
@@ -28,7 +32,7 @@ not contain, and ghurni uses float literals and type annotations that naad does 
 
 ## 2. Move the pins and re-vendor
 
-Edit `cyrius` and the four `tag` lines in `cyrius.cyml`, and the comment above
+Edit `cyrius` and the three `tag` lines in `cyrius.cyml`, and the comment above
 `[deps.naad]`. Then:
 
 ```bash

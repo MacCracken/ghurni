@@ -32,6 +32,10 @@
 #   sample_position(int) smooth_rpm(ptr GhSmoothedParam)
 #   dc_blocker(ptr GhDcBlocker) noise_gen(ptr naad NoiseGenerator)
 #   impact_filter(ptr naad BiquadFilter)
+#   lap_anchor(f64 laps, in [0, 1]) lap_anchor_pos(int sample)
+#   lap_anchor_period(f64 engagement period in samples, 0 = none yet) -- the
+#     chain's ANCHORED phase (2.8.0, ADR-012). Both the engagement and the lap
+#     phase derive from it, re-anchored whenever the period changes.
 # ================================================================
 #derive(accessors)
 struct GhChainDrive {
@@ -44,6 +48,9 @@ struct GhChainDrive {
     dc_blocker;
     noise_gen;
     impact_filter;
+    lap_anchor;
+    lap_anchor_pos;
+    lap_anchor_period;
 }
 
 # new(links, sprocket_teeth, sample_rate) -> ptr or GH_ERR_*.
@@ -67,6 +74,7 @@ fn ghurni_chain_drive_new(links, sprocket_teeth, sample_rate) {
 
     # naad backend: white noise + band-pass impact filter (3 kHz, q=3).
     var noise = noise_new(NOISE_WHITE, lk * 17 + st);
+    if (ghurni_is_err(noise) == 1) { return ghurni_map_naad_error(noise); }
     var impact_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(f64_from(3000), nyq), f64_from(3));
     if (ghurni_is_err(impact_filter) == 1) { return ghurni_map_naad_error(impact_filter); }
 
@@ -80,6 +88,9 @@ fn ghurni_chain_drive_new(links, sprocket_teeth, sample_rate) {
     GhChainDrive_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
     GhChainDrive_set_noise_gen(self, noise);
     GhChainDrive_set_impact_filter(self, impact_filter);
+    GhChainDrive_set_lap_anchor(self, 0);
+    GhChainDrive_set_lap_anchor_pos(self, 0);
+    GhChainDrive_set_lap_anchor_period(self, 0);
     return self;
 }
 
@@ -102,9 +113,7 @@ fn ghurni_chain_drive_synthesize(self, rpm, duration) {
     var n = ghurni_sample_count(GhChainDrive_sample_rate(self), duration);
     if (ghurni_is_err(n) == 1) { return n; }
     ghurni_chain_drive_set_rpm(self, rpm);
-    var out = vec_new();
-    var i = 0;
-    while (i < n) { vec_push(out, 0); i = i + 1; }
+    var out = ghurni_zeros(n);
     ghurni_chain_drive_process_block(self, out);
     return out;
 }
@@ -141,6 +150,19 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
     var engage_period = 0;
     var lap_period = 0;
     var ch_gain = 0;
+    # ANCHORED PHASE (2.8.0, ADR-012). Both phases were fmod(absolute position,
+    # period), so while the smoother moved the period, the impact train swept at a
+    # rate that grew with stream age: a minute in, it ran 6x too fast during a
+    # ramp. The state is now the lap fraction at an anchor; the position into the
+    # current lap, in samples at the current period, is
+    #     x = anchor x lap_period + (position - anchor_pos)
+    # and the engagement phase is x mod period, as before. Re-anchoring keeps the
+    # lap fraction continuous. With the anchor at 0, x is the absolute position and
+    # both phases are the old ones term for term. A stopped chain (period +Inf)
+    # holds its fraction.
+    var lap_a = GhChainDrive_lap_anchor(self);
+    var lap_apos = GhChainDrive_lap_anchor_pos(self);
+    var lap_aper = GhChainDrive_lap_anchor_period(self);
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
@@ -151,6 +173,16 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
             engage_period = f64_div(sr, engage_freq);
             lap_period = f64_mul(engage_period, links_f);
             ch_gain = ghurni_rpm_gain(smooth, GHURNI_REF_RPM_CHAIN);
+            if (engage_period != lap_aper) {
+                var pos_c = base_pos + i;
+                if ((ghurni_is_finite(lap_aper) == 1) && (f64_gt(lap_aper, 0) == 1)) {
+                    var lap_al = f64_mul(lap_aper, links_f);
+                    var x0 = f64_add(f64_mul(lap_a, lap_al), f64_from(pos_c - lap_apos));
+                    lap_a = f64_div(ghurni_fmod(x0, lap_al), lap_al);
+                }
+                lap_apos = pos_c;
+                lap_aper = engage_period;
+            }
         }
 
         if (f64_lt(engage_freq, F64_ONE) == 1) {
@@ -159,8 +191,8 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
             continue;
         }
 
-        var abs_pos = f64_from(base_pos + i);
-        var phase = f64_div(ghurni_fmod(abs_pos, engage_period), engage_period);
+        var lap_x = f64_add(f64_mul(lap_a, lap_period), f64_from(base_pos + i - lap_apos));
+        var phase = f64_div(ghurni_fmod(lap_x, engage_period), engage_period);
 
         # Sharp impact at each link engagement (first 5% of the period).
         var impact = 0;
@@ -180,7 +212,7 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
         #     lap_freq = engage_freq / links
         # A shallow amplitude modulation at that rate is what makes the link
         # count audible, and it is the slow "wobble" a worn chain has.
-        var lap_phase = f64_div(ghurni_fmod(abs_pos, lap_period), lap_period);
+        var lap_phase = f64_div(ghurni_fmod(lap_x, lap_period), lap_period);
         var lap_mod = f64_add(0.85, f64_mul(0.15, f64_cos(f64_mul(F64_TAU, lap_phase))));
 
         var rattle = f64_mul(noise_next_sample(noise), 0.03);
@@ -190,6 +222,9 @@ fn ghurni_chain_drive_process_block_naad(self, out) {
         vec_set(out, i, f64_mul(ch_sum, ch_gain));
         i = i + 1;
     }
+    GhChainDrive_set_lap_anchor(self, lap_a);
+    GhChainDrive_set_lap_anchor_pos(self, lap_apos);
+    GhChainDrive_set_lap_anchor_period(self, lap_aper);
     return 0;
 }
 

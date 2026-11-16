@@ -18,7 +18,8 @@
 # - The single naad constructor (band-pass body filter) returns a heap pointer
 #   on success or a negative ERR_* code on bad params; ghurni_is_err()
 #   distinguishes them. new() maps any failure to GH_ERR_SYNTHESIS_FAILED
-#   (ports the Rust `.map_err(SynthesisFailed)`). noise_new never errors.
+#   (ports the Rust `.map_err(SynthesisFailed)`). noise_new is checked too:
+#   it can report a refused allocation since naad 2.3.4.
 # - The tick rate comes from the clock type and set_tick_rate (2.4.0), not from
 #   RPM: set_rpm is a NO-OP and rpm() reports tick_rate*60 for interface
 #   compatibility (matches the Rust Synthesizer impl).
@@ -62,6 +63,9 @@ fn ghurni_clocktype_from_name(s) {
 #   clock_type(int) tick_rate(f64 ticks/sec) sample_rate(f64)
 #   sample_position(int) dc_blocker(ptr GhDcBlocker)
 #   noise_gen(ptr naad NoiseGenerator) body_filter(ptr naad BiquadFilter)
+#   beat_pos(f64 samples since the last beat instant, may be fractional)
+#   beat_count(int beats so far; its parity picks tick or tock) -- the
+#     INTEGRATED beat (2.8.0, ADR-012), replacing phase from absolute position.
 # ================================================================
 #derive(accessors)
 struct GhClock {
@@ -72,6 +76,8 @@ struct GhClock {
     dc_blocker;
     noise_gen;
     body_filter;
+    beat_pos;
+    beat_count;
 }
 
 # tick_rate (ticks/sec) by clock type. Wristwatch 8, WallClock 2,
@@ -95,8 +101,12 @@ fn ghurni_clock_resonance_for(clock_type) {
     return f64_from(800);
 }
 
-# ring decay by clock type, as a fraction of a BEAT, not a time: a slower clock
-# has longer ticks. Scheduled to become a real time constant in 2.8.0.
+# ring decay by clock type, in units of the type's DEFAULT beat (2.8.0, ADR-012),
+# so it is a fixed time: 0.375 ms wristwatch, 5 ms wall clock, 30 ms grandfather,
+# 1 ms pocket watch. Until 2.8.0 it was a fraction of the CURRENT beat, so
+# slowing a clock stretched every tick: a wristwatch tick lasted 15 ms at its
+# 8 Hz and 208 ms at 0.1 Hz. The two tick windows are fixed the same way: the
+# attack lasts 0.02 default beats and the ring 0.15.
 #must_use
 fn ghurni_clock_decay_for(clock_type) {
     if (clock_type == GH_CLOCK_WRISTWATCH)        { return 0.003; }
@@ -133,6 +143,7 @@ fn ghurni_clock_new(clock_type, sample_rate) {
 
     # naad backend: white noise (seed = clock_type*997) + band-pass body filter.
     var noise = noise_new(NOISE_WHITE, clock_type * 997);
+    if (ghurni_is_err(noise) == 1) { return ghurni_map_naad_error(noise); }
     var body_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(resonance, nyq), f64_from(8));
     if (ghurni_is_err(body_filter) == 1) { return ghurni_map_naad_error(body_filter); }
 
@@ -144,6 +155,8 @@ fn ghurni_clock_new(clock_type, sample_rate) {
     GhClock_set_dc_blocker(self, ghurni_dcblocker_new(sample_rate));
     GhClock_set_noise_gen(self, noise);
     GhClock_set_body_filter(self, body_filter);
+    GhClock_set_beat_pos(self, 0);
+    GhClock_set_beat_count(self, 0);
     return self;
 }
 
@@ -165,10 +178,11 @@ fn ghurni_clock_set_rpm(self, rpm) {
 # beat is inaudible; above it the ticks merge into a tone. Non-finite collapses
 # to the floor, per ghurni_finite_clamp.
 #
-# ⚠ Changing the rate mid-stream moves the beat grid, because phase is derived
-# from the absolute sample position, and setting it between blocks does not help:
-# a ramp from 1 to 2 Hz over 10 s, 100 s into a stream, ticks 17 to 38 times where
-# 15 are due, depending on block size. Integrated phase is scheduled for 2.8.0.
+# Safe mid-stream (2.8.0, ADR-012). The next tick comes one NEW period after the
+# last one, as an escapement's does, and a tick already sounding keeps its own
+# length. Until 2.8.0 the beat came from the absolute sample position, so a ramp
+# from 1 to 2 Hz over 10 s, 100 s into a stream, ticked 17 to 38 times where 15
+# were due, depending on block size.
 fn ghurni_clock_set_tick_rate(self, ticks_per_second) {
     GhClock_set_tick_rate(self, ghurni_finite_clamp(ticks_per_second, 0.1, f64_from(50)));
     return 0;
@@ -185,9 +199,7 @@ fn ghurni_clock_tick_rate(self) {
 fn ghurni_clock_synthesize(self, duration) {
     var n = ghurni_sample_count(GhClock_sample_rate(self), duration);
     if (ghurni_is_err(n) == 1) { return n; }
-    var out = vec_new();
-    var i = 0;
-    while (i < n) { vec_push(out, 0); i = i + 1; }
+    var out = ghurni_zeros(n);
     ghurni_clock_process_block(self, out);
     return out;
 }
@@ -214,18 +226,37 @@ fn ghurni_clock_process_block_naad(self, out) {
     var body_filter = GhClock_body_filter(self);
 
     var tick_period = f64_div(sr, GhClock_tick_rate(self));
+    # One DEFAULT beat in samples: the unit the tick's own windows and decay are
+    # measured in. At the type's default rate it is tick_period itself, bit for
+    # bit, which is why a clock at its default rate renders exactly as before.
+    var tick_unit = f64_div(sr, ghurni_clock_tick_rate_for(clock_type));
     var decay = ghurni_clock_decay_for(clock_type);
     var amp = ghurni_clock_amp_for(clock_type);
 
-    var base_pos = GhClock_sample_position(self);
+    # INTEGRATED BEAT (2.8.0, ADR-012). beat_pos counts samples since the last
+    # beat instant, and a beat falls when it reaches the period. Until now the
+    # phase was fmod(absolute position, period), so any change of rate moved the
+    # whole beat grid by an amount that grew with stream age. At a rate held from
+    # the start, every quantity here is exact wherever the period is (sr / rate
+    # at the four default rates and the common sample rates all are), so the
+    # result is the old position-derived phase bit for bit.
+    var beat_pos = GhClock_beat_pos(self);
+    var beat_count = GhClock_beat_count(self);
 
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
-        var abs_pos = f64_from(base_pos + i);
-        # Written out from ghurni_fmod so the one division serves phase and beat.
-        var beats = f64_div(abs_pos, tick_period);
-        var phase = f64_div(f64_sub(abs_pos, f64_mul(tick_period, f64_floor(beats))), tick_period);
+        if (f64_ge(beat_pos, tick_period) == 1) {
+            # One beat per wrap at any sane rate. More only after the rate rose
+            # past the time already elapsed, or at a period under one sample.
+            var k = f64_floor(f64_div(beat_pos, tick_period));
+            beat_pos = f64_sub(beat_pos, f64_mul(k, tick_period));
+            if (f64_lt(beat_pos, 0) == 1) { beat_pos = 0; }
+            beat_count = beat_count + f64_to(k);
+        }
+        # Time since the tick, in default beats: a duration, not a share of the
+        # current beat.
+        var u = f64_div(beat_pos, tick_unit);
 
         # TICK vs TOCK (ADR-006). An escapement alternates between two pallets,
         # and the two impacts are not the same sound -- that asymmetry is why the
@@ -234,25 +265,24 @@ fn ghurni_clock_process_block_naad(self, out) {
         # as a metronome rather than a mechanism. Even beats keep the original
         # timbre; odd beats are slightly softer and shorter-decaying, as the
         # lighter pallet impact is.
-        var beat = f64_to(beats);
         var beat_amp = amp;
         var beat_decay = decay;
-        if ((beat % 2) == 1) {
+        if ((beat_count % 2) == 1) {
             beat_amp = f64_mul(amp, 0.82);
             beat_decay = f64_mul(decay, 0.78);
         }
 
         var tick = 0;
-        if (f64_lt(phase, 0.02) == 1) {
-            var t = f64_div(phase, 0.02);
+        if (f64_lt(u, 0.02) == 1) {
+            var t = f64_div(u, 0.02);
             var impulse = f64_mul(f64_sub(F64_ONE, t), beat_amp);
             var ring_excitation = f64_mul(noise_next_sample(noise), beat_amp);
-            var ring_env = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(phase), beat_decay), GHURNI_DB_SCALE));
+            var ring_env = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(u), beat_decay), GHURNI_DB_SCALE));
             var ring = f64_mul(filter_biquad_process_sample(body_filter, ring_excitation), ring_env);
             tick = f64_add(f64_mul(impulse, 0.5), ring);
-        } elif (f64_lt(phase, 0.15) == 1) {
+        } elif (f64_lt(u, 0.15) == 1) {
             var ring_excitation2 = f64_mul(f64_mul(noise_next_sample(noise), beat_amp), 0.1);
-            var ring_env2 = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(phase), beat_decay), GHURNI_DB_SCALE));
+            var ring_env2 = naad_db_to_amplitude(f64_mul(f64_div(f64_neg(u), beat_decay), GHURNI_DB_SCALE));
             var ring2 = f64_mul(filter_biquad_process_sample(body_filter, ring_excitation2), ring_env2);
             tick = f64_mul(ring2, 0.3);
         }
@@ -260,8 +290,11 @@ fn ghurni_clock_process_block_naad(self, out) {
         var mech = f64_mul(f64_mul(noise_next_sample(noise), amp), 0.01);
 
         vec_set(out, i, f64_add(tick, mech));
+        beat_pos = f64_add(beat_pos, F64_ONE);
         i = i + 1;
     }
+    GhClock_set_beat_pos(self, beat_pos);
+    GhClock_set_beat_count(self, beat_count);
     return 0;
 }
 

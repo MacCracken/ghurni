@@ -161,10 +161,20 @@ fn ghurni_enginetype_from_name(s) {
 #   backfire_remaining(int) smooth_rpm/smooth_load(ptr GhSmoothedParam)
 #   dc_blocker(ptr GhDcBlocker) noise_gen(ptr naad NoiseGenerator)
 #   stall_remaining/rev_limit_remaining/startup_remaining/shutdown_remaining(int)
-#   whine_synth(ptr naad AdditiveSynth) -- built for EVERY type since 2.4.0: it is
-#     the hybrid's electric drive and the STARTUP starter whir.
+#   whine_synth(ptr naad AdditiveSynth) -- the hybrid's electric drive, built for
+#     every type. Until 2.8.0 it was also the STARTUP starter whir.
 #   exhaust_filter/intake_filter(ptr naad BiquadFilter)
 #   duct_line(ptr naad DelayLine) duct_loss_z/duct_rad_z(f64 filter state)
+#   crank_anchor(f64 deg, in [0, cycle)) crank_anchor_pos(int sample)
+#   crank_anchor_rps(f64 revs/sample) -- the crank's ANCHORED phase (2.8.0,
+#     ADR-012): crank = anchor + (pos - anchor_pos) * rps * 360, re-anchored
+#     whenever rps changes, so the angle is the integral of speed and not
+#     position x current speed.
+#   starter_synth(ptr naad AdditiveSynth) -- the STARTUP starter whir (2.8.0).
+#     It shared whine_synth until now, which drove a hybrid's whine at two pitches.
+# misfire_flags per cylinder (2.8.0): 0 none; 1 armed while this cylinder's window
+#   was open; 3 armed and seen outside its window; 2 skipping the firing in
+#   progress; 4 skipping, and armed again for the next.
 # ================================================================
 #derive(accessors)
 struct GhEngine {
@@ -196,6 +206,10 @@ struct GhEngine {
     duct_line;
     duct_loss_z;
     duct_rad_z;
+    crank_anchor;
+    crank_anchor_pos;
+    crank_anchor_rps;
+    starter_synth;
 }
 
 # Even firing offsets (deg) for `cyl` cylinders. 4-stroke = 720deg cycle,
@@ -246,9 +260,12 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
 
     var nyq = f64_mul(sample_rate, 0.49);
 
-    # naad backend: white noise + exhaust/intake band-pass filters.
+    # naad backend: white noise + exhaust/intake band-pass filters. Both centres
+    # are held under Nyquist (2.8.0): a 16-cylinder two-stroke's 680 Hz exhaust
+    # failed the constructor at any rate up to 1.36 kHz.
     var noise = noise_new(NOISE_WHITE, engine_type * 1000 + cyl);
-    var exhaust_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, exhaust, 1.5);
+    if (ghurni_is_err(noise) == 1) { return ghurni_map_naad_error(noise); }
+    var exhaust_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(exhaust, nyq), 1.5);
     if (ghurni_is_err(exhaust_filter) == 1) { return ghurni_map_naad_error(exhaust_filter); }
     var intake_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(intake, nyq), 2.0);
     if (ghurni_is_err(intake_filter) == 1) { return ghurni_map_naad_error(intake_filter); }
@@ -257,12 +274,20 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
     # combustion path and merely used different resonance constants -- so the one
     # engine type documented "electric-with-whine" was the one thing it was not.
     # It now gets a 2-partial EM whine instead of combustion impulses.
-    # Built for EVERY type as of 2.4.0: the STARTUP starter-motor whir uses the
-    # same synth. It stays silent unless the engine is a hybrid or starting.
-    var whine = additive_new(f64_from(100), 2, sample_rate);
+    # Built for every type, so an engine_type changed through its public accessor
+    # still finds a synth; it stays silent unless the engine is a hybrid.
+    var whine = ghurni_additive_new(2, sample_rate);
     if (ghurni_is_err(whine) == 1) { return ghurni_map_naad_error(whine); }
     additive_set_partial(whine, 0, F64_ONE, F64_ONE);
     additive_set_partial(whine, 1, f64_from(2), 0.35);
+    # The STARTUP starter whir gets its own synth (2.8.0). Until now it shared
+    # whine_synth, so a hybrid's STARTUP retuned the one synth twice per sample and
+    # advanced it at the sum of both pitches. Built exactly as whine_synth is, so a
+    # non-hybrid STARTUP, which never touched whine_synth otherwise, keeps its bits.
+    var starter = ghurni_additive_new(2, sample_rate);
+    if (ghurni_is_err(starter) == 1) { return ghurni_map_naad_error(starter); }
+    additive_set_partial(starter, 0, F64_ONE, F64_ONE);
+    additive_set_partial(starter, 1, f64_from(2), 0.35);
 
     # delay_line_new can return a negative code since naad 2.3.2.
     var duct_line = delay_line_new(GHURNI_DUCT_MAX_DELAY);
@@ -303,6 +328,13 @@ fn ghurni_engine_new(engine_type, cylinders, sample_rate) {
     GhEngine_set_duct_line(self, duct_line);
     GhEngine_set_duct_loss_z(self, 0);
     GhEngine_set_duct_rad_z(self, 0);
+    # rps 0 is "no anchor yet": the first rendered sample anchors at its own
+    # position, adding 0 * 0 degrees, so a fresh engine starts at crank 0 exactly as
+    # it always has, and the phase never depends on how far sample_position has run.
+    GhEngine_set_crank_anchor(self, 0);
+    GhEngine_set_crank_anchor_pos(self, 0);
+    GhEngine_set_crank_anchor_rps(self, 0);
+    GhEngine_set_starter_synth(self, starter);
     return self;
 }
 
@@ -361,9 +393,15 @@ fn ghurni_engine_trigger_event(self, event) {
     if (kind == GH_EVENT_BACKFIRE) {
         GhEngine_set_backfire_remaining(self, f64_to(f64_mul(GhEngine_sample_rate(self), 0.1)));
     } elif (kind == GH_EVENT_MISFIRE) {
+        # Arms the NEXT firing of that cylinder to fail whole (2.8.0). See the
+        # flag states above GhEngine; an engine already skipping arms once more.
         var cyl = GhEvent_arg0(event);
         var flags = GhEngine_misfire_flags(self);
-        if ((cyl >= 0) && (cyl < vec_len(flags))) { vec_set(flags, cyl, 1); }
+        if ((cyl >= 0) && (cyl < vec_len(flags))) {
+            var mf = vec_get(flags, cyl);
+            if (mf == 0) { vec_set(flags, cyl, 1); }
+            elif (mf == 2) { vec_set(flags, cyl, 4); }
+        }
     } elif (kind == GH_EVENT_KNOCK) {
         var cyl2 = GhEvent_arg0(event);
         var kr = GhEngine_knock_remaining(self);
@@ -430,9 +468,7 @@ fn ghurni_engine_synthesize(self, rpm, load, duration) {
     if (ghurni_is_err(n) == 1) { return n; }
     ghurni_engine_set_rpm(self, rpm);
     ghurni_engine_set_load(self, load);
-    var out = vec_new();
-    var i = 0;
-    while (i < n) { vec_push(out, 0); i = i + 1; }
+    var out = ghurni_zeros(n);
     ghurni_engine_process_block(self, out);
     return out;
 }
@@ -491,6 +527,10 @@ fn ghurni_engine_process_block_naad(self, out) {
     var is_diesel = 0;
     if (GhEngine_engine_type(self) == GH_ENGINE_DIESEL) { is_diesel = 1; }
     var whine_synth = GhEngine_whine_synth(self);
+    var starter_synth = GhEngine_starter_synth(self);
+    # Held under Nyquist so the starter's 2nd partial is never zeroed for good at a
+    # low rate. 220 Hz itself at every rate above 898 Hz.
+    var starter_hz = f64_min(f64_from(220), f64_div(f64_mul(sr, 0.49), f64_from(2)));
     var bed_gain = F64_ONE;
     if (is_hybrid == 1) { bed_gain = 0.25; }
     # Cylinders that actually fire. An electric drive has none, so the whole
@@ -564,7 +604,18 @@ fn ghurni_engine_process_block_naad(self, out) {
     var neg_cycle = f64_neg(cycle);
     var misfire_armed = 0;
     var ma = 0;
-    while (ma < n_misfire) { if (vec_get(misfire, ma) == 1) { misfire_armed = 1; } ma = ma + 1; }
+    while (ma < n_misfire) { if (vec_get(misfire, ma) != 0) { misfire_armed = 1; } ma = ma + 1; }
+    # INTEGRATED CRANK (2.8.0, ADR-012). Until now the crank angle was
+    # fmod(position x speed x 360): position times the CURRENT speed, so any change
+    # of speed moved the angle by an amount that grew with stream age. A minute in,
+    # a 200 ms ramp swept every firing slot 3,462 times where 19 firings were due.
+    # The angle is now anchored: it advances by the speed in force for each sample,
+    # and is re-anchored, in [0, cycle), whenever the speed changes. While the speed
+    # holds from the first sample on, anchor and anchor_pos stay 0 and the expression
+    # is the old one term for term, so steady audio keeps every bit.
+    var crank_a = GhEngine_crank_anchor(self);
+    var crank_apos = GhEngine_crank_anchor_pos(self);
+    var crank_arps = GhEngine_crank_anchor_rps(self);
     var knock_armed = 0;
     var ka = 0;
     while (ka < n_knock) {
@@ -584,9 +635,16 @@ fn ghurni_engine_process_block_naad(self, out) {
         var crank_deg = 0;
         var pulse_dt = 0;
         if (is_hybrid == 0) {
-            var abs_pos = f64_from(base_pos + i);
+            var pos = base_pos + i;
             revs_per_sample = f64_div(rpm, spm_den);
-            crank_deg = ghurni_fmod(f64_mul(f64_mul(abs_pos, revs_per_sample), k360), cycle);
+            if (revs_per_sample != crank_arps) {
+                crank_a = ghurni_fmod(f64_add(crank_a,
+                    f64_mul(f64_mul(f64_from(pos - crank_apos), crank_arps), k360)), cycle);
+                crank_apos = pos;
+                crank_arps = revs_per_sample;
+            }
+            crank_deg = ghurni_fmod(f64_add(crank_a,
+                f64_mul(f64_mul(f64_from(pos - crank_apos), revs_per_sample), k360)), cycle);
             # How far `t` advances in one sample: crank degrees per sample divided by
             # the width of the combustion window (0.08 of the cycle). Guarded so a
             # stalled crank cannot divide by zero in the integrated pulse below.
@@ -599,7 +657,7 @@ fn ghurni_engine_process_block_naad(self, out) {
         var combustion_sum = 0;
         if (is_hybrid == 1) {
             var wf = f64_mul(f64_div(rpm, f64_from(60)), f64_from(GHURNI_HYBRID_POLES));
-            additive_set_fundamental(whine_synth, f64_clamp(wf, F64_ONE, f64_div(nyq_e, f64_from(2))));
+            additive_set_fundamental(whine_synth, ghurni_fund_clamp(wf, f64_div(nyq_e, f64_from(2))));
             # Traction motors whine louder under torque, so load drives amplitude.
             var wamp = f64_mul(0.25, f64_add(0.3, f64_mul(load, 0.7)));
             combustion_sum = f64_mul(additive_next_sample(whine_synth), wamp);
@@ -623,12 +681,25 @@ fn ghurni_engine_process_block_naad(self, out) {
             }
             var cyl_norm = f64_div(cyl_phase, cycle);
 
+            # MISFIRE skips a whole firing (2.8.0). It used to clear its flag
+            # after one sample, so the rest of the combustion window fired anyway:
+            # a misfire removed one sample of a pulse. A flag armed mid-window lets
+            # that firing finish (1); once the cylinder is seen outside its window
+            # (3), the next window it enters is skipped from start to end (2).
+            # Detecting the entry by state, not by a cyl_norm threshold, holds at
+            # any rpm and sample rate, where a threshold can be stepped over.
             var skip = 0;
             if (misfire_armed == 1) {
                 if (c < n_misfire) {
-                    if ((vec_get(misfire, c) == 1) && (f64_lt(cyl_norm, 0.01) == 1)) {
-                        vec_set(misfire, c, 0);
-                        skip = 1;
+                    var mf = vec_get(misfire, c);
+                    if (mf != 0) {
+                        if (f64_lt(cyl_norm, 0.08) == 1) {
+                            if (mf == 3) { vec_set(misfire, c, 2); skip = 1; }
+                            elif ((mf == 2) || (mf == 4)) { skip = 1; }
+                        } else {
+                            if ((mf == 1) || (mf == 4)) { vec_set(misfire, c, 3); }
+                            elif (mf == 2) { vec_set(misfire, c, 0); }
+                        }
                     }
                 }
             }
@@ -782,8 +853,8 @@ fn ghurni_engine_process_block_naad(self, out) {
             startup_rem = startup_rem - 1;
             var ufrac = f64_div(f64_from(startup_rem), startup_total);
             combustion_sum = f64_mul(combustion_sum, f64_sub(F64_ONE, ufrac));
-            additive_set_fundamental(whine_synth, f64_from(220));
-            starter = f64_mul(f64_mul(additive_next_sample(whine_synth), ufrac), 0.18);
+            additive_set_fundamental(starter_synth, starter_hz);
+            starter = f64_mul(f64_mul(additive_next_sample(starter_synth), ufrac), 0.18);
         }
 
         # ================= EXHAUST DUCT (2.6.0, ADR-010) =================
@@ -818,6 +889,9 @@ fn ghurni_engine_process_block_naad(self, out) {
     # loop, so without this every block would restart each sequence.
     GhEngine_set_duct_loss_z(self, duct_loss_z);
     GhEngine_set_duct_rad_z(self, duct_rad_z);
+    GhEngine_set_crank_anchor(self, crank_a);
+    GhEngine_set_crank_anchor_pos(self, crank_apos);
+    GhEngine_set_crank_anchor_rps(self, crank_arps);
     GhEngine_set_stall_remaining(self, stall_rem);
     GhEngine_set_rev_limit_remaining(self, revlim_rem);
     GhEngine_set_startup_remaining(self, startup_rem);

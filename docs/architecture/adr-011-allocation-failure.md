@@ -48,6 +48,20 @@ allocation-failure handling, and they stay.
 - **Neutral**: this rests on a measurement, and a new buffer whose first store sits
   at a large offset would invalidate it. Rerun both sweeps at every P(-1).
 
+## Amendment, 2.8.0: naad reports some refusals now
+
+naad 2.3.4 (its ADR-0010) made five constructors report a refused allocation as
+`NAAD_ERR_ALLOCATION` (-6) instead of stopping inside naad. ghurni calls one of them
+on every construction, `noise_new`, and stored its result unchecked on the old
+premise that it never fails. A refusal there built a synth holding -6 as its noise
+generator, which then stopped at its first render instead of in the constructor.
+
+ghurni already passed on the code of every other naad constructor, so it now checks
+`noise_new` too, and the constructor returns `GH_ERR_SYNTHESIS_FAILED`.
+`tests/alloc_refused.tcyr` refuses exactly that request in all ten constructors.
+This passes on a report naad makes; it is not an allocation check of ghurni's own.
+The decision above stands for those.
+
 ## Alternatives considered
 
 - **Check every constructor.** About 40 sites, each a new error return that no test

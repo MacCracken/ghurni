@@ -5,12 +5,17 @@
 
 ## Version
 
-**2.7.2** — Cyrius port, hardened and pinned, through a second P(-1) sweep (2.7.2); oracle retired; RPM loudness law
-(ADR-005), acoustic depth (ADR-006), load tilt + diesel clatter (ADR-007), a
-control surface that no longer lies (ADR-008), stems deferred on measurement with
-convolution closed (ADR-009), and a quarter-wave exhaust waveguide (ADR-010).
+**2.8.0** — Cyrius port, hardened and pinned through two P(-1) sweeps (2.0.2, 2.7.2);
+oracle retired; RPM loudness law (ADR-005), acoustic depth (ADR-006), load tilt +
+diesel clatter (ADR-007), a control surface that no longer lies (ADR-008), stems
+deferred on measurement with convolution closed (ADR-009), a quarter-wave exhaust
+waveguide (ADR-010), and phase integrated from the speed in force rather than
+derived from position (ADR-012, "Phase Continuity").
 Dependency set:
-cyrius 6.7.18 · naad 2.3.3 · hisab 3.4.1 · goonj 2.3.1 · sakshi 2.5.10.
+cyrius 6.7.18 · naad 2.3.5 · hisab 3.5.0 · goonj 2.3.2, with sakshi 2.5.10 as a
+stdlib leaf of the toolchain (no longer a git package).
+Toolchain floor of the full set: cyrius 6.7.2. The bundle itself also builds and
+passes on cyrius 6.6.3 with naad 2.2.2, the oldest consumer toolchain.
 (1.0.0 was the final Rust crate; it served as the parity oracle at `rust-old/`
 and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 
@@ -21,7 +26,7 @@ and was retired in 2.0.4 — recoverable at tag `2.0.3`.)
 non-naad fallback path, which ADR-004 drops. All 44 Rust integration tests are
 reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green.
 
-## Modules (`src/*.cyr`, 19 modules, 4,563 lines)
+## Modules (`src/*.cyr`, 19 modules, 4,921 lines)
 
 | Layer | Modules |
 |-------|---------|
@@ -30,9 +35,9 @@ reproduced as behavioural-parity `.tcyr` suites; smoke binary + benchmarks green
 | L2 composites | `mixer` `presets` |
 | entry | `main` (smoke) |
 
-Bundle: `dist/ghurni.cyr` (4,552 lines, `cyrius distlib`).
+Bundle: `dist/ghurni.cyr` (4,849 lines, `cyrius distlib`).
 
-## Tests (`tests/*.tcyr`, 15 suites, 1,013 assertions, 0 failures)
+## Tests (`tests/*.tcyr`, 17 suites, 1,143 assertions, 0 failures)
 
 > Count with `cyrius test 2>&1 | grep -E '^[0-9]+ passed, [0-9]+ failed \([0-9]+ total\)$'`
 > and sum the leading numbers. Do NOT sum every `N passed` line: the run's final
@@ -57,14 +62,16 @@ Bundle: `dist/ghurni.cyr` (4,552 lines, `cyrius distlib`).
 | `recovery` | 2.7.2 — a bad value must not silence a synth for life |
 | `names_events` | 2.7.2 — every wire name both ways, GH_EVENT_* values, event shape |
 | `boundaries` | 2.7.2 — constructor codes, over-long synthesize, both ends of every clamp |
+| `continuity` | 2.8.0 — ADR-012: no audio depends on `sample_position`, crank and ring track the integral of speed, tick counts and tick length, whole-firing misfires, the hybrid's two synths, ramps, every rate from 1 Hz, reverse gear, the dispatch table, 0 bytes per block |
+| `alloc_refused` | 2.8.0 — replaces the stdlib `alloc` and refuses exactly the noise generator's request in each of the ten constructors |
 
 `cyrius bench` (`benches/ghurni.bcyr`): DcBlocker ~10 ns/sample, smoother
 ~10 ns/sample, engine/gear one-shot synthesis, the streaming 4-channel mixer
 path, and belt_drive's block loop.
 
 `cyrius audit` exits **0** (fmt · lint · docs · tests · bench).
-`cyrius coverage`: 155/203 functions referenced (76%) — a floor, not a proof.
-Fuzz: `fuzz/ghurni.fcyr`, 2,235 adversarial checks (`cyrius fuzz`, and `--poison` in CI).
+`cyrius coverage`: 158/210 functions referenced (75%) — a floor, not a proof.
+Fuzz: `fuzz/ghurni.fcyr`, 2,902 adversarial checks (`cyrius fuzz`, and `--poison` in CI).
 
 ## Deliberate divergences from `rust-old/`
 
@@ -106,6 +113,20 @@ Fuzz: `fuzz/ghurni.fcyr`, 2,235 adversarial checks (`cyrius fuzz`, and `--poison
   Note the behavioural form must still DEPEND on its float parameter: a bare
   `f64_to` of a sub-unity value truncates to a constant, which is the defect
   fixed in `forced_induction` and `belt_drive` (see the 2.0.2 CHANGELOG).
+
+### Added by 2.8.0 (ADR-012)
+
+Each corrects a value the oracle got wrong too. All change audio, deliberately.
+
+- **Phase is anchored to the speed in force**, not `position × current speed`: the
+  engine's crank, the gear's ring envelope, the clock's beat, the differential's ring
+  gear, the chain and the belt loop. Steady speeds render the oracle-era bits.
+- **A clock tick has a fixed duration**, measured in the type's default beat.
+- **A misfire skips the whole firing**, and the hybrid's starter has its own synth.
+- **The belt's smoother is wired in.** The oracle advanced it and discarded the value
+  (`rust-old/src/belt_drive.rs:131`).
+- **A negative ratio is a reverse gear**, and every frequency is held under Nyquist at
+  any valid rate.
 
 ### Added by the 2.7.2 P(-1) sweep
 
@@ -195,11 +216,16 @@ patch release.
 - **Allocation failure is fail-stop**, decided on measurement in ADR-011.
 - **Presized output buffers.** Every `*_synthesize` grows its result one `vec_push`
   at a time, so the doubling allocator burns ~2x the delivered heap. naad 2.3.2's
-  `naad_vec_zeros` would fix it; scheduled for 2.10.0, when consumers reach naad 2.3.3.
-- **The 2.7.2 sweep's audio-changing findings**, scheduled in the roadmap for 2.8.0 and
-  3.0.0: phase from absolute position, beat-relative clock ticks, one-sample misfires,
-  the hybrid's shared starter synth, block-stepped terms, low-rate partials, reverse
-  gears and GEAR_SHIFT numbering.
+  `naad_vec_zeros` would fix it, and since 2.8.0 `ghurni_zeros` is the one place to
+  change. Scheduled for 2.10.0; dhvani 2.3.1 has reached naad 2.3.3 and cyrius 6.7.18,
+  which was that arc's precondition.
+- **STARTUP on a running engine cuts its combustion term at the trigger** (found by
+  2.8.0's A/B review). The gate is `1 - ufrac`, about 0 on the first sample, so a
+  running hybrid's whine stops instantly. Audio-changing; scheduled in the roadmap.
+- **Gear, motor and turbine step at block edges** when rpm changes, pitch and level
+  together: they have no smoother, by the oracle's design. ADR-012 leaves them alone.
+- **GEAR_SHIFT numbering** is scheduled for 3.0.0, since the fix changes what every
+  existing call means.
 - **`cyrius vet` reports `dist/ghurni.cyr` as UNTRUST.** Structural: it is the
   project's own generated bundle, not a `[deps]`-resolved one, and there is no
   trust-list mechanism in the manifest. `cyrius deny` and `cyrius audit` both

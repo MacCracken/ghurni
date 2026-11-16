@@ -21,41 +21,84 @@
 # Tag dispatch -- the Synthesizer "vtable". Switches a (kind, synth) pair to the
 # concrete synth's method. Forward-references every synth's fns (resolved across
 # the whole compilation unit).
+#
+# ONE TABLE (2.8.0). Until now each of the four dispatchers carried its own
+# ten-arm if/elif chain, so adding a synth meant four edits that nothing checked
+# against each other. The table holds one row per GH_KIND_* -- process_block,
+# set_rpm, rpm, sample_rate -- and each dispatcher is a range check and one
+# indirect call. It is filled on first use, not at load: a library's top-level
+# statements run in the consumer's program, before anything it initialises.
+# `&fn` and `callptr` are compiler builtins (cyrius 6.0.70+), so the bundle needs
+# no stdlib leaf for them.
 # ================================================================
-fn ghurni_synth_process_block(kind, synth, out) {
-    if ((synth < GHURNI_MIN_VALID_PTR) || (out < GHURNI_MIN_VALID_PTR)) { return GH_ERR_INVALID_PARAMETER; }
-    if ((kind < GH_KIND_ENGINE) || (kind > GH_KIND_CHAIN_DRIVE)) { return GH_ERR_INVALID_PARAMETER; }
-    if (kind == GH_KIND_ENGINE)             { ghurni_engine_process_block(synth, out); }
-    elif (kind == GH_KIND_GEAR)             { ghurni_gear_process_block(synth, out); }
-    elif (kind == GH_KIND_MOTOR)            { ghurni_motor_process_block(synth, out); }
-    elif (kind == GH_KIND_TURBINE)          { ghurni_turbine_process_block(synth, out); }
-    elif (kind == GH_KIND_CLOCK)            { ghurni_clock_process_block(synth, out); }
-    elif (kind == GH_KIND_TRANSMISSION)     { ghurni_transmission_process_block(synth, out); }
-    elif (kind == GH_KIND_DIFFERENTIAL)     { ghurni_differential_process_block(synth, out); }
-    elif (kind == GH_KIND_FORCED_INDUCTION) { ghurni_forced_induction_process_block(synth, out); }
-    elif (kind == GH_KIND_BELT_DRIVE)       { ghurni_belt_drive_process_block(synth, out); }
-    elif (kind == GH_KIND_CHAIN_DRIVE)      { ghurni_chain_drive_process_block(synth, out); }
+var GHURNI_KIND_COUNT = 10;
+var GHURNI_KIND_METHOD_PROCESS_BLOCK = 0;
+var GHURNI_KIND_METHOD_SET_RPM = 1;
+var GHURNI_KIND_METHOD_RPM = 2;
+var GHURNI_KIND_METHOD_SAMPLE_RATE = 3;
+# 10 kinds x 4 methods x 8 bytes.
+var GHURNI_KIND_TABLE[320];
+var GHURNI_KIND_TABLE_READY = 0;
+
+# kind_row(kind, process_block, set_rpm, rpm, sample_rate) -- fill one table row.
+fn ghurni_kind_row(kind, process_block, set_rpm, rpm, sample_rate) {
+    var row = &GHURNI_KIND_TABLE + kind * 32;
+    store64(row, process_block);
+    store64(row + 8, set_rpm);
+    store64(row + 16, rpm);
+    store64(row + 24, sample_rate);
     return 0;
 }
 
-# set_rpm half of the tag dispatch: routes `rpm` to the concrete synth named by
-# `kind`. Unknown tags fall through and do nothing -- ghurni_mixer_add_channel
-# range-checks the tag, so a mixer channel can never hold one.
-fn ghurni_synth_set_rpm(kind, synth, rpm) {
-    if ((synth < GHURNI_MIN_VALID_PTR) || (kind < GH_KIND_ENGINE) || (kind > GH_KIND_CHAIN_DRIVE)) {
-        return GH_ERR_INVALID_PARAMETER;
+# kind_method(kind, method) -- the function pointer for one GH_KIND_* and one
+# GHURNI_KIND_METHOD_*, or 0 if either is out of range.
+#must_use
+fn ghurni_kind_method(kind, method) {
+    if ((kind < 0) || (kind >= GHURNI_KIND_COUNT)) { return 0; }
+    if ((method < 0) || (method > GHURNI_KIND_METHOD_SAMPLE_RATE)) { return 0; }
+    if (GHURNI_KIND_TABLE_READY == 0) {
+        ghurni_kind_row(GH_KIND_ENGINE, &ghurni_engine_process_block, &ghurni_engine_set_rpm,
+          &ghurni_engine_rpm, &ghurni_engine_sample_rate);
+        ghurni_kind_row(GH_KIND_GEAR, &ghurni_gear_process_block, &ghurni_gear_set_rpm,
+          &ghurni_gear_rpm, &ghurni_gear_sample_rate);
+        ghurni_kind_row(GH_KIND_MOTOR, &ghurni_motor_process_block, &ghurni_motor_set_rpm,
+          &ghurni_motor_rpm, &ghurni_motor_sample_rate);
+        ghurni_kind_row(GH_KIND_TURBINE, &ghurni_turbine_process_block, &ghurni_turbine_set_rpm,
+          &ghurni_turbine_rpm, &ghurni_turbine_sample_rate);
+        ghurni_kind_row(GH_KIND_CLOCK, &ghurni_clock_process_block, &ghurni_clock_set_rpm,
+          &ghurni_clock_rpm, &ghurni_clock_sample_rate);
+        ghurni_kind_row(GH_KIND_TRANSMISSION, &ghurni_transmission_process_block, &ghurni_transmission_set_rpm,
+          &ghurni_transmission_rpm, &ghurni_transmission_sample_rate);
+        ghurni_kind_row(GH_KIND_DIFFERENTIAL, &ghurni_differential_process_block, &ghurni_differential_set_rpm,
+          &ghurni_differential_rpm, &ghurni_differential_sample_rate);
+        ghurni_kind_row(GH_KIND_FORCED_INDUCTION, &ghurni_forced_induction_process_block,
+          &ghurni_forced_induction_set_rpm, &ghurni_forced_induction_rpm, &ghurni_forced_induction_sample_rate);
+        ghurni_kind_row(GH_KIND_BELT_DRIVE, &ghurni_belt_drive_process_block, &ghurni_belt_drive_set_rpm,
+          &ghurni_belt_drive_rpm, &ghurni_belt_drive_sample_rate);
+        ghurni_kind_row(GH_KIND_CHAIN_DRIVE, &ghurni_chain_drive_process_block, &ghurni_chain_drive_set_rpm,
+          &ghurni_chain_drive_rpm, &ghurni_chain_drive_sample_rate);
+        GHURNI_KIND_TABLE_READY = 1;
     }
-    if (kind == GH_KIND_ENGINE)             { ghurni_engine_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_GEAR)             { ghurni_gear_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_MOTOR)            { ghurni_motor_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_TURBINE)          { ghurni_turbine_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_CLOCK)            { ghurni_clock_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_TRANSMISSION)     { ghurni_transmission_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_DIFFERENTIAL)     { ghurni_differential_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_FORCED_INDUCTION) { ghurni_forced_induction_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_BELT_DRIVE)       { ghurni_belt_drive_set_rpm(synth, rpm); }
-    elif (kind == GH_KIND_CHAIN_DRIVE)      { ghurni_chain_drive_set_rpm(synth, rpm); }
-    return 0;
+    return load64(&GHURNI_KIND_TABLE + kind * 32 + method * 8);
+}
+
+# process_block half of the tag dispatch. Returns the synth's own code, or
+# GH_ERR_INVALID_PARAMETER for a bad pointer or an unknown tag.
+fn ghurni_synth_process_block(kind, synth, out) {
+    if ((synth < GHURNI_MIN_VALID_PTR) || (out < GHURNI_MIN_VALID_PTR)) { return GH_ERR_INVALID_PARAMETER; }
+    var fp = ghurni_kind_method(kind, GHURNI_KIND_METHOD_PROCESS_BLOCK);
+    if (fp == 0) { return GH_ERR_INVALID_PARAMETER; }
+    return callptr(fp, synth, out);
+}
+
+# set_rpm half of the tag dispatch: routes `rpm` to the concrete synth named by
+# `kind`. ghurni_mixer_add_channel range-checks the tag, so a mixer channel can
+# never hold an unknown one; called directly, an unknown tag is refused.
+fn ghurni_synth_set_rpm(kind, synth, rpm) {
+    if (synth < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
+    var fp = ghurni_kind_method(kind, GHURNI_KIND_METHOD_SET_RPM);
+    if (fp == 0) { return GH_ERR_INVALID_PARAMETER; }
+    return callptr(fp, synth, rpm);
 }
 
 # rpm half of the tag dispatch: read the current RPM of the synth named by
@@ -65,17 +108,9 @@ fn ghurni_synth_set_rpm(kind, synth, rpm) {
 #must_use
 fn ghurni_synth_rpm(kind, synth) {
     if (synth < GHURNI_MIN_VALID_PTR) { return 0; }
-    if (kind == GH_KIND_ENGINE)             { return ghurni_engine_rpm(synth); }
-    elif (kind == GH_KIND_GEAR)             { return ghurni_gear_rpm(synth); }
-    elif (kind == GH_KIND_MOTOR)            { return ghurni_motor_rpm(synth); }
-    elif (kind == GH_KIND_TURBINE)          { return ghurni_turbine_rpm(synth); }
-    elif (kind == GH_KIND_CLOCK)            { return ghurni_clock_rpm(synth); }
-    elif (kind == GH_KIND_TRANSMISSION)     { return ghurni_transmission_rpm(synth); }
-    elif (kind == GH_KIND_DIFFERENTIAL)     { return ghurni_differential_rpm(synth); }
-    elif (kind == GH_KIND_FORCED_INDUCTION) { return ghurni_forced_induction_rpm(synth); }
-    elif (kind == GH_KIND_BELT_DRIVE)       { return ghurni_belt_drive_rpm(synth); }
-    elif (kind == GH_KIND_CHAIN_DRIVE)      { return ghurni_chain_drive_rpm(synth); }
-    return 0;
+    var fp = ghurni_kind_method(kind, GHURNI_KIND_METHOD_RPM);
+    if (fp == 0) { return 0; }
+    return callptr(fp, synth);
 }
 
 # sample_rate half of the tag dispatch. Ports `Synthesizer::sample_rate`
@@ -83,17 +118,9 @@ fn ghurni_synth_rpm(kind, synth) {
 #must_use
 fn ghurni_synth_sample_rate(kind, synth) {
     if (synth < GHURNI_MIN_VALID_PTR) { return 0; }
-    if (kind == GH_KIND_ENGINE)             { return ghurni_engine_sample_rate(synth); }
-    elif (kind == GH_KIND_GEAR)             { return ghurni_gear_sample_rate(synth); }
-    elif (kind == GH_KIND_MOTOR)            { return ghurni_motor_sample_rate(synth); }
-    elif (kind == GH_KIND_TURBINE)          { return ghurni_turbine_sample_rate(synth); }
-    elif (kind == GH_KIND_CLOCK)            { return ghurni_clock_sample_rate(synth); }
-    elif (kind == GH_KIND_TRANSMISSION)     { return ghurni_transmission_sample_rate(synth); }
-    elif (kind == GH_KIND_DIFFERENTIAL)     { return ghurni_differential_sample_rate(synth); }
-    elif (kind == GH_KIND_FORCED_INDUCTION) { return ghurni_forced_induction_sample_rate(synth); }
-    elif (kind == GH_KIND_BELT_DRIVE)       { return ghurni_belt_drive_sample_rate(synth); }
-    elif (kind == GH_KIND_CHAIN_DRIVE)      { return ghurni_chain_drive_sample_rate(synth); }
-    return 0;
+    var fp = ghurni_kind_method(kind, GHURNI_KIND_METHOD_SAMPLE_RATE);
+    if (fp == 0) { return 0; }
+    return callptr(fp, synth);
 }
 
 # ================================================================
@@ -135,7 +162,9 @@ fn ghurni_mixer_add_channel(m, name, kind, synth) {
         ghurni_log_warn("ghurni: mixer add_channel rejected a failed/absent synthesizer");
         return GH_ERR_INVALID_PARAMETER;
     }
-    if ((kind < GH_KIND_ENGINE) || (kind > GH_KIND_CHAIN_DRIVE)) {
+    # The dispatch table is the one list of kinds, so a kind added there is
+    # accepted here with no second edit.
+    if (ghurni_kind_method(kind, GHURNI_KIND_METHOD_PROCESS_BLOCK) == 0) {
         ghurni_log_warn("ghurni: mixer add_channel rejected an unknown synth kind");
         return GH_ERR_INVALID_PARAMETER;
     }
@@ -258,12 +287,17 @@ fn ghurni_mixer_channel_scratch(ch, len) {
     return v;
 }
 
-# process_block(out) -- render + sum all unmuted channels into mono `out`.
-fn ghurni_mixer_process_block(m, out) {
-    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
-    var len = vec_len(out);
+# mix(m, left, right, len) -- render every unmuted channel and sum it into the
+# first `len` samples of `left`, and of `right` through the equal-power pan law
+# when `right` is a vec; `right` = 0 mixes mono. ONE channel loop for both paths
+# (2.8.0): mono and stereo used to carry separate copies of it.
+fn ghurni_mixer_mix(m, left, right, len) {
     var z = 0;
-    while (z < len) { vec_set(out, z, 0); z = z + 1; }
+    while (z < len) {
+        vec_set(left, z, 0);
+        if (right != 0) { vec_set(right, z, 0); }
+        z = z + 1;
+    }
 
     var master = GhMixer_master_gain(m);
     var channels = GhMixer_channels(m);
@@ -276,9 +310,23 @@ fn ghurni_mixer_process_block(m, out) {
             ghurni_synth_process_block(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), scratch);
             var gain = f64_mul(GhMixerChannel_gain(ch), master);
             var i = 0;
-            while (i < len) {
-                vec_set(out, i, f64_add(vec_get(out, i), f64_mul(vec_get(scratch, i), gain)));
-                i = i + 1;
+            if (right == 0) {
+                while (i < len) {
+                    vec_set(left, i, f64_add(vec_get(left, i), f64_mul(vec_get(scratch, i), gain)));
+                    i = i + 1;
+                }
+            } else {
+                # equal-power pan law
+                var pan_norm = f64_mul(f64_add(GhMixerChannel_pan(ch), F64_ONE), 0.5);
+                var angle = f64_mul(pan_norm, F64_PI_2);
+                var gain_l = f64_mul(f64_cos(angle), gain);
+                var gain_r = f64_mul(f64_sin(angle), gain);
+                while (i < len) {
+                    var s = vec_get(scratch, i);
+                    vec_set(left, i, f64_add(vec_get(left, i), f64_mul(s, gain_l)));
+                    vec_set(right, i, f64_add(vec_get(right, i), f64_mul(s, gain_r)));
+                    i = i + 1;
+                }
             }
         }
         ci = ci + 1;
@@ -286,38 +334,16 @@ fn ghurni_mixer_process_block(m, out) {
     return 0;
 }
 
+# process_block(out) -- render + sum all unmuted channels into mono `out`.
+fn ghurni_mixer_process_block(m, out) {
+    if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
+    return ghurni_mixer_mix(m, out, 0, vec_len(out));
+}
+
 # process_block_stereo(left, right) -- equal-power pan into stereo.
 fn ghurni_mixer_process_block_stereo(m, left, right) {
     if ((left < GHURNI_MIN_VALID_PTR) || (right < GHURNI_MIN_VALID_PTR)) { return GH_ERR_INVALID_PARAMETER; }
     var len = vec_len(left);
     if (vec_len(right) < len) { len = vec_len(right); }
-    var z = 0;
-    while (z < len) { vec_set(left, z, 0); vec_set(right, z, 0); z = z + 1; }
-
-    var master = GhMixer_master_gain(m);
-    var channels = GhMixer_channels(m);
-    var nc = vec_len(channels);
-    var ci = 0;
-    while (ci < nc) {
-        var ch = vec_get(channels, ci);
-        if ((GhMixerChannel_muted(ch) == 0) && (GhMixerChannel_synth(ch) != 0)) {
-            var scratch = ghurni_mixer_channel_scratch(ch, len);
-            ghurni_synth_process_block(GhMixerChannel_kind(ch), GhMixerChannel_synth(ch), scratch);
-            # equal-power pan law
-            var pan_norm = f64_mul(f64_add(GhMixerChannel_pan(ch), F64_ONE), 0.5);
-            var angle = f64_mul(pan_norm, F64_PI_2);
-            var gain = f64_mul(GhMixerChannel_gain(ch), master);
-            var gain_l = f64_mul(f64_cos(angle), gain);
-            var gain_r = f64_mul(f64_sin(angle), gain);
-            var i = 0;
-            while (i < len) {
-                var s = vec_get(scratch, i);
-                vec_set(left, i, f64_add(vec_get(left, i), f64_mul(s, gain_l)));
-                vec_set(right, i, f64_add(vec_get(right, i), f64_mul(s, gain_r)));
-                i = i + 1;
-            }
-        }
-        ci = ci + 1;
-    }
-    return 0;
+    return ghurni_mixer_mix(m, left, right, len);
 }

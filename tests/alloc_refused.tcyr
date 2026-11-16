@@ -1,0 +1,153 @@
+# alloc_refused.tcyr -- a refused naad allocation reaches the caller as an error (2.8.0).
+#
+# naad 2.3.4 made noise_new report a refused allocation as NAAD_ERR_ALLOCATION (-6),
+# where it used to stop inside naad. Every ghurni constructor stored noise_new's
+# result unchecked, on the old premise that it "never errors", so a refusal there
+# built a synth holding -6 as its noise generator, which then faulted at its first
+# render. Each constructor now passes the code on, as it already did for every other
+# naad constructor. ghurni still adds no checks on its own allocations: ADR-011's
+# fail-stop decision stands, and is about those.
+#
+# This suite replaces the stdlib `alloc`, as naad's own alloc_refused suite does:
+# cycc keeps the last definition of a function, so the `alloc` below serves every
+# allocation in the unit, the stdlib vec's included. It hands out zeroed memory from
+# one private mapping, logs request sizes while logging, and refuses the Nth request
+# while armed.
+#
+# Nothing is written down: noise_new's own request pattern is logged, then found
+# inside each constructor's log, and exactly that request is refused.
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/dsp.cyr"
+include "src/smooth.cyr"
+include "src/event.cyr"
+include "src/traits.cyr"
+include "src/engine.cyr"
+include "src/gear.cyr"
+include "src/motor.cyr"
+include "src/turbine.cyr"
+include "src/clock.cyr"
+include "src/transmission.cyr"
+include "src/differential.cyr"
+include "src/forced_induction.cyr"
+include "src/belt_drive.cyr"
+include "src/chain_drive.cyr"
+include "src/mixer.cyr"
+include "src/presets.cyr"
+
+var FI_ARMED = 0;
+var FI_N = 0;
+var FI_COUNT = 0;
+var FI_LOGGING = 0;
+var FI_LOGN = 0;
+var FI_LOG[8192];
+var FI_PTR = 0;
+var FI_END = 0;
+var FI_ARENA = 0x10000000;   # 256 MiB, reserved on first use
+
+# The stand-in allocator: the stdlib's refusals for a size it cannot serve, then
+# the log and the armed refusal, then a 16-byte-aligned bump from a private mapping,
+# which the kernel hands over zeroed.
+fn alloc(size): i64 {
+    if (size <= 0) { return 0; }
+    if (size > ALLOC_MAX) { return 0; }
+    FI_COUNT = FI_COUNT + 1;
+    if ((FI_LOGGING == 1) && (FI_LOGN < 1024)) {
+        store64(&FI_LOG + FI_LOGN * 8, size);
+        FI_LOGN = FI_LOGN + 1;
+    }
+    if ((FI_ARMED == 1) && (FI_COUNT == FI_N)) { return 0; }
+    if (FI_PTR == 0) {
+        FI_PTR = syscall(9, 0, FI_ARENA, 3, 0x4022, 0 - 1, 0);
+        FI_END = FI_PTR + FI_ARENA;
+    }
+    var p = FI_PTR;
+    FI_PTR = FI_PTR + ((size + 15) & (0 - 16));
+    if (FI_PTR > FI_END) { return 0; }
+    return p;
+}
+
+alloc_init();
+var SR = f64_from(44100);
+
+# The noise generator's own request sizes, in order.
+FI_LOGGING = 1;
+FI_LOGN = 0;
+var probe = noise_new(NOISE_WHITE, 7);
+FI_LOGGING = 0;
+var NP_LEN = FI_LOGN;
+var NP[256];
+var npi = 0;
+while (npi < NP_LEN) { store64(&NP + npi * 8, load64(&FI_LOG + npi * 8)); npi = npi + 1; }
+
+# build(kind) -- one synth of each GH_KIND_*, with pink noise for turbine and belt.
+fn build(kind) {
+    var r = vec_new();
+    if (kind == GH_KIND_ENGINE)           { return ghurni_engine_new(GH_ENGINE_DIESEL, 6, SR); }
+    if (kind == GH_KIND_GEAR)             { return ghurni_gear_new(32, GH_GEAR_BRASS, SR); }
+    if (kind == GH_KIND_MOTOR)            { return ghurni_motor_new(GH_MOTOR_SERVO, 8, SR); }
+    if (kind == GH_KIND_TURBINE)          { return ghurni_turbine_new(12, f64_from(600), SR); }
+    if (kind == GH_KIND_CLOCK)            { return ghurni_clock_new(GH_CLOCK_WALL_CLOCK, SR); }
+    if (kind == GH_KIND_TRANSMISSION) {
+        vec_push(r, f64_from(3)); vec_push(r, F64_ONE);
+        return ghurni_transmission_new(r, 24, SR);
+    }
+    if (kind == GH_KIND_DIFFERENTIAL)     { return ghurni_differential_new(41, 11, SR); }
+    if (kind == GH_KIND_FORCED_INDUCTION) {
+        return ghurni_forced_induction_new(GH_INDUCTION_TURBO, f64_from(2), 0.3, SR);
+    }
+    if (kind == GH_KIND_BELT_DRIVE)       { return ghurni_belt_drive_new(f64_from(120), 0.6, SR); }
+    return ghurni_chain_drive_new(110, 16, SR);
+}
+
+# noise_at(kind) -- 1-based index, among the constructor's requests, of noise_new's
+# first request, or -1 if its pattern is not there. Built once first, so any
+# one-time allocation is out of the way.
+fn noise_at(kind) {
+    var warm = build(kind);
+    FI_LOGGING = 1;
+    FI_LOGN = 0;
+    var b = build(kind);
+    FI_LOGGING = 0;
+    var i = 0;
+    while (i + NP_LEN <= FI_LOGN) {
+        var j = 0;
+        while ((j < NP_LEN) && (load64(&FI_LOG + (i + j) * 8) == load64(&NP + j * 8))) { j = j + 1; }
+        if (j == NP_LEN) { return i + 1; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# refused(kind, n) -- build with the constructor's nth request refused.
+fn refused(kind, n) {
+    FI_COUNT = 0;
+    FI_N = n;
+    FI_ARMED = 1;
+    var s = build(kind);
+    FI_ARMED = 0;
+    return s;
+}
+
+test_group("noise_new reports a refusal, and the pattern is measurable");
+assert_gte(NP_LEN, 2, "noise_new makes at least two requests");
+assert_gte(probe, GHURNI_MIN_VALID_PTR, "unarmed, noise_new builds");
+FI_COUNT = 0;
+FI_N = 1;
+FI_ARMED = 1;
+var nr = noise_new(NOISE_WHITE, 7);
+FI_ARMED = 0;
+assert_eq(nr, NAAD_ERR_ALLOCATION, "its first request refused, it returns NAAD_ERR_ALLOCATION");
+
+test_group("every constructor passes a refused noise generator on as an error");
+var kk = 0;
+while (kk < GHURNI_KIND_COUNT) {
+    var at = noise_at(kk);
+    assert_gte(at, 1, ghurni_kind_name(kk));
+    assert_eq(refused(kk, at), GH_ERR_SYNTHESIS_FAILED, ghurni_kind_name(kk));
+    assert_gte(build(kk), GHURNI_MIN_VALID_PTR, "and unarmed it still builds");
+    kk = kk + 1;
+}
+
+var rc = assert_summary();
+syscall(60, rc);

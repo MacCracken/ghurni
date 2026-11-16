@@ -36,6 +36,8 @@ Each `tests/*.tcyr` file includes the `src/*.cyr` modules it needs directly
 | `names_events` | every enum's wire name both ways, the GH_EVENT_* values, event constructors |
 | `boundaries` | each constructor's error code, over-long synthesize, both ends of every clamp |
 | `spectral` | FFT assertions that audio lands where the RPM physics says — peak frequencies, load brightening for every load-taking synth, and the exhaust duct's odd-harmonic series and boom depth |
+| `continuity` | ADR-012 (2.8.0): no synth's audio depends on its `sample_position`; the crank and ring track a replica integral of the speed; tick counts through a ramp and tick length at any rate; whole-firing misfires; ramps across block edges; every synth at every rate from 1 Hz; 0 bytes per block |
+| `alloc_refused` | replaces the stdlib `alloc` (cycc keeps the last definition) and refuses exactly the noise generator's request in each constructor, located by its logged allocation pattern |
 
 ## Writing Assertions That Are Worth Having
 

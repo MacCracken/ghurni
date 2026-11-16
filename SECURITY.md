@@ -86,13 +86,13 @@ pinned to a git tag and recorded with its commit hash in `cyrius.lock`.
 
 | Dependency | Version | Purpose | Risk |
 |------------|---------|---------|------|
-| [naad](https://github.com/MacCracken/naad) | 2.3.3 | DSP primitives (oscillators, filters, noise, additive) | Same ecosystem; the only backend |
-| [hisab](https://github.com/MacCracken/hisab) | 3.4.1 | Math / geometry, referenced by naad's bundle | Same ecosystem; pure computation |
-| [goonj](https://github.com/MacCracken/goonj) | 2.3.1 | Acoustics, referenced by naad's bundle | Same ecosystem; pure computation |
-| [sakshi](https://github.com/MacCracken/sakshi) | 2.5.10 | Structured logging | Same ecosystem; writes to stderr |
+| [naad](https://github.com/MacCracken/naad) | 2.3.5 | DSP primitives (oscillators, filters, noise, additive) | Same ecosystem; the only backend |
+| [hisab](https://github.com/MacCracken/hisab) | 3.5.0 | Math / geometry, referenced by naad's bundle | Same ecosystem; pure computation |
+| [goonj](https://github.com/MacCracken/goonj) | 2.3.2 | Acoustics, referenced by naad's bundle | Same ecosystem; pure computation |
+| [sakshi](https://github.com/MacCracken/sakshi) | 2.5.10 | Structured logging; a stdlib leaf of the toolchain, not a git package, since 2.8.0 | Same ecosystem; writes to stderr |
 | cyrius toolchain | 6.7.18 | Compiler, pinned in `[package].cyrius` | Build-time |
 
-The pinned set is the one naad 2.3.3 itself pins, so the vendored bundles agree
+The pinned set is the one naad 2.3.5 itself pins, so the vendored bundles agree
 with what each was built against. `cyrius deps --verify` re-checks the recorded
 hashes.
 

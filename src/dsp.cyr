@@ -228,6 +228,56 @@ fn ghurni_sample_count(sample_rate, duration) {
     return n;
 }
 
+# zeros(n) -- a fresh vec of n zero samples (2.8.0). The ten `synthesize` paths
+# each carried their own copy of this loop; one helper means presizing the output
+# (2.10.0, naad_vec_zeros) is a one-line change. Grows one push at a time, as each
+# copy did, so allocation and results are unchanged.
+#must_use
+fn ghurni_zeros(n) {
+    var out = vec_new();
+    var i = 0;
+    while (i < n) { vec_push(out, 0); i = i + 1; }
+    return out;
+}
+
+# ================================================================
+# LOW SAMPLE RATES (2.8.0, ADR-012). naad refuses an oscillator or filter at or
+# above Nyquist, and an AdditiveSynth ZEROES any partial at or above Nyquist,
+# in additive_new, additive_set_partial and additive_set_fundamental alike, and
+# never restores it. Every synth built its additive tone at a fixed 100 Hz, so
+# below a 612 Hz rate its top partial was gone for the life of the object even
+# though the per-block clamp would have kept it legal; and four filters and
+# oscillators were built at fixed centres (synchro 4 kHz, blow-off 2 kHz, flap
+# 500 Hz, turbo whine 100 Hz), so those constructors failed outright at 8 kHz
+# and below. These three helpers keep every frequency strictly under Nyquist.
+# At any common rate each returns its input unchanged, so no bit moves there.
+# ================================================================
+
+# below_nyquist(freq, sample_rate) -- freq, capped at 0.49 of the sample rate.
+#must_use
+fn ghurni_below_nyquist(freq, sample_rate) {
+    return f64_min(freq, f64_mul(sample_rate, 0.49));
+}
+
+# fund_clamp(freq, hi) -- f64_clamp(freq, 1, hi), except that the 1 Hz floor
+# yields to `hi` when the rate is so low that hi is under 1 Hz. f64_clamp tests
+# the floor first, so a floor above the ceiling would win and push the top
+# partial past Nyquist.
+#must_use
+fn ghurni_fund_clamp(freq, hi) {
+    return f64_clamp(freq, f64_min(F64_ONE, hi), hi);
+}
+
+# additive_new(num_partials, sample_rate) -- an AdditiveSynth whose
+# construction fundamental leaves room for `num_partials` harmonics: 100 Hz, or
+# less where the rate cannot hold 100 x num_partials. Every caller retunes it
+# before its first sample, so the construction pitch is never heard.
+#must_use
+fn ghurni_additive_new(num_partials, sample_rate) {
+    var fund = f64_min(f64_from(100), f64_div(f64_mul(sample_rate, 0.49), f64_from(num_partials)));
+    return additive_new(fund, num_partials, sample_rate);
+}
+
 # ================================================================
 # RPM loudness law (ADR-005, 2.1.0). ghurni's thesis is that RPM drives
 # everything, but until 2.1.0 loudness was very nearly RPM-INDEPENDENT: gear at

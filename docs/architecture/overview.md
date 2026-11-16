@@ -70,11 +70,13 @@ which described the dual-path design, is superseded.
 
 Cyrius has no vtables and no dynamic dispatch, so Rust's
 `Box<dyn Synthesizer>` is replaced by a `(GH_KIND_*, pointer)` pair plus a
-hand-written switch in `mixer.cyr`: four of them, `ghurni_synth_process_block`,
-`_set_rpm`, `_rpm` and `_sample_rate`. They are the explicit equivalent of the trait's
-vtable. `ghurni_mixer_add_channel` and the dispatchers range-check both the tag and the
-pointer, so a channel can never hold an unknown kind or a failed constructor's error
-code.
+hand-written table in `mixer.cyr`: one row per kind, holding its `process_block`,
+`set_rpm`, `rpm` and `sample_rate`. It is the explicit equivalent of the trait's
+vtable. The four dispatchers `ghurni_synth_process_block`, `_set_rpm`, `_rpm` and
+`_sample_rate` each look up a row and call through it; until 2.8.0 each carried its
+own ten-arm switch. `ghurni_mixer_add_channel` and the dispatchers check the tag
+against the table and range-check the pointer, so a channel can never hold an
+unknown kind or a failed constructor's error code.
 
 ## Data Flow
 
@@ -129,6 +131,7 @@ does**. Each one changed rendered audio deliberately and moved golden checksums.
 | [008](adr-008-events-and-control.md) | the control surface stops lying — five dead events made real |
 | [009](adr-009-no-stems-yet.md) | why stems were deferred, and why convolution is closed |
 | [010](adr-010-radiation-paths.md) | the exhaust becomes a quarter-wave duct that carries the pulse train |
+| [012](adr-012-phase-continuity.md) | phase is integrated from the speed in force, not derived from position; ticks have a duration; ramps |
 
 [ADR-011](adr-011-allocation-failure.md) changed no audio: it records that a refused
 allocation is fail-stop, on measurement.

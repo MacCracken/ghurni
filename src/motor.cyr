@@ -19,7 +19,7 @@
 # - naad constructors return a heap pointer on success or a negative ERR_* code
 #   on bad params; ghurni_is_err() distinguishes them. new() maps any failure to
 #   GH_ERR_SYNTHESIS_FAILED (ports the Rust `.map_err(SynthesisFailed)`).
-#   noise_new never errors, so its return is not checked.
+#   noise_new can report a refused allocation since naad 2.3.4, and is checked.
 # - process_block sets the hum fundamental to min(em_freq, nyquist/3); the
 #   Rust ignored additive.set_fundamental's Result (`let _ = ...`), and so do
 #   we. At rpm=0 em_freq is 0, which naad refuses, so the old fundamental stays;
@@ -119,13 +119,15 @@ fn ghurni_motor_new(motor_type, poles, sample_rate) {
 
     # naad backend: additive hum synth (fundamental + 2nd/3rd partials),
     # white noise, and a band-pass filter for the commutator/bearing hiss.
-    var hum_synth = additive_new(f64_from(100), 3, sample_rate);
+    # Built at a pitch whose 3rd partial fits under Nyquist (2.8.0); see dsp.cyr.
+    var hum_synth = ghurni_additive_new(3, sample_rate);
     if (ghurni_is_err(hum_synth) == 1) { return ghurni_map_naad_error(hum_synth); }
     additive_set_partial(hum_synth, 0, F64_ONE, F64_ONE);
     additive_set_partial(hum_synth, 1, f64_from(2), 0.3);
     additive_set_partial(hum_synth, 2, f64_from(3), 0.1);
 
     var noise = noise_new(NOISE_WHITE, motor_type * 100 + p);
+    if (ghurni_is_err(noise) == 1) { return ghurni_map_naad_error(noise); }
     var noise_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_min(noise_cutoff, nyq), F64_ONE);
     if (ghurni_is_err(noise_filter) == 1) { return ghurni_map_naad_error(noise_filter); }
 
@@ -168,9 +170,7 @@ fn ghurni_motor_synthesize(self, rpm, load, duration) {
     if (ghurni_is_err(n) == 1) { return n; }
     ghurni_motor_set_rpm(self, rpm);
     ghurni_motor_set_load(self, load);
-    var out = vec_new();
-    var i = 0;
-    while (i < n) { vec_push(out, 0); i = i + 1; }
+    var out = ghurni_zeros(n);
     ghurni_motor_process_block(self, out);
     return out;
 }

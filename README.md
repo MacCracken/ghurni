@@ -105,10 +105,10 @@ Resolved from `cyrius.cyml` by `cyrius deps` into `lib/`. All are pinned to the 
 
 | Dependency | Version | Role |
 |------------|---------|------|
-| [naad](https://github.com/MacCracken/naad) | 2.3.3 | audio synthesis primitives (oscillators, filters, noise, additive) |
-| [hisab](https://github.com/MacCracken/hisab) | 3.4.1 | math / geometry (referenced by naad's bundle) |
-| [goonj](https://github.com/MacCracken/goonj) | 2.3.1 | acoustics engine (referenced by naad's bundle) |
-| [sakshi](https://github.com/MacCracken/sakshi) | 2.5.10 | structured logging |
+| [naad](https://github.com/MacCracken/naad) | 2.3.5 | audio synthesis primitives (oscillators, filters, noise, additive) |
+| [hisab](https://github.com/MacCracken/hisab) | 3.5.0 | math / geometry (referenced by naad's bundle) |
+| [goonj](https://github.com/MacCracken/goonj) | 2.3.2 | acoustics engine (referenced by naad's bundle) |
+| [sakshi](https://github.com/MacCracken/sakshi) | 2.5.10 | structured logging (a stdlib leaf of the toolchain since 2.8.0) |
 | cyrius toolchain | 6.7.18 | pinned in `[package].cyrius` |
 
 ## Consumers

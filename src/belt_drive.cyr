@@ -16,7 +16,7 @@
 # - naad constructors (osc / filter) return a heap pointer on success or a
 #   negative ERR_* code on bad params; ghurni_is_err() distinguishes them and
 #   new() maps failures to GH_ERR_SYNTHESIS_FAILED (ports `.map_err`). noise_new
-#   never errors.
+#   is checked too: it can report a refused allocation since naad 2.3.4.
 # - serde: BeltDrive held opaque naad backend pointers; deep #[derive(Serialize)]
 #   is dropped. There is no public enum to roundtrip for this module.
 # - process_block interleaves the naad synthesis inline (no separate _naad fn) --
@@ -34,6 +34,9 @@
 #   rpm(f64) sample_position(int) smooth_rpm(ptr GhSmoothedParam)
 #   dc_blocker(ptr GhDcBlocker) squeal_osc(ptr naad Oscillator)
 #   noise_gen(ptr naad NoiseGenerator) flap_filter(ptr naad BiquadFilter)
+#   belt_anchor(f64 radians, in [0, TAU)) belt_anchor_pos(int sample)
+#   belt_anchor_omega(f64 radians/sample) -- the belt loop's ANCHORED rotation
+#     phase (2.8.0, ADR-012), re-anchored whenever the rotation rate changes.
 # ================================================================
 #derive(accessors)
 struct GhBeltDrive {
@@ -47,6 +50,9 @@ struct GhBeltDrive {
     squeal_osc;
     noise_gen;
     flap_filter;
+    belt_anchor;
+    belt_anchor_pos;
+    belt_anchor_omega;
 }
 
 # new(pulley_diameter, tension, sample_rate) -> ptr or GH_ERR_*.
@@ -82,7 +88,10 @@ fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
     # then summed perfectly correlated flap noise. x1000 keeps tension
     # distinguishable to three decimals, matching forced_induction.cyr.
     var noise = noise_new(NOISE_PINK, f64_to(diameter) + f64_to(f64_mul(tens, f64_from(1000))));
-    var flap_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate, f64_from(500), f64_from(2));
+    if (ghurni_is_err(noise) == 1) { return ghurni_map_naad_error(noise); }
+    # Held under Nyquist (2.8.0): at 500 Hz fixed, the constructor failed at 1 kHz.
+    var flap_filter = filter_biquad_new(NAAD_FILTER_BANDPASS, sample_rate,
+      ghurni_below_nyquist(f64_from(500), sample_rate), f64_from(2));
     if (ghurni_is_err(flap_filter) == 1) { return ghurni_map_naad_error(flap_filter); }
 
     var self = alloc(sizeof(GhBeltDrive));
@@ -96,6 +105,9 @@ fn ghurni_belt_drive_new(pulley_diameter, tension, sample_rate) {
     GhBeltDrive_set_squeal_osc(self, squeal_osc);
     GhBeltDrive_set_noise_gen(self, noise);
     GhBeltDrive_set_flap_filter(self, flap_filter);
+    GhBeltDrive_set_belt_anchor(self, 0);
+    GhBeltDrive_set_belt_anchor_pos(self, 0);
+    GhBeltDrive_set_belt_anchor_omega(self, 0);
     return self;
 }
 
@@ -129,9 +141,7 @@ fn ghurni_belt_drive_synthesize(self, rpm, duration) {
     var n = ghurni_sample_count(GhBeltDrive_sample_rate(self), duration);
     if (ghurni_is_err(n) == 1) { return n; }
     ghurni_belt_drive_set_rpm(self, rpm);
-    var out = vec_new();
-    var i = 0;
-    while (i < n) { vec_push(out, 0); i = i + 1; }
+    var out = ghurni_zeros(n);
     ghurni_belt_drive_process_block(self, out);
     return out;
 }
@@ -142,12 +152,7 @@ fn ghurni_belt_drive_synthesize(self, rpm, duration) {
 fn ghurni_belt_drive_process_block(self, out) {
     if (out < GHURNI_MIN_VALID_PTR) { return GH_ERR_INVALID_PARAMETER; }
     var smooth_rpm = GhBeltDrive_smooth_rpm(self);
-    var rpm = GhBeltDrive_rpm(self);
-    # ADR-005 RPM loudness law. Computed once per block from the raw rpm: belt_drive
-    # HAS a smoother but deliberately discards its value (see the note at the
-    # ghurni_smooth_next_value call below), so its frequency terms are block-constant.
-    var rpm_gain = ghurni_rpm_gain(rpm, GHURNI_REF_RPM_BELT);
-    ghurni_smooth_set_target(smooth_rpm, rpm);
+    ghurni_smooth_set_target(smooth_rpm, GhBeltDrive_rpm(self));
 
     var sr = GhBeltDrive_sample_rate(self);
     var tens = GhBeltDrive_tension(self);
@@ -155,16 +160,11 @@ fn ghurni_belt_drive_process_block(self, out) {
 
     # Squeal amplitude inversely proportional to tension.
     var squeal_amp = f64_mul(f64_sub(F64_ONE, tens), 0.3);
-    # Flap depends on belt speed.
-    var speed = ghurni_belt_drive_belt_speed(self, rpm);
-    var flap_amp = f64_clamp(f64_div(speed, f64_from(20)), 0, 0.2);
 
-    # Belt rotation frequency (one full loop). circumference in meters.
+    # Belt circumference in meters; the loop's rotation rate is speed / circumference.
     var belt_circumference = f64_div(f64_mul(F64_PI, GhBeltDrive_pulley_diameter(self)), f64_from(1000));
-    var belt_rotation_freq = 0;
-    if (f64_gt(belt_circumference, 0) == 1) {
-        belt_rotation_freq = f64_div(speed, f64_max(belt_circumference, 0.1));
-    }
+    var circ_eff = f64_max(belt_circumference, 0.1);
+    var circ_ok = f64_gt(belt_circumference, 0);
 
     var osc = GhBeltDrive_squeal_osc(self);
     var noise = GhBeltDrive_noise_gen(self);
@@ -174,28 +174,55 @@ fn ghurni_belt_drive_process_block(self, out) {
     # squeal frequency (constant across the block), clamped to nyquist.
     var squeal_freq = f64_min(f64_add(f64_from(2000), f64_mul(f64_sub(F64_ONE, tens), f64_from(3000))), nyq);
 
-    # Both of these are block-invariant, so they are hoisted out of the
-    # per-sample loop. osc_set_frequency only validates and stores the field
-    # (lib/naad.cyr) -- it does not touch the phase accumulator -- so setting it
-    # once per block instead of once per sample is bit-identical. Likewise
-    # belt_omega derives only from belt_rotation_freq and sr, both fixed here.
+    # Tension alone sets the squeal pitch, so it is block-invariant and set once.
+    # osc_set_frequency only validates and stores the field (lib/naad.cyr) -- it
+    # does not touch the phase accumulator.
     osc_set_frequency(osc, squeal_freq);
-    var belt_active = f64_gt(belt_rotation_freq, 0);
+
+    # THE SMOOTHER IS WIRED IN (2.8.0, ADR-012). The oracle advanced smooth_rpm
+    # and discarded the value (rust-old/src/belt_drive.rs:131), computing loudness,
+    # flap and the rotation rate from the RAW rpm once per block, so a step to rpm 0
+    # dropped the belt 30 dB inside the first millisecond of the next block while
+    # every other rpm-smoothed synth glided. All four now follow the smoothed rpm,
+    # recomputed only when it moves.
+    var last_s = 0x7FF8000000000001;
+    var rpm_gain = 0;
+    var flap_amp = 0;
+    var belt_active = 0;
     var belt_omega = 0;
-    if (belt_active == 1) {
-        belt_omega = f64_div(f64_mul(F64_TAU, belt_rotation_freq), sr);
-    }
+    # ANCHORED ROTATION PHASE (2.8.0, ADR-012): sin(omega x absolute position)
+    # becomes sin(anchor + omega x (position - anchor_pos)), re-anchored in
+    # [0, TAU) whenever omega changes, so the loop's wobble no longer sweeps at a
+    # rate that grows with stream age while the speed changes.
+    var belt_a = GhBeltDrive_belt_anchor(self);
+    var belt_apos = GhBeltDrive_belt_anchor_pos(self);
+    var belt_aomega = GhBeltDrive_belt_anchor_omega(self);
 
     var n = vec_len(out);
     var i = 0;
     while (i < n) {
-        # Advanced for state parity only -- the result is deliberately discarded.
-        # The oracle writes `let _smooth = self.smooth_rpm.next_value();`
-        # (rust-old/src/belt_drive.rs:131) and computes speed / flap_amp /
-        # belt_rotation_freq from the RAW rpm, so the 0.03 s time constant has no
-        # audible effect in this synth. Do not remove the call (it would desync
-        # the smoother) and do not wire it in (it would change the audio).
-        ghurni_smooth_next_value(smooth_rpm);
+        var rpm_s = ghurni_smooth_next_value(smooth_rpm);
+        if (rpm_s != last_s) {
+            last_s = rpm_s;
+            # ADR-005 RPM loudness law.
+            rpm_gain = ghurni_rpm_gain(rpm_s, GHURNI_REF_RPM_BELT);
+            # Flap depends on belt speed.
+            var speed = ghurni_belt_drive_belt_speed(self, rpm_s);
+            flap_amp = f64_clamp(f64_div(speed, f64_from(20)), 0, 0.2);
+            var belt_rotation_freq = 0;
+            if (circ_ok == 1) { belt_rotation_freq = f64_div(speed, circ_eff); }
+            belt_active = f64_gt(belt_rotation_freq, 0);
+            belt_omega = 0;
+            if (belt_active == 1) {
+                belt_omega = f64_div(f64_mul(F64_TAU, belt_rotation_freq), sr);
+            }
+            if (belt_omega != belt_aomega) {
+                var pos_b = base_pos + i;
+                belt_a = ghurni_fmod(f64_add(belt_a, f64_mul(belt_aomega, f64_from(pos_b - belt_apos))), F64_TAU);
+                belt_apos = pos_b;
+                belt_aomega = belt_omega;
+            }
+        }
 
         # Squeal: high-frequency friction oscillation.
         var squeal = f64_mul(osc_next_sample(osc), squeal_amp);
@@ -207,7 +234,8 @@ fn ghurni_belt_drive_process_block(self, out) {
         # Periodic modulation at the belt rotation rate.
         var belt_mod = F64_ONE;
         if (belt_active == 1) {
-            belt_mod = f64_add(0.8, f64_mul(0.2, f64_sin(f64_mul(belt_omega, f64_from(base_pos + i)))));
+            belt_mod = f64_add(0.8, f64_mul(0.2, f64_sin(f64_add(belt_a,
+                    f64_mul(belt_omega, f64_from(base_pos + i - belt_apos))))));
         }
 
         var bd_sum = f64_mul(f64_add(squeal, flap), belt_mod);
@@ -215,6 +243,9 @@ fn ghurni_belt_drive_process_block(self, out) {
         i = i + 1;
     }
 
+    GhBeltDrive_set_belt_anchor(self, belt_a);
+    GhBeltDrive_set_belt_anchor_pos(self, belt_apos);
+    GhBeltDrive_set_belt_anchor_omega(self, belt_aomega);
     var db = GhBeltDrive_dc_blocker(self);
     ghurni_dcblocker_process_buffer(db, out);
     GhBeltDrive_set_sample_position(self, base_pos + n);
